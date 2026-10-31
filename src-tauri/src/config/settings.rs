@@ -448,14 +448,14 @@ pub struct TelegramTtsSettings {
 }
 
 fn default_synthesis_response_timeout_ms() -> u32 {
-    10000
+    60000
 }
 fn default_download_retry_delay_ms() -> u32 {
     1000
 }
 
 pub const SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS: u32 = 1000;
-pub const SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS: u32 = 120_000;
+// SYNTHESIS_RESPONSE_TIMEOUT is unbounded above per ROADMAP-133
 pub const DOWNLOAD_RETRY_DELAY_MIN_MS: u32 = 100;
 pub const DOWNLOAD_RETRY_DELAY_MAX_MS: u32 = 10_000;
 
@@ -1819,19 +1819,16 @@ impl AppSettings {
             self.vrchat.host = default_vrchat_host();
         }
 
-        // Validate and clamp Silero timing settings
+        // Validate and clamp Silero timing settings (enforce min, unbounded above per ROADMAP-133)
         {
             let old = self.tts.telegram.synthesis_response_timeout_ms;
-            self.tts.telegram.synthesis_response_timeout_ms = old.clamp(
-                SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS,
-                SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS,
-            );
+            self.tts.telegram.synthesis_response_timeout_ms =
+                old.max(SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS);
             if self.tts.telegram.synthesis_response_timeout_ms != old {
                 warn!(
                     synthesis_response_timeout_ms = old,
                     clamped = self.tts.telegram.synthesis_response_timeout_ms,
                     min = SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS,
-                    max = SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS,
                     "clamped synthesis_response_timeout_ms"
                 );
             }
@@ -2849,6 +2846,12 @@ impl SettingsManager {
     /// * `mode` - Proxy mode for Telegram (None, Socks5, MtProxy)
     pub fn set_telegram_proxy_mode(&self, mode: ProxyMode) -> Result<()> {
         self.update_field("/tts/telegram/proxy_mode", &mode)
+    }
+
+    /// Set Silero synthesis response timeout in milliseconds (ROADMAP-133)
+    pub fn set_silero_synthesis_response_timeout_ms(&self, timeout_ms: u32) -> Result<()> {
+        let normalized = timeout_ms.max(SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS);
+        self.update_field("/tts/telegram/synthesis_response_timeout_ms", &normalized)
     }
 
     // ========== MTProxy Settings ==========
@@ -6342,7 +6345,7 @@ mod tests {
     #[test]
     fn telegram_tts_settings_default_timing() {
         let s = TelegramTtsSettings::default();
-        assert_eq!(s.synthesis_response_timeout_ms, 10000);
+        assert_eq!(s.synthesis_response_timeout_ms, 60000);
         assert_eq!(s.download_retry_delay_ms, 1000);
     }
 
@@ -6358,7 +6361,7 @@ mod tests {
         }"#;
         let settings: TelegramTtsSettings = serde_json::from_str(old_json)
             .expect("old TelegramTtsSettings (without timing fields) must deserialize");
-        assert_eq!(settings.synthesis_response_timeout_ms, 10000);
+        assert_eq!(settings.synthesis_response_timeout_ms, 60000);
         assert_eq!(settings.download_retry_delay_ms, 1000);
     }
 
@@ -6371,18 +6374,6 @@ mod tests {
         assert_eq!(
             app.tts.telegram.synthesis_response_timeout_ms,
             SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS
-        );
-    }
-
-    /// Clamping: synthesis_response_timeout_ms at exact max boundary passes through.
-    #[test]
-    fn validate_silero_timeout_exact_max() {
-        let mut app = AppSettings::default();
-        app.tts.telegram.synthesis_response_timeout_ms = SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS;
-        app.validate();
-        assert_eq!(
-            app.tts.telegram.synthesis_response_timeout_ms,
-            SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS
         );
     }
 
@@ -6406,16 +6397,13 @@ mod tests {
         );
     }
 
-    /// Clamping: synthesis_response_timeout_ms above max is clamped down.
+    /// Unbounded above: synthesis_response_timeout_ms above 120_000 is preserved (ROADMAP-133).
     #[test]
-    fn validate_silero_timeout_above_max() {
+    fn validate_silero_timeout_above_max_preserved() {
         let mut app = AppSettings::default();
         app.tts.telegram.synthesis_response_timeout_ms = 999_999;
         app.validate();
-        assert_eq!(
-            app.tts.telegram.synthesis_response_timeout_ms,
-            SYNTHESIS_RESPONSE_TIMEOUT_MAX_MS
-        );
+        assert_eq!(app.tts.telegram.synthesis_response_timeout_ms, 999_999);
     }
 
     /// Clamping: download_retry_delay_ms at exact min boundary passes through.
@@ -6440,6 +6428,40 @@ mod tests {
             app.tts.telegram.download_retry_delay_ms,
             DOWNLOAD_RETRY_DELAY_MAX_MS
         );
+    }
+
+    #[test]
+    fn set_silero_synthesis_response_timeout_persists_and_clamps_min() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-silero-timeout-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        mgr.set_silero_synthesis_response_timeout_ms(500).unwrap();
+        let loaded = mgr.load().unwrap();
+        assert_eq!(
+            loaded.tts.telegram.synthesis_response_timeout_ms,
+            SYNTHESIS_RESPONSE_TIMEOUT_MIN_MS
+        );
+
+        mgr.set_silero_synthesis_response_timeout_ms(45000).unwrap();
+        let loaded2 = mgr.load().unwrap();
+        assert_eq!(loaded2.tts.telegram.synthesis_response_timeout_ms, 45000);
+
+        // Unbounded above: large value preserved
+        mgr.set_silero_synthesis_response_timeout_ms(300_000)
+            .unwrap();
+        let loaded3 = mgr.load().unwrap();
+        assert_eq!(loaded3.tts.telegram.synthesis_response_timeout_ms, 300_000);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Clamping: download_retry_delay_ms below min is clamped up.
@@ -6500,7 +6522,7 @@ mod tests {
         }"#;
         let dto: crate::config::dto::TelegramTtsSettingsDto = serde_json::from_str(old_json)
             .expect("old DTO (without timing fields) must deserialize");
-        assert_eq!(dto.synthesis_response_timeout_ms, 10000);
+        assert_eq!(dto.synthesis_response_timeout_ms, 60000);
         assert_eq!(dto.download_retry_delay_ms, 1000);
     }
 

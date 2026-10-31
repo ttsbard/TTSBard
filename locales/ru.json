@@ -1335,6 +1335,12 @@
     "recovery.statusOpened": "Файл настроек открыт в системном приложении.",
     "recovery.statusRestoring": "Записываю стандартные настройки…",
     "recovery.statusRestored": "Стандартные настройки записаны. Приложение закрывается — запустите его снова.",
-    "recovery.actionFailed": "Действие не выполнено: {error}"
+    "recovery.actionFailed": "Действие не выполнено: {error}",
+    "tts.silero.timeout.toggle": "Настройки времени ожидания",
+    "tts.silero.timeout.label": "Ожидание ответа Silero:",
+    "tts.silero.timeout.unit": "с",
+    "tts.silero.timeout.hint": "Максимальное время ожидания аудио от Telegram-бота до отмены (по умолчанию 60 с).",
+    "tts.silero.timeout.saved": "Время ожидания сохранено",
+    "tts.silero.timeout.error": "Не удалось сохранить время ожидания"
   }
 }

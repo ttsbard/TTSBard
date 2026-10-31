@@ -2,8 +2,9 @@
 
 # Manual Silero timing settings
 
-Telegram/Silero synthesis timeouts and delays are edited in `settings.json`;
-there are no interface controls for these fields.
+Silero synthesis response timeout can be configured directly in the interface: in the **TTS → Silero Bot** card, click the gear icon **"[⚙]"** next to the proxy selector and enter the desired number of seconds.
+
+Timeouts and delays can also be edited manually in `settings.json`.
 
 ## Find settings.json
 
@@ -17,7 +18,7 @@ All values are milliseconds under `tts.telegram`.
 
 | Key | Default | Range | Purpose |
 |---|---|---|---|
-| `synthesis_response_timeout_ms` | `10000` | `1000`…`120000` | Wait for Silero's response after sending text |
+| `synthesis_response_timeout_ms` | `60000` | from `1000` (no upper limit) | Wait for Silero's response after sending text |
 | `download_retry_delay_ms` | `1000` | `100`…`10000` | Delay before another download attempt |
 
 ## Example
@@ -26,8 +27,8 @@ All values are milliseconds under `tts.telegram`.
 {
   "tts": {
     "telegram": {
-      "synthesis_response_timeout_ms": 15000,
-      "download_retry_delay_ms": 2000
+      "synthesis_response_timeout_ms": 60000,
+      "download_retry_delay_ms": 1000
     }
   }
 }
@@ -37,9 +38,9 @@ Add fields individually; omitted fields use defaults.
 
 ## Normalization
 
-Out-of-range values are clamped: `synthesis_response_timeout_ms: 0` becomes
-`1000`, and `download_retry_delay_ms: 99999` becomes `10000`.
+Values below the minimum are clamped: `synthesis_response_timeout_ms: 0` becomes `1000`. Synthesis timeout has no upper limit. For `download_retry_delay_ms`, out-of-range values like `99999` become `10000`.
 
 ## Apply changes
 
-**Restart the application** for changes to take effect. Live reloading is not supported.
+- When changed via the interface, the new timeout **applies immediately** to subsequent phrases.
+- When edited manually in `settings.json`, **restart the application** for changes to take effect.

@@ -643,6 +643,26 @@ pub async fn telegram_set_speaker(
     Ok(success)
 }
 
+/// Set Silero synthesis response timeout in milliseconds (ROADMAP-133)
+#[tauri::command]
+pub async fn set_silero_synthesis_timeout(
+    app_handle: AppHandle,
+    settings_manager: State<'_, SettingsManager>,
+    timeout_ms: u32,
+) -> Result<(), String> {
+    info!(timeout_ms, "Setting Silero synthesis response timeout");
+
+    super::persist_blocking(settings_manager.inner(), move |mgr| {
+        mgr.set_silero_synthesis_response_timeout_ms(timeout_ms)
+    })
+    .await?;
+
+    super::emit_settings_changed(&app_handle);
+
+    info!("Silero synthesis response timeout updated successfully");
+    Ok(())
+}
+
 /// Добавить голос в список сохраненных
 #[tauri::command]
 pub async fn telegram_add_voice_code(

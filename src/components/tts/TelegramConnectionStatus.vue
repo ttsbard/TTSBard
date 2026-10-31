@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { LogOut, RefreshCw } from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import { LogOut, RefreshCw, Settings } from 'lucide-vue-next';
+
 import { t } from '../../i18n';
 
 interface TelegramStatus {
@@ -24,6 +25,7 @@ interface Props {
   errorMessage?: string | null;
   proxyMode?: string;
   proxyModes?: Array<{ value: string; label: string }>;
+  synthesisResponseTimeoutMs?: number;
 }
 
 interface Emits {
@@ -31,6 +33,7 @@ interface Emits {
   (e: 'disconnect'): void;
   (e: 'reconnect'): void;
   (e: 'proxy-mode-change', mode: string): void;
+  (e: 'timeout-change', timeoutMs: number): void;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -41,6 +44,7 @@ const props = withDefaults(defineProps<Props>(), {
     { value: 'socks5', label: 'SOCKS5' },
     { value: 'mtproxy', label: 'MTProxy' }
   ],
+  synthesisResponseTimeoutMs: 60000,
 });
 
 const emit = defineEmits<Emits>();
@@ -61,6 +65,29 @@ const proxyModeOptions = computed(() =>
     label: mode.value === 'none' ? t('tts.proxy.none') : mode.label,
   })),
 );
+
+
+const showTimeoutSettings = ref(false);
+const timeoutSeconds = ref(Math.max(1, Math.round((props.synthesisResponseTimeoutMs ?? 60000) / 1000)));
+
+watch(() => props.synthesisResponseTimeoutMs, (newMs) => {
+  if (typeof newMs === 'number') {
+    timeoutSeconds.value = Math.max(1, Math.round(newMs / 1000));
+  }
+});
+
+function handleTimeoutChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const raw = parseInt(target.value, 10);
+  if (isNaN(raw) || raw < 1) {
+    const fallback = Math.max(1, Math.round((props.synthesisResponseTimeoutMs ?? 60000) / 1000));
+    timeoutSeconds.value = fallback;
+    target.value = String(fallback);
+    return;
+  }
+  timeoutSeconds.value = raw;
+  emit('timeout-change', raw * 1000);
+}
 
 function handleProxyChange(event: Event) {
   const target = event.target as HTMLSelectElement;
@@ -133,17 +160,52 @@ function handleProxyChange(event: Event) {
             </select>
           </div>
         </div>
-        <button
-          v-if="connected"
-          @click="$emit('reconnect')"
-          :disabled="reconnecting"
-          class="ui-button ui-button--primary reconnect-button-fixed"
-          :title="t('tts.silero.reconnect')"
-        >
-          <RefreshCw v-if="reconnecting" :size="18" class="spin-icon" />
-          <RefreshCw v-else :size="18" />
-          {{ reconnecting ? t('tts.silero.reconnecting') : t('tts.silero.reconnect') }}
-        </button>
+        <div class="proxy-actions-row">
+          <button
+            type="button"
+            class="ui-icon-button timeout-gear-button"
+            :aria-expanded="showTimeoutSettings"
+            :title="t('tts.silero.timeout.toggle')"
+            :aria-label="t('tts.silero.timeout.toggle')"
+            @click="showTimeoutSettings = !showTimeoutSettings"
+          >
+            <Settings :size="18" />
+          </button>
+          <button
+            v-if="connected"
+            @click="$emit('reconnect')"
+            :disabled="reconnecting"
+            class="ui-button ui-button--primary ui-button--leading-icon ui-button--compact"
+            :title="t('tts.silero.reconnect')"
+          >
+            <RefreshCw v-if="reconnecting" :size="18" class="spin-icon" />
+            <RefreshCw v-else :size="18" />
+            {{ reconnecting ? t('tts.silero.reconnecting') : t('tts.silero.reconnect') }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Timeout Settings Drawer -->
+      <div v-if="showTimeoutSettings" class="timeout-settings-row">
+        <div class="timeout-field-wrap">
+          <label class="ui-label" for="silero-timeout-input">
+            {{ t('tts.silero.timeout.label') }}
+          </label>
+          <div class="timeout-input-group">
+            <input
+              id="silero-timeout-input"
+              :value="timeoutSeconds"
+              type="number"
+              class="ui-input timeout-input"
+              min="1"
+              step="1"
+              @change="handleTimeoutChange"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+            />
+            <span class="timeout-unit">{{ t('tts.silero.timeout.unit') }}</span>
+          </div>
+        </div>
+        <p class="ui-hint timeout-hint">{{ t('tts.silero.timeout.hint') }}</p>
       </div>
     </div>
 
@@ -301,6 +363,7 @@ function handleProxyChange(event: Event) {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .proxy-select-row {
@@ -308,7 +371,6 @@ function handleProxyChange(event: Event) {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
 }
 
 .proxy-select-row .form-field {
@@ -325,12 +387,9 @@ function handleProxyChange(event: Event) {
 .network-select {
   width: fit-content;
   min-width: 100px;
-}
-
-/* Reconnect button */
-.reconnect-button-fixed {
-  margin-bottom: 8px;
-  gap: 8px;
+  min-height: 32px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .spin-icon {
@@ -390,4 +449,55 @@ function handleProxyChange(event: Event) {
 .info-list strong {
   color: var(--color-text-primary);
 }
+
+.proxy-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.timeout-settings-row {
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--ui-radius-control, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeout-field-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.timeout-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timeout-input {
+  width: 68px;
+  min-height: 32px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  text-align: right;
+  padding-right: 8px;
+}
+
+.timeout-unit {
+  font-size: var(--ui-text-size-control, 0.9rem);
+  color: var(--color-text-secondary);
+}
+
+.timeout-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
 </style>

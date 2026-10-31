@@ -1335,6 +1335,12 @@
     "recovery.statusOpened": "The settings file was opened in the system application.",
     "recovery.statusRestoring": "Writing default settings…",
     "recovery.statusRestored": "Default settings have been written. The application is closing — start it again.",
-    "recovery.actionFailed": "The action failed: {error}"
+    "recovery.actionFailed": "The action failed: {error}",
+    "tts.silero.timeout.toggle": "Timeout settings",
+    "tts.silero.timeout.label": "Silero response timeout:",
+    "tts.silero.timeout.unit": "s",
+    "tts.silero.timeout.hint": "Maximum waiting time for Telegram bot audio before cancellation (default 60 s).",
+    "tts.silero.timeout.saved": "Response timeout saved",
+    "tts.silero.timeout.error": "Failed to save response timeout"
   }
 }

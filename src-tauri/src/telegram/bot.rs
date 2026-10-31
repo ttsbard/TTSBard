@@ -48,7 +48,7 @@ impl SileroRuntimeSettings {
 
 impl Default for SileroRuntimeSettings {
     fn default() -> Self {
-        Self::new(10000, 1000)
+        Self::new(60000, 1000)
     }
 }
 
@@ -3568,7 +3568,7 @@ mod tests {
     #[test]
     fn runtime_settings_default_values() {
         let rt = SileroRuntimeSettings::default();
-        assert_eq!(rt.synthesis_response_timeout.as_millis(), 10000);
+        assert_eq!(rt.synthesis_response_timeout.as_millis(), 60000);
         assert_eq!(rt.download_retry_delay.as_millis(), 1000);
     }
 

@@ -520,7 +520,7 @@ pub struct TelegramTtsSettingsDto {
 }
 
 fn default_synthesis_response_timeout_ms_dto() -> u32 {
-    10000
+    60000
 }
 fn default_download_retry_delay_ms_dto() -> u32 {
     1000

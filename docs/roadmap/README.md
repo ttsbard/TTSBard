@@ -49,6 +49,8 @@ related_tasks: []
 
 ## Завершённые направления
 
+- [ROADMAP-133 — Настройка времени ожидания ответа Silero в интерфейсе](./completed/133-silero-synthesis-timeout-ui.md) — completed: дефолт 60 с, снятие верхнего лимита, шестерёнка [⚙] в карточке Silero и поле ввода секунд с автосохранением.
+
 - [ROADMAP-132 — Пользовательская документация на английском и русском](./completed/132-bilingual-user-documentation.md) — `completed`: двуязычный README, 26 языковых пар, PDF EN/RU и постоянная сборка; changelog и инженерные документы остаются русскими.
 
 - [ROADMAP-131 — Режим отправки через Twitch API](./completed/131-twitch-api.md) — `completed`: Device Code Flow для бота и каналов, список получателей и защищённое хранение; закрыто пользователем 2026-10-10.

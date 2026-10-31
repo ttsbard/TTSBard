@@ -35,6 +35,7 @@ interface Props {
   limits?: Limits | null;
   limitsLoading?: boolean;
   limitsError?: string | null;
+  synthesisResponseTimeoutMs?: number;
 }
 
 interface Emits {
@@ -49,6 +50,7 @@ interface Emits {
   (e: 'remove-voice', id: string): void;
   (e: 'select-voice', id: string): void;
   (e: 'refresh-limits'): void;
+  (e: 'timeout-change', timeoutMs: number): void;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -207,10 +209,12 @@ function handleSelectVoice(voiceId: string) {
       :reconnecting="reconnecting"
       :proxy-mode="proxyMode"
       :proxy-modes="proxyModes"
+      :synthesis-response-timeout-ms="synthesisResponseTimeoutMs"
       @connect="$emit('connect')"
       @disconnect="$emit('disconnect')"
       @reconnect="$emit('reconnect')"
       @proxy-mode-change="$emit('proxy-mode-change', $event)"
+      @timeout-change="$emit('timeout-change', $event)"
     />
 
     <div v-if="connected && limits" class="limits-row">

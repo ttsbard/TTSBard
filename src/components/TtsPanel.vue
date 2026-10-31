@@ -652,6 +652,19 @@ async function loadTelegramProxyStatus() {
   }
 }
 
+async function setSileroTimeout(timeoutMs: number) {
+  try {
+    await invoke('set_silero_synthesis_timeout', { timeoutMs });
+    if (ttsSettings.value?.telegram) {
+      ttsSettings.value.telegram.synthesis_response_timeout_ms = timeoutMs;
+    }
+    showSuccess(t('tts.silero.timeout.saved'));
+  } catch (error) {
+    debugError('[TTS] Failed to save Silero timeout:', error);
+    showError(presentCommandError(error, t('tts.silero.timeout.error')));
+  }
+}
+
 async function setTelegramProxyMode(mode: string) {
   telegramProxyMode.value = mode;
   try {
@@ -1001,6 +1014,7 @@ function dismissStatus() {
         :limits="telegramLimits"
         :limits-loading="telegramLimitsLoading"
         :limits-error="telegramLimitsError"
+        :synthesis-response-timeout-ms="ttsSettings?.telegram.synthesis_response_timeout_ms"
         @select="setActiveProvider('silero')"
         @toggle="toggleProvider('silero')"
         @connect="openTelegramModal"
@@ -1012,6 +1026,7 @@ function dismissStatus() {
         @remove-voice="handleRemoveVoice"
         @select-voice="handleSelectVoice"
         @refresh-limits="refreshTelegramLimits"
+        @timeout-change="setSileroTimeout"
       />
 
       <!-- OpenAI Provider -->

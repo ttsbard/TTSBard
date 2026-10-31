@@ -583,6 +583,7 @@ pub fn run() {
             commands::telegram::telegram_add_voice_code,
             commands::telegram::telegram_remove_voice_code,
             commands::telegram::telegram_select_voice,
+            commands::telegram::set_silero_synthesis_timeout,
             // WebView commands
             commands::webview::get_webview_settings,
             commands::webview::get_webview_server_status,
