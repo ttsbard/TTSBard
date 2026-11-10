@@ -191,6 +191,7 @@
     "ai": false,
     "ai_completion": false,
     "autocomplete_enabled": false,
+    "number_conversion_enabled": true,
     "spellcheck_enabled": false,
     "spellcheck_source": "offline",
     "editor_height": 200,

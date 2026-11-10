@@ -602,6 +602,22 @@ pub async fn set_editor_autocomplete_enabled(
     Ok(enabled)
 }
 
+/// Set built-in number conversion enabled state
+#[tauri::command]
+pub async fn set_editor_number_conversion_enabled(
+    enabled: bool,
+    app_handle: AppHandle,
+    settings_manager: State<'_, SettingsManager>,
+) -> Result<bool, String> {
+    persist_blocking(settings_manager.inner(), move |mgr| {
+        mgr.set_editor_number_conversion_enabled(enabled)
+    })
+    .await?;
+
+    emit_settings_changed(&app_handle);
+    Ok(enabled)
+}
+
 /// Set keep-text-after-send state
 #[tauri::command]
 pub async fn set_editor_keep_text(

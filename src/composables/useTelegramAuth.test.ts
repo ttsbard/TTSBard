@@ -70,7 +70,7 @@ function mockSettings(): AppSettingsDto {
     logging: { enabled: true, level: 'info', module_levels: {} },
     preprocessor: { enabled: false, replacements_count: 0 },
     soundpanel_bindings: [],
-    editor: { quick: 'disabled', ai: false, ai_completion: false, autocomplete_enabled: true, spellcheck_enabled: false, spellcheck_source: 'online', editor_height: 200, typing_idle_timeout_ms: 800, typing_enabled: true, default_route: 'everywhere', keep_text_after_send: false, font_family: 'default', font_size_px: 16, homograph_accentor: { enabled: false, accentor_pack_id: null, load_on_start: false } },
+    editor: { quick: 'disabled', ai: false, ai_completion: false, autocomplete_enabled: true, number_conversion_enabled: true, spellcheck_enabled: false, spellcheck_source: 'online', editor_height: 200, typing_idle_timeout_ms: 800, typing_enabled: true, default_route: 'everywhere', keep_text_after_send: false, font_family: 'default', font_size_px: 16, homograph_accentor: { enabled: false, accentor_pack_id: null, load_on_start: false } },
     ocr: { enabled: false, model_id: null, capture_target: { type: 'all' } },
     ai: {
       provider: 'openai',

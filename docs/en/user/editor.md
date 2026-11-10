@@ -157,8 +157,8 @@ Minimizing does not stop speech or integrations.
 
 ## Text processing
 
-Basic preparation resolves route prefixes, expands quick inserts and converts
-numbers to Russian words with grammatical agreement. [AI](ai-text.md) and
+Basic preparation resolves route prefixes, expands quick inserts and, when
+enabled, converts numbers to Russian words with grammatical agreement. [AI](ai-text.md) and
 [RUAccent](ruaccent.md) are additional steps.
 
 ### Sending prefixes
@@ -224,6 +224,15 @@ Russian number conversion agrees with the following word:
 Conversion uses Russian words regardless of the interface or voice language
 and runs before AI correction and TTS. For example, `123` in English text
 still becomes `сто двадцать три`. Type numbers as English words when needed.
+
+You can turn the built-in conversion off with **Convert numbers to words**
+under **Settings → Editor**, directly below the font card. It is on by
+default, including for existing settings files, and the choice persists
+between launches. Disabling it skips only this conversion: quick-insert
+replacements, routes, [AI correction](ai-text.md) and [RUAccent](ruaccent.md)
+still apply. Digits produced by replacements also skip this conversion.
+External integrations keep their existing text delivery settings;
+AI may still convert numbers according to its prompt.
 
 Gender adjustment for 1 and 2 uses a heuristic based on the next word's ending;
 it can be wrong. Other words are left unchanged: this is not full grammatical

@@ -217,6 +217,7 @@
     "ai": true,
     "ai_completion": false,
     "autocomplete_enabled": true,
+    "number_conversion_enabled": false,
     "spellcheck_enabled": true,
     "spellcheck_source": "online",
     "editor_height": 300,

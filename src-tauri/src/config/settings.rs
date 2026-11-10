@@ -1447,6 +1447,9 @@ pub struct EditorSettings {
     pub ai_completion: bool,
     #[serde(default = "default_true")]
     pub autocomplete_enabled: bool,
+    /// Convert built-in digits to Russian words before synthesis.
+    #[serde(default = "default_true")]
+    pub number_conversion_enabled: bool,
     #[serde(default)]
     pub spellcheck_enabled: bool,
     #[serde(default)]
@@ -1522,6 +1525,7 @@ impl Default for EditorSettings {
             ai: false,
             ai_completion: false,
             autocomplete_enabled: true,
+            number_conversion_enabled: true,
             spellcheck_enabled: true,
             spellcheck_source: SpellSource::Offline,
             editor_height: 340,
@@ -3013,6 +3017,11 @@ impl SettingsManager {
     /// Set editor autocomplete suggestions enabled state
     pub fn set_editor_autocomplete_enabled(&self, enabled: bool) -> Result<()> {
         self.update_field("/editor/autocomplete_enabled", &enabled)
+    }
+
+    /// Set built-in number conversion enabled state
+    pub fn set_editor_number_conversion_enabled(&self, enabled: bool) -> Result<()> {
+        self.update_field("/editor/number_conversion_enabled", &enabled)
     }
 
     /// Set spellcheck enabled state
@@ -5562,6 +5571,35 @@ mod tests {
         let back: EditorSettings = serde_json::from_str(&json).expect("round-trip deserialization");
         assert!(!back.autocomplete_enabled);
         assert!(json.contains(r#""autocomplete_enabled":false"#));
+    }
+
+    /// EditorSettings default converts numbers.
+    #[test]
+    fn editor_settings_default_number_conversion_enabled_is_true() {
+        assert!(EditorSettings::default().number_conversion_enabled);
+    }
+
+    /// Backward-compat: legacy EditorSettings without number_conversion_enabled
+    /// (or any newer field) defaults to enabled.
+    #[test]
+    fn editor_settings_deserializes_without_number_conversion_enabled() {
+        let json = r#"{"quick":false,"ai":false,"ai_completion":false,"spellcheck_enabled":true,"spellcheck_source":"offline","editor_height":340}"#;
+        let settings: EditorSettings = serde_json::from_str(json)
+            .expect("must deserialize legacy settings without number_conversion_enabled");
+        assert!(settings.number_conversion_enabled);
+    }
+
+    /// EditorSettings: number_conversion_enabled=false round-trips.
+    #[test]
+    fn editor_settings_number_conversion_enabled_round_trip() {
+        let original = EditorSettings {
+            number_conversion_enabled: false,
+            ..EditorSettings::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let back: EditorSettings = serde_json::from_str(&json).expect("round-trip deserialization");
+        assert!(!back.number_conversion_enabled);
+        assert!(json.contains(r#""number_conversion_enabled":false"#));
     }
 
     /// EditorSettings default has keep_text_after_send == false.

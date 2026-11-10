@@ -37,7 +37,7 @@
 |---|---|---|
 | `general` | `src/components/settings/SettingsGeneral.vue` | Язык, поведение окон, кнопки дополнительных окон (скрытие в заголовке), папки, диагностика; `DataTransferModal.vue` в том же каталоге |
 | `interface` | `src/components/settings/SettingsInterface.vue` | Тема и внешний вид окон |
-| `editor` | `src/components/settings/SettingsEditor.vue` | `EditorFontSettings.vue` в том же каталоге |
+| `editor` | `src/components/settings/SettingsEditor.vue` | `EditorFontSettings.vue` в том же каталоге; карточка преобразования чисел сразу после шрифтов |
 | `network` | `src/components/settings/SettingsNetwork.vue` | Сетевые формы |
 | `ai` | `src/components/SettingsAiPanel.vue` | Настройки AI |
 

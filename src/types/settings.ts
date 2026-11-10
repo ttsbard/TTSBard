@@ -443,6 +443,7 @@ export interface EditorSettingsDto {
   ai: boolean
   ai_completion: boolean
   autocomplete_enabled: boolean
+  number_conversion_enabled: boolean
   spellcheck_enabled: boolean
   spellcheck_source: 'online' | 'offline'
   editor_height: number

@@ -114,6 +114,7 @@ pub(crate) fn build_snapshot(
         source,
         delivery,
         ai_enabled: settings.editor.ai,
+        number_conversion_enabled: settings.editor.number_conversion_enabled,
         audio_effects: settings.audio_effects,
         dsp: settings.dsp,
         audio: settings.audio,
@@ -508,5 +509,50 @@ mod tests {
         } else {
             panic!("expected Silero provider");
         }
+    }
+
+    #[test]
+    fn build_snapshot_captures_number_conversion_and_keeps_it_stable() {
+        use crate::config::AppSettings;
+        use crate::state::AppState;
+        use crate::tts::registry::TtsProviderEntry;
+        use crate::tts::TtsProvider;
+
+        let state = AppState::new();
+
+        let mut settings = AppSettings::default();
+        settings.editor.number_conversion_enabled = false;
+        *state.settings_cache.write() = settings;
+
+        {
+            let mut registry = state.tts_registry.lock();
+            let entry = TtsProviderEntry {
+                id: "local".to_string(),
+                display_name: "Local".to_string(),
+                provider: TtsProvider::Local(
+                    crate::tts::local_http_server::LocalHttpServerTts::new(),
+                ),
+            };
+            registry.add_or_replace(entry);
+            registry.select("local").unwrap();
+        }
+
+        let snapshot = build_snapshot(
+            &state,
+            SubmissionSource::Editor,
+            DeliveryPolicy::editor(false, false),
+        )
+        .expect("build_snapshot must succeed");
+        assert!(!snapshot.number_conversion_enabled);
+
+        state
+            .settings_cache
+            .write()
+            .editor
+            .number_conversion_enabled = true;
+        assert!(
+            !snapshot.number_conversion_enabled,
+            "queued snapshot must retain the value captured at submit time"
+        );
     }
 }

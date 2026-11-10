@@ -23,6 +23,7 @@ function createSettings(overrides?: Partial<EditorSettingsDto>): EditorSettingsD
     ai: false,
     ai_completion: false,
     autocomplete_enabled: true,
+    number_conversion_enabled: true,
     spellcheck_enabled: true,
     spellcheck_source: 'offline',
     editor_height: 340,

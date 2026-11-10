@@ -38,6 +38,12 @@ const autocompletePending = ref(false)
 
 const confirmedAutocompleteEnabled = ref(editorSettings.value?.autocomplete_enabled ?? true)
 
+const numberConversionEnabled = ref(editorSettings.value?.number_conversion_enabled ?? true)
+
+const numberConversionPending = ref(false)
+
+const confirmedNumberConversionEnabled = ref(editorSettings.value?.number_conversion_enabled ?? true)
+
 const typingTimeoutInput = ref(editorSettings.value?.typing_idle_timeout_ms ?? 800)
 
 watch(() => editorSettings.value?.typing_idle_timeout_ms, (newVal) => {
@@ -115,6 +121,22 @@ async function saveAutocompleteEnabled() {
     emitError('settings.editor.error.autocomplete', e)
   } finally {
     autocompletePending.value = false
+  }
+}
+
+async function saveNumberConversionEnabled() {
+  if (numberConversionPending.value) return
+  numberConversionPending.value = true
+  const requested = numberConversionEnabled.value
+  try {
+    await invoke('set_editor_number_conversion_enabled', { enabled: requested })
+    confirmedNumberConversionEnabled.value = requested
+    emitSaved()
+  } catch (e) {
+    numberConversionEnabled.value = confirmedNumberConversionEnabled.value
+    emitError('settings.editor.error.number_conversion', e)
+  } finally {
+    numberConversionPending.value = false
   }
 }
 
@@ -269,11 +291,42 @@ watch(editorSettings, (newSettings) => {
   autocompleteEnabled.value = persisted;
   confirmedAutocompleteEnabled.value = persisted;
 }, { immediate: true });
+
+watch(editorSettings, (newSettings) => {
+  if (!newSettings) return;
+  if (numberConversionPending.value) return;
+  const persisted = newSettings.number_conversion_enabled ?? true;
+  numberConversionEnabled.value = persisted;
+  confirmedNumberConversionEnabled.value = persisted;
+}, { immediate: true });
+
+onUnmounted(() => {
+  numberConversionEnabled.value = editorSettings.value?.number_conversion_enabled ?? true;
+  confirmedNumberConversionEnabled.value = editorSettings.value?.number_conversion_enabled ?? true;
+});
 </script>
 
 <template>
   <div class="settings-editor">
     <EditorFontSettings />
+
+    <section class="settings-section">
+      <div class="editor-row">
+        <label class="ui-choice-label setting-label checkbox-label">
+          <input
+            v-model="numberConversionEnabled"
+            type="checkbox"
+            class="ui-choice-input"
+            :disabled="numberConversionPending"
+            @change="saveNumberConversionEnabled"
+          />
+          <span>{{ t('settings.editor.number_conversion') }}</span>
+        </label>
+        <span class="setting-hint ui-hint ui-hint--choice">
+          {{ t('settings.editor.number_conversion.hint') }}
+        </span>
+      </div>
+    </section>
 
     <section class="settings-section">
       <div class="card-header">

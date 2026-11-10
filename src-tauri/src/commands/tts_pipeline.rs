@@ -62,9 +62,14 @@ pub(crate) fn apply_replacements_with_preprocessor(
 pub(crate) fn preprocess_text_with_preprocessor(
     text: &str,
     preprocessor: Option<&crate::preprocessor::TextPreprocessor>,
+    convert_numbers: bool,
 ) -> String {
     let text = apply_replacements_with_preprocessor(text, preprocessor);
-    crate::preprocessor::process_numbers(&text)
+    if convert_numbers {
+        crate::preprocessor::process_numbers(&text)
+    } else {
+        text
+    }
 }
 
 pub(crate) async fn ai_correct_text_with_settings(
@@ -417,13 +422,25 @@ fn resolve_delivery_text(snapshot: &Snapshot, original_text: &str) -> Result<Str
     ))
 }
 
+/// Resolve both representations used by one submission: the external delivery
+/// text (replacements only) and the internal TTS text (replacements plus the
+/// optional built-in number conversion). Number conversion is captured on the
+/// snapshot so queued jobs keep the behavior chosen at submit time.
+fn resolve_tts_text(snapshot: &Snapshot, original_text: &str) -> Result<(String, String), String> {
+    let delivery_text = resolve_delivery_text(snapshot, original_text)?;
+    let tts_text = if snapshot.number_conversion_enabled {
+        crate::preprocessor::process_numbers(&delivery_text)
+    } else {
+        delivery_text.clone()
+    };
+    Ok((delivery_text, tts_text))
+}
+
 pub async fn prepare_speech(
     snapshot: &Snapshot,
     original_text: &str,
 ) -> Result<PreparedSpeech, String> {
-    let delivery_text = resolve_delivery_text(snapshot, original_text)?;
-
-    let text = crate::preprocessor::process_numbers(&delivery_text);
+    let (delivery_text, text) = resolve_tts_text(snapshot, original_text)?;
 
     let text = match ai_correct_text_with_settings(
         &text,
@@ -503,7 +520,12 @@ pub async fn prepare_speech(
 
 /// 1. Этап предварительной подготовки текста (препроцессор + замена чисел)
 pub fn preprocess_text(state: &AppState, text: &str) -> String {
-    preprocess_text_with_preprocessor(text, state.editor.get_preprocessor().as_ref())
+    let convert_numbers = state.settings_cache.read().editor.number_conversion_enabled;
+    preprocess_text_with_preprocessor(
+        text,
+        state.editor.get_preprocessor().as_ref(),
+        convert_numbers,
+    )
 }
 
 /// 2. Этап AI-исправления грамматики (с безопасным fallback)
@@ -747,6 +769,7 @@ mod tests {
             source: SubmissionSource::Editor,
             delivery: DeliveryPolicy::editor(skip_twitch, skip_webview),
             ai_enabled,
+            number_conversion_enabled: true,
             audio_effects: AudioEffectsSettings::default(),
             dsp: DspSettings::default(),
             audio: AudioSettings::default(),
@@ -881,7 +904,7 @@ mod tests {
         );
         assert!(!delivery.contains("пять"));
 
-        let tts = preprocess_text_with_preprocessor(input, Some(&preprocessor));
+        let tts = preprocess_text_with_preprocessor(input, Some(&preprocessor), true);
         assert_eq!(tts, "У меня пять яблок");
         assert!(!tts.contains('5'));
     }
@@ -896,8 +919,61 @@ mod tests {
         let delivery = resolve_delivery_text(&snapshot, r"\count яблок").unwrap();
         assert_eq!(delivery, "5 яблок");
 
-        let tts = preprocess_text_with_preprocessor(r"\count яблок", Some(&preprocessor));
+        let tts = preprocess_text_with_preprocessor(r"\count яблок", Some(&preprocessor), true);
         assert_eq!(tts, "пять яблок");
+    }
+
+    /// Snapshot-driven TTS text converts numbers or preserves digit-producing
+    /// replacements according to the captured setting.
+    #[test]
+    fn tts_text_number_conversion_follows_snapshot() {
+        let preprocessor = make_preprocessor(&[("count", "5")], &[]);
+        let mut snapshot = snapshot_with_preprocessor(false, false, false, preprocessor);
+
+        let (delivery, tts) = resolve_tts_text(&snapshot, r"\count яблок").unwrap();
+        assert_eq!(delivery, "5 яблок");
+        assert_eq!(tts, "пять яблок");
+
+        snapshot.number_conversion_enabled = false;
+        let (delivery, tts) = resolve_tts_text(&snapshot, r"\count яблок").unwrap();
+        assert_eq!(delivery, "5 яблок");
+        assert_eq!(
+            tts, "5 яблок",
+            "disabled conversion must keep digits from replacements"
+        );
+    }
+
+    /// A queued snapshot keeps its captured conversion choice even if the
+    /// source snapshot's setting changes afterwards.
+    #[test]
+    fn tts_text_uses_captured_number_conversion_choice() {
+        let preprocessor = make_preprocessor(&[("count", "5")], &[]);
+        let mut snapshot = snapshot_with_preprocessor(false, false, false, preprocessor);
+        snapshot.number_conversion_enabled = false;
+        let queued = snapshot.clone();
+
+        snapshot.number_conversion_enabled = true;
+
+        let (_, tts) = resolve_tts_text(&queued, r"\count яблок").unwrap();
+        assert_eq!(tts, "5 яблок");
+        let (_, tts) = resolve_tts_text(&snapshot, r"\count яблок").unwrap();
+        assert_eq!(tts, "пять яблок");
+    }
+
+    /// The legacy preprocessing helper applies replacements in both modes but
+    /// converts digits only when the captured setting allows it.
+    #[test]
+    fn legacy_preprocess_respects_number_conversion_setting() {
+        let preprocessor = make_preprocessor(&[("count", "5")], &[]);
+
+        assert_eq!(
+            preprocess_text_with_preprocessor(r"\count яблок", Some(&preprocessor), true),
+            "пять яблок"
+        );
+        assert_eq!(
+            preprocess_text_with_preprocessor(r"\count яблок", Some(&preprocessor), false),
+            "5 яблок"
+        );
     }
 
     /// Delivery text is built before AI correction and stress markup: an
@@ -1065,6 +1141,7 @@ mod tests {
             source: SubmissionSource::Editor,
             delivery: DeliveryPolicy::editor(false, false),
             ai_enabled: false,
+            number_conversion_enabled: true,
             audio_effects: AudioEffectsSettings::default(),
             dsp: DspSettings::default(),
             audio: AudioSettings::default(),
@@ -1083,6 +1160,7 @@ mod tests {
             source: SubmissionSource::Editor,
             delivery: DeliveryPolicy::editor(false, false),
             ai_enabled: false,
+            number_conversion_enabled: true,
             audio_effects: AudioEffectsSettings::default(),
             dsp: DspSettings::default(),
             audio: AudioSettings::default(),

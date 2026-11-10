@@ -1042,6 +1042,10 @@ pub type SoundBindingDto = SoundBinding;
 /// (same as HomographAccentorSettings, already has Serialize/Deserialize)
 pub type HomographAccentorSettingsDto = crate::config::HomographAccentorSettings;
 
+fn default_true_dto() -> bool {
+    true
+}
+
 /// Editor settings DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorSettingsDto {
@@ -1049,6 +1053,8 @@ pub struct EditorSettingsDto {
     pub ai: bool,
     pub ai_completion: bool,
     pub autocomplete_enabled: bool,
+    #[serde(default = "default_true_dto")]
+    pub number_conversion_enabled: bool,
     pub spellcheck_enabled: bool,
     pub spellcheck_source: SpellSourceDto,
     pub editor_height: u32,
@@ -1669,6 +1675,7 @@ impl AppSettingsDto {
                 ai: params.config.editor.ai,
                 ai_completion: params.config.editor.ai_completion,
                 autocomplete_enabled: params.config.editor.autocomplete_enabled,
+                number_conversion_enabled: params.config.editor.number_conversion_enabled,
                 spellcheck_enabled: params.config.editor.spellcheck_enabled,
                 spellcheck_source: match params.config.editor.spellcheck_source {
                     crate::config::SpellSource::Online => SpellSourceDto::Online,
@@ -1910,6 +1917,7 @@ mod tests {
             ai: true,
             ai_completion: false,
             autocomplete_enabled: true,
+            number_conversion_enabled: false,
             spellcheck_enabled: true,
             spellcheck_source: SpellSourceDto::Online,
             editor_height: 300,
@@ -2318,6 +2326,7 @@ mod tests {
             ai: false,
             ai_completion: false,
             autocomplete_enabled: false,
+            number_conversion_enabled: true,
             spellcheck_enabled: false,
             spellcheck_source: SpellSourceDto::Offline,
             editor_height: 200,
