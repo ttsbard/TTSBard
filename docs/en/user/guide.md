@@ -124,7 +124,9 @@ Built-in [spell checking](editor.md#spellchecking), [number conversion](editor.m
 and [RUAccent](ruaccent.md) currently support Russian only. Number conversion
 runs before AI correction and synthesis, even with an English interface or
 voice: for example, `123` becomes `сто двадцать три`. To preserve English
-pronunciation, type numbers as English words.
+pronunciation, type numbers as English words or turn off **Settings → Editor →
+Convert numbers to words** to pass digits to the speech engine. Conversion is
+on by default. AI correction may change numbers independently of this setting.
 
 The default [AI correction prompt](ai-text.md) also targets Russian; replace it
 with instructions for your language before using correction. The separate

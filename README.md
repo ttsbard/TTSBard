@@ -68,8 +68,10 @@ See the [product overview](docs/en/ttsbard-overview.md),
   and pronunciation with Silero and Piper; it does not check spelling.
   The default AI correction prompt also targets Russian; replace it for another
   language. **AI: grammar** uses its own fixed Russian instruction. Digits become
-  Russian words before AI/TTS, even with an English voice; type numbers as English
-  words when needed. See [language limitations](docs/en/user/guide.md#language-support).
+  Russian words before AI/TTS, even with an English voice, when number conversion
+  is enabled. Turn it off under **Settings → Editor → Convert numbers to words**
+  to pass digits to the speech engine. AI correction may still convert numbers.
+  See [language limitations](docs/en/user/guide.md#language-support).
   Available speech languages
   depend on the selected TTS provider and voice; changing the interface language
   does not add support for other languages to these text tools.
@@ -189,8 +191,10 @@ TTSBard — Windows-приложение для общения с помощью
   и Piper; орфографию он не проверяет. Стандартный промт AI-коррекции также
   рассчитан на русский; для другого языка замените его. **AI: грамматика**
   использует свою фиксированную русскую инструкцию. Цифры преобразуются в
-  русские слова до AI/TTS даже при английском голосе; при необходимости вводите
-  числа английскими словами. См. [языковые ограничения](docs/ru/user/guide.md#поддержка-языков).
+  русские слова до AI/TTS даже при английском голосе, если включено преобразование
+  чисел. Отключите **Настройки → Редактор → Преобразовывать числа в слова**, чтобы
+  передавать цифры движку речи. AI-коррекция всё ещё может преобразовывать числа.
+  См. [языковые ограничения](docs/ru/user/guide.md#поддержка-языков).
   Языки озвучивания зависят от выбранного TTS-провайдера
   и голоса; смена языка интерфейса не добавляет поддержку других языков
   в эти инструменты обработки текста.

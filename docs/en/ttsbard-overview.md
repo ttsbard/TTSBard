@@ -76,7 +76,8 @@ See [effects](user/audio-effects.md), [DSP settings](user/dsp-settings.md),
 
 **Quick insert** expands short codes to phrases/names from your lists.
 See [quick insert](user/editor.md#quick-insert).
-**Number preparation** converts numbers to Russian words with agreement;
+**Number preparation** converts numbers to Russian words with agreement.
+It is on by default; turn it off in Editor settings to pass digits to the speech engine;
 see [number conversion](user/editor.md#number-conversion).
 **RUAccent** locally places Russian stress and distinguishes homographs
 (for example castle/lock: `за́мок`/`замо́к`). It supports Silero/Piper,
