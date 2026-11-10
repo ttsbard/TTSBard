@@ -7,8 +7,10 @@ use crate::tts::TtsProvider;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub const MAX_ACTIVE_CAPACITY: usize = 50;
@@ -104,6 +106,10 @@ pub(crate) struct WorkItem {
     pub job_id: Uuid,
     pub original_text: String,
     pub snapshot: Snapshot,
+    /// Cancelled when the claimed job is cancelled while its preparation is in
+    /// flight. A fresh token is installed for every attempt (retry/restore), so
+    /// an obsolete token can never affect a newer attempt.
+    pub cancel_token: CancellationToken,
 }
 
 impl std::fmt::Debug for WorkItem {
@@ -113,6 +119,42 @@ impl std::fmt::Debug for WorkItem {
             .field("original_text", &self.original_text)
             .field("snapshot", &"<opaque>")
             .finish()
+    }
+}
+
+// ── Worker preparation boundary ──
+
+/// Result of waiting for a claimed job's preparation.
+#[derive(Debug)]
+pub(crate) enum PreparationWait<T> {
+    /// Preparation finished; the output may still need a queue-status gate.
+    Completed(T),
+    /// The current job was cancelled by the user; the preparation future was
+    /// dropped and its output must not be used.
+    Cancelled,
+    /// Global shutdown fired; existing shutdown handling applies.
+    Shutdown,
+}
+
+/// Await preparation while observing per-job cancellation and global shutdown.
+///
+/// On either cancellation branch the preparation future is dropped, so the
+/// provider future stops at its next await instead of running to its own
+/// timeout. `biased` keeps shutdown ahead of cancellation so shutdown semantics
+/// are unchanged when both signals fire together.
+pub(crate) async fn await_preparation<F, T>(
+    preparation: F,
+    cancellation: &CancellationToken,
+    shutdown: &CancellationToken,
+) -> PreparationWait<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => PreparationWait::Shutdown,
+        _ = cancellation.cancelled() => PreparationWait::Cancelled,
+        output = preparation => PreparationWait::Completed(output),
     }
 }
 
@@ -165,6 +207,7 @@ pub struct SpeechJob {
     pub source: SubmissionSource,
     pub snapshot: Snapshot,
     pub handoff_guard: Arc<parking_lot::Mutex<()>>,
+    cancel_token: CancellationToken,
 }
 
 impl SpeechJob {
@@ -183,6 +226,7 @@ impl SpeechJob {
             source,
             snapshot,
             handoff_guard: Arc::new(parking_lot::Mutex::new(())),
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -212,6 +256,7 @@ impl SpeechJob {
             source,
             snapshot,
             handoff_guard: Arc::new(parking_lot::Mutex::new(())),
+            cancel_token: CancellationToken::new(),
         }
     }
 }
@@ -393,6 +438,7 @@ impl SpeechQueue {
             job_id: job.job_id,
             original_text: job.original_text.clone(),
             snapshot: job.snapshot.clone(),
+            cancel_token: job.cancel_token.clone(),
         }))
     }
 
@@ -497,6 +543,7 @@ impl SpeechQueue {
         job.error = None;
         job.spoken_text = None;
         job.attempt += 1;
+        job.cancel_token = CancellationToken::new();
         bump_activity(job);
         Ok(())
     }
@@ -539,6 +586,7 @@ impl SpeechQueue {
                 to: "Cancelled",
             });
         }
+        job.cancel_token.cancel();
         job.status = JobStatus::Cancelled;
         job.error = None;
         self.enforce_terminal_retention();
@@ -590,6 +638,7 @@ impl SpeechQueue {
         job.status = JobStatus::Queued;
         job.spoken_text = None;
         job.handoff_guard = Arc::new(parking_lot::Mutex::new(()));
+        job.cancel_token = CancellationToken::new();
         bump_activity(job);
         Ok(())
     }
@@ -675,6 +724,16 @@ mod tests {
 
     fn text_err(e: &QueueError) -> String {
         e.to_string()
+    }
+
+    /// Sets a flag when the future holding it is dropped, proving that an
+    /// obsolete preparation future stopped instead of running to completion.
+    struct DropSignal(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     // ── submission source / delivery policy ──
@@ -2708,6 +2767,305 @@ mod tests {
         let fake = Uuid::new_v4();
         let err = q.cancel_generating_job(fake).unwrap_err();
         assert!(text_err(&err).contains("not found"));
+    }
+
+    #[test]
+    fn cancel_generating_job_signals_the_claimed_cancellation_token() {
+        let mut q = SpeechQueue::new();
+        let id = q.submit("hello", snap()).unwrap();
+        let work = q.claim_next_generation().unwrap().expect("claim");
+        assert!(!work.cancel_token.is_cancelled());
+
+        q.cancel_generating_job(id).unwrap();
+
+        assert!(work.cancel_token.is_cancelled());
+        assert_eq!(q.get_status(id), Some(JobStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn worker_boundary_cancellation_drops_in_flight_preparation_and_starts_next_job() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let shutdown = CancellationToken::new();
+        let mut q = SpeechQueue::new();
+        let id1 = q.submit("first", snap()).unwrap();
+        let id2 = q.submit("second", snap()).unwrap();
+
+        let work = q.claim_next_generation().unwrap().expect("first claim");
+        assert_eq!(work.job_id, id1);
+        let cancellation = work.cancel_token.clone();
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_signal = DropSignal(dropped.clone());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Signals that it has been polled, then stays pending so the helper is
+        // provably awaiting it before the cancellation arrives.
+        let preparation = async move {
+            let _drop_signal = drop_signal;
+            let _ = started_tx.send(());
+            std::future::pending::<Result<(), String>>().await
+        };
+
+        // Drive the production helper as a task, exactly as the worker does.
+        let helper_cancellation = cancellation.clone();
+        let helper_shutdown = shutdown.clone();
+        let helper = tokio::spawn(async move {
+            await_preparation(preparation, &helper_cancellation, &helper_shutdown).await
+        });
+
+        started_rx
+            .await
+            .expect("preparation must start before cancelling");
+
+        // Cancel while the helper is parked on the pending preparation.
+        q.cancel_generating_job(id1).unwrap();
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_millis(500), helper)
+            .await
+            .expect("cancellation must release the worker while preparation is in flight")
+            .expect("helper task must not panic");
+        assert!(matches!(outcome, PreparationWait::Cancelled));
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the in-flight preparation future must be dropped"
+        );
+
+        let state = q.state();
+        let cancelled = &state.jobs[0];
+        assert_eq!(cancelled.job_id, id1);
+        assert_eq!(cancelled.status, JobStatus::Cancelled);
+        assert_eq!(cancelled.error, None);
+        assert_eq!(cancelled.spoken_text, None);
+
+        let next = q
+            .claim_next_generation()
+            .unwrap()
+            .expect("next queued job must start promptly");
+        assert_eq!(next.job_id, id2);
+        assert_eq!(next.original_text, "second");
+        assert!(!next.cancel_token.is_cancelled());
+
+        let next_prepared = Arc::new(AtomicBool::new(false));
+        let next_flag = next_prepared.clone();
+        let next_outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            await_preparation(
+                async move {
+                    next_flag.store(true, Ordering::SeqCst);
+                    Ok::<&str, String>("second-prepared")
+                },
+                &next.cancel_token,
+                &shutdown,
+            ),
+        )
+        .await
+        .expect("next preparation must complete promptly");
+        match next_outcome {
+            PreparationWait::Completed(result) => {
+                assert_eq!(
+                    result.expect("next preparation succeeds"),
+                    "second-prepared"
+                );
+            }
+            other => panic!("unexpected next outcome: {other:?}"),
+        }
+        assert!(
+            next_prepared.load(Ordering::SeqCst),
+            "the next job's preparation must actually run"
+        );
+        assert_eq!(q.get_status(id2), Some(JobStatus::Generating));
+    }
+
+    /// Cancellation that arrives before the helper is ever polled must also
+    /// produce the same bounded, side-effect-free outcome.
+    #[tokio::test]
+    async fn worker_boundary_pre_cancel_drops_preparation_and_starts_next_job() {
+        let shutdown = CancellationToken::new();
+        let mut q = SpeechQueue::new();
+        let id1 = q.submit("first", snap()).unwrap();
+        let id2 = q.submit("second", snap()).unwrap();
+
+        let work = q.claim_next_generation().unwrap().expect("first claim");
+        assert_eq!(work.job_id, id1);
+        let cancellation = work.cancel_token.clone();
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drop_signal = DropSignal(dropped.clone());
+        let pending = async move {
+            let _drop_signal = drop_signal;
+            std::future::pending::<Result<(), String>>().await
+        };
+
+        q.cancel_generating_job(id1).unwrap();
+
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            await_preparation(pending, &cancellation, &shutdown),
+        )
+        .await
+        .expect("cancellation must release the worker without waiting for provider work");
+
+        assert!(matches!(outcome, PreparationWait::Cancelled));
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "the pending preparation future must be dropped"
+        );
+
+        let state = q.state();
+        let cancelled = &state.jobs[0];
+        assert_eq!(cancelled.job_id, id1);
+        assert_eq!(cancelled.status, JobStatus::Cancelled);
+        assert_eq!(cancelled.error, None);
+        assert_eq!(cancelled.spoken_text, None);
+
+        let next = q
+            .claim_next_generation()
+            .unwrap()
+            .expect("next queued job must start promptly");
+        assert_eq!(next.job_id, id2);
+        assert_eq!(next.original_text, "second");
+        assert_eq!(q.get_status(id2), Some(JobStatus::Generating));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "worker must not wait for the cancelled provider timeout"
+        );
+    }
+
+    #[test]
+    fn cancelled_before_selection_is_never_claimed() {
+        let mut q = SpeechQueue::new();
+        let id1 = q.submit("first", snap()).unwrap();
+        let id2 = q.submit("second", snap()).unwrap();
+
+        q.cancel_job(id1).unwrap();
+
+        let next = q
+            .claim_next_generation()
+            .unwrap()
+            .expect("next queued job must be claimed");
+        assert_eq!(next.job_id, id2);
+        assert_eq!(q.get_status(id1), Some(JobStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn immediate_restore_cannot_resume_the_obsolete_preparation_attempt() {
+        let shutdown = CancellationToken::new();
+        let mut q = SpeechQueue::new();
+        let id = q.submit("restore-me", snap()).unwrap();
+
+        let work = q.claim_next_generation().unwrap().expect("claim");
+        let obsolete = work.cancel_token.clone();
+        q.cancel_generating_job(id).unwrap();
+        q.restore_cancelled_job(id).unwrap();
+        assert_eq!(q.get_status(id), Some(JobStatus::Queued));
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            await_preparation(
+                std::future::pending::<Result<(), String>>(),
+                &obsolete,
+                &shutdown,
+            ),
+        )
+        .await
+        .expect("the obsolete token must still observe the cancellation");
+        assert!(matches!(outcome, PreparationWait::Cancelled));
+        assert_eq!(
+            q.get_status(id),
+            Some(JobStatus::Queued),
+            "dropping the obsolete attempt must not mutate the restored job"
+        );
+
+        let restored = q
+            .claim_next_generation()
+            .unwrap()
+            .expect("restored job must be claimable");
+        assert_eq!(restored.job_id, id);
+        assert!(
+            !restored.cancel_token.is_cancelled(),
+            "restored attempt must use a fresh cancellation token"
+        );
+
+        obsolete.cancel();
+        assert!(!restored.cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn retry_uses_a_fresh_cancellation_token() {
+        let mut q = SpeechQueue::new();
+        let id = q.submit("retry-me", snap()).unwrap();
+
+        let first = q.claim_next_generation().unwrap().expect("first claim");
+        let first_token = first.cancel_token.clone();
+        q.fail_generation(id, "provider error".into()).unwrap();
+        q.retry_job(id).unwrap();
+
+        let second = q.claim_next_generation().unwrap().expect("retry claim");
+        assert_eq!(second.job_id, id);
+        assert!(!second.cancel_token.is_cancelled());
+
+        first_token.cancel();
+        assert!(
+            !second.cancel_token.is_cancelled(),
+            "an obsolete token must not cancel the retried attempt"
+        );
+        assert_eq!(q.get_status(id), Some(JobStatus::Generating));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_when_preparation_and_cancel_are_simultaneous() {
+        let shutdown = CancellationToken::new();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Ok::<&str, String>("ready")).unwrap();
+        let outcome = await_preparation(
+            async move { rx.await.expect("preparation result") },
+            &cancellation,
+            &shutdown,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, PreparationWait::Cancelled),
+            "a completed result must be discarded when the job is already cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_completes_normally_without_cancellation() {
+        let shutdown = CancellationToken::new();
+        let cancellation = CancellationToken::new();
+
+        let outcome = await_preparation(
+            async { Ok::<&str, String>("done") },
+            &cancellation,
+            &shutdown,
+        )
+        .await;
+
+        match outcome {
+            PreparationWait::Completed(result) => {
+                assert_eq!(result.expect("preparation succeeds"), "done");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_takes_priority_over_job_cancellation() {
+        let shutdown = CancellationToken::new();
+        let cancellation = CancellationToken::new();
+        shutdown.cancel();
+        cancellation.cancel();
+
+        let outcome =
+            await_preparation(std::future::pending::<()>(), &cancellation, &shutdown).await;
+
+        assert!(matches!(outcome, PreparationWait::Shutdown));
     }
 
     #[test]

@@ -1270,6 +1270,7 @@ async fn speech_worker(
     vrchat: Arc<crate::vrchat::VrchatService>,
 ) {
     use crate::commands::tts_pipeline;
+    use crate::speech_queue::PreparationWait;
 
     loop {
         let work_item = {
@@ -1313,23 +1314,34 @@ async fn speech_worker(
         let job_id = work_item.job_id;
         let snapshot = work_item.snapshot;
         let original_text = work_item.original_text;
+        let cancellation = work_item.cancel_token;
 
         let preparation = tts_pipeline::prepare_speech(&snapshot, &original_text);
-        let prepared = tokio::select! {
-            result = preparation => result,
-            _ = shutdown.cancelled() => {
-                let mut q = queue.lock();
-                let _ = q.fail_generation(
-                    job_id,
-                    "Speech preparation cancelled (shutdown)".to_string(),
-                );
-                let dto = q.state();
-                drop(q);
-                let _ = app_handle.emit("speech-queue-changed", dto);
-                info!("Speech worker exiting on shutdown (during preparation)");
-                return;
-            }
-        };
+        let prepared =
+            match crate::speech_queue::await_preparation(preparation, &cancellation, &shutdown)
+                .await
+            {
+                PreparationWait::Completed(result) => result,
+                PreparationWait::Cancelled => {
+                    info!(
+                        job_id = %job_id,
+                        "Speech preparation cancelled; dropping pending provider work"
+                    );
+                    continue;
+                }
+                PreparationWait::Shutdown => {
+                    let mut q = queue.lock();
+                    let _ = q.fail_generation(
+                        job_id,
+                        "Speech preparation cancelled (shutdown)".to_string(),
+                    );
+                    let dto = q.state();
+                    drop(q);
+                    let _ = app_handle.emit("speech-queue-changed", dto);
+                    info!("Speech worker exiting on shutdown (during preparation)");
+                    return;
+                }
+            };
 
         match prepared {
             Ok(prepared) => {
