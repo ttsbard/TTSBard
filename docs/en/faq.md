@@ -49,6 +49,22 @@ describe cross-privilege limits, not a confirmed diagnosis for that game.
 Read a failed phrase's notification, fix the cause and retry. One failed phrase
 does not cancel subsequent jobs.
 
+## VTube Studio's action test works, but typing does not activate the parameter
+
+Check the keyboard-icon button at the bottom of the editor. Hover over it:
+the **Send typing status (WebView, VTube Studio, VRChat)** tooltip should say
+**enabled**. Clicking the button toggles typing status for all three
+integrations. The choice persists between launches.
+
+With typing status disabled, you can still type, speak and send text to chat.
+The **Test action** button in the VTube Studio panel also continues to work,
+since it runs the action independently of this toggle.
+
+If you use mono mode, temporarily leave it to see the button. Enable typing
+status and type a few letters in the editor. If the parameter still does not
+respond, check the connection and INPUT-to-model-parameter mapping in the
+[VTube Studio guide](integrations/vtube-studio.md).
+
 ## THX Spatial Audio rings or distorts
 
 Stop current sound, select **Audio → Devices → Output format → 32-bit integer
