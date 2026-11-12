@@ -2198,6 +2198,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6306,10 +6312,12 @@ dependencies = [
 
 [[package]]
 name = "ruaccent_rs"
-version = "0.2.0"
-source = "git+https://github.com/alksef/ruaccent-rs.git?tag=v0.2.0#a6b9156556cdf8daacaa7859ff600d85cfa84787"
+version = "0.3.0"
+source = "git+https://github.com/alksef/ruaccent-rs.git?tag=v0.3.0#4dd4b2f49d2250ee17448484d040180e042f9cee"
 dependencies = [
  "flate2",
+ "fst",
+ "memmap2",
  "ort",
  "regex",
  "serde",

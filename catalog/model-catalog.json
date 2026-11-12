@@ -5,17 +5,17 @@
     {
       "id": "ruaccent-tiny",
       "category": "ruaccent",
-      "name": "RUAccent Tiny",
-      "version": "1.0",
+      "name": "RUAccent Tiny (Compact INT8 + FST)",
+      "version": "2.0",
       "source_url": "https://huggingface.co/ruaccent/accentuator",
       "license": "MIT",
       "available": true,
       "files": [
         {
-          "path": "ruaccent/dictionary/accents.json.gz",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
-          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
-          "size_bytes": 20954156
+          "path": "ruaccent/dictionary/accents.fst",
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/dictionary/accents.fst",
+          "sha256": "bc7639a0b9af18fc3010a8ef51bfec05b38e0c55c7948ade187632c4a46f37c6",
+          "size_bytes": 4753044
         },
         {
           "path": "ruaccent/dictionary/omographs.json.gz",
@@ -55,9 +55,9 @@
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
-          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
-          "size_bytes": 116473561
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "90a54b2c718792468a92631af80270361a48f10ce259fdfc3ff26f9f9c5079e0",
+          "size_bytes": 29263534
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
@@ -73,9 +73,9 @@
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
-          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
-          "size_bytes": 14332169
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "55e49507d66e342aac355396b771af35a6b19769b3234a498ca6d6a9b2041e4b",
+          "size_bytes": 3715292
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
@@ -108,16 +108,16 @@
       "id": "ruaccent-tiny2",
       "category": "ruaccent",
       "name": "RUAccent Tiny 2",
-      "version": "1.0",
+      "version": "2.0",
       "source_url": "https://huggingface.co/ruaccent/accentuator",
       "license": "MIT",
       "available": true,
       "files": [
         {
-          "path": "ruaccent/dictionary/accents.json.gz",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
-          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
-          "size_bytes": 20954156
+          "path": "ruaccent/dictionary/accents.fst",
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/dictionary/accents.fst",
+          "sha256": "bc7639a0b9af18fc3010a8ef51bfec05b38e0c55c7948ade187632c4a46f37c6",
+          "size_bytes": 4753044
         },
         {
           "path": "ruaccent/dictionary/omographs.json.gz",
@@ -157,9 +157,9 @@
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
-          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
-          "size_bytes": 116473561
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "90a54b2c718792468a92631af80270361a48f10ce259fdfc3ff26f9f9c5079e0",
+          "size_bytes": 29263534
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
@@ -175,9 +175,9 @@
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
-          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
-          "size_bytes": 14332169
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "55e49507d66e342aac355396b771af35a6b19769b3234a498ca6d6a9b2041e4b",
+          "size_bytes": 3715292
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
@@ -209,16 +209,16 @@
       "id": "ruaccent-tiny2.1",
       "category": "ruaccent",
       "name": "RUAccent Tiny 2.1",
-      "version": "1.0",
+      "version": "2.0",
       "source_url": "https://huggingface.co/ruaccent/accentuator",
       "license": "MIT",
       "available": true,
       "files": [
         {
-          "path": "ruaccent/dictionary/accents.json.gz",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
-          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
-          "size_bytes": 20954156
+          "path": "ruaccent/dictionary/accents.fst",
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/dictionary/accents.fst",
+          "sha256": "bc7639a0b9af18fc3010a8ef51bfec05b38e0c55c7948ade187632c4a46f37c6",
+          "size_bytes": 4753044
         },
         {
           "path": "ruaccent/dictionary/omographs.json.gz",
@@ -258,9 +258,9 @@
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
-          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
-          "size_bytes": 116473561
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "90a54b2c718792468a92631af80270361a48f10ce259fdfc3ff26f9f9c5079e0",
+          "size_bytes": 29263534
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
@@ -276,9 +276,9 @@
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
-          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
-          "size_bytes": 14332169
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "55e49507d66e342aac355396b771af35a6b19769b3234a498ca6d6a9b2041e4b",
+          "size_bytes": 3715292
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
@@ -310,16 +310,16 @@
       "id": "ruaccent-small-poetry",
       "category": "ruaccent",
       "name": "RUAccent Small Poetry",
-      "version": "1.0",
+      "version": "2.0",
       "source_url": "https://huggingface.co/ruaccent/accentuator",
       "license": "MIT",
       "available": true,
       "files": [
         {
-          "path": "ruaccent/dictionary/accents.json.gz",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
-          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
-          "size_bytes": 20954156
+          "path": "ruaccent/dictionary/accents.fst",
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/dictionary/accents.fst",
+          "sha256": "bc7639a0b9af18fc3010a8ef51bfec05b38e0c55c7948ade187632c4a46f37c6",
+          "size_bytes": 4753044
         },
         {
           "path": "ruaccent/dictionary/omographs.json.gz",
@@ -359,9 +359,9 @@
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
-          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
-          "size_bytes": 116473561
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "90a54b2c718792468a92631af80270361a48f10ce259fdfc3ff26f9f9c5079e0",
+          "size_bytes": 29263534
         },
         {
           "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
@@ -377,9 +377,9 @@
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
-          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
-          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
-          "size_bytes": 14332169
+          "url": "https://huggingface.co/TTSBard/ruaccent-tiny-compact/resolve/d15ef3599d2e257bf97ba0949b64a1b1c18506a7/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "55e49507d66e342aac355396b771af35a6b19769b3234a498ca6d6a9b2041e4b",
+          "size_bytes": 3715292
         },
         {
           "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",

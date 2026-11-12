@@ -27,7 +27,6 @@ pub struct RuAccentPackDescriptor {
 
 pub(crate) const PRIMARY_MODELS_SUBDIR: &str = "models/ruaccent";
 const UPSTREAM_COMMON_FILES: &[&str] = &[
-    "dictionary/accents.json.gz",
     "dictionary/omographs.json.gz",
     "dictionary/yo_words.json.gz",
     "dictionary/yo_homographs.json.gz",
@@ -73,6 +72,16 @@ pub fn discover_ruaccent_packs(search_roots: &[PathBuf]) -> Vec<RuAccentPackDesc
 /// filesystem failure is diagnosable instead of reading as "no models".
 fn read_upstream_models(pack_root: &Path) -> Vec<RuAccentPackDescriptor> {
     if !pack_root.is_dir() {
+        return Vec::new();
+    }
+    let has_accents = pack_root.join("dictionary/accents.fst").is_file()
+        || pack_root.join("dictionary/accents.json.gz").is_file();
+    if !has_accents {
+        tracing::warn!(
+            root = %crate::secret_log::safe_path_for_log(pack_root),
+            missing = "dictionary/accents.fst or dictionary/accents.json.gz",
+            "RUAccent upstream root incomplete; ignoring"
+        );
         return Vec::new();
     }
     if let Some(missing) = UPSTREAM_COMMON_FILES
@@ -149,6 +158,9 @@ pub(crate) mod test_util {
     /// complete omograph variants. Returns the pack root (`models/ruaccent`).
     pub(crate) fn write_upstream_pack(root: &Path, model_ids: &[&str]) -> PathBuf {
         let pack = upstream_pack_root(root);
+        let accents = pack.join("dictionary/accents.json.gz");
+        std::fs::create_dir_all(accents.parent().unwrap()).unwrap();
+        std::fs::write(accents, b"data").unwrap();
         for path in UPSTREAM_COMMON_FILES {
             let file = pack.join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -204,6 +216,20 @@ mod tests {
         assert_eq!(d.pack_root, pack);
         assert_eq!(d.omograph_model_id, "ruaccent-v1");
         assert_eq!(d.runtime_capability, RuntimeCapability::NativeTiny);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn fst_accent_storage_upstream_root_is_discovered() {
+        let root = tu::unique_test_root("fst-accents");
+        let pack = tu::write_upstream_pack(&root, &["tiny"]);
+        std::fs::remove_file(pack.join("dictionary/accents.json.gz")).unwrap();
+        std::fs::write(pack.join("dictionary/accents.fst"), b"fst-data").unwrap();
+
+        let descriptors = discover_ruaccent_packs(std::slice::from_ref(&root));
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].id, "ruaccent.upstream.tiny");
 
         std::fs::remove_dir_all(root).ok();
     }
