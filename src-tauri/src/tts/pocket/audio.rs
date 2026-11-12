@@ -179,7 +179,8 @@ fn active_speech_rms(samples: &[f32], overall: f32) -> Option<f32> {
     let threshold = threshold as f64;
     let mut energy = 0.0f64;
     let mut frames = 0usize;
-    for frame in samples.chunks_exact(REFERENCE_ANALYSIS_FRAME) {
+    let (analysis_frames, _) = samples.as_chunks::<REFERENCE_ANALYSIS_FRAME>();
+    for frame in analysis_frames {
         let frame_energy = frame
             .iter()
             .map(|sample| (*sample as f64) * (*sample as f64))
