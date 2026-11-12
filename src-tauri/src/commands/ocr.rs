@@ -768,6 +768,12 @@ async fn disable_ocr_after_failed_start(app_handle: &AppHandle, state: &AppState
 /// Start the OCR runtime against the current hotkey binding (shared seam used
 /// by both the save command and startup boot-apply).
 pub(crate) async fn start_ocr_runtime(app_handle: &AppHandle, state: &AppState, hotkey: &Hotkey) {
+    // A disabled capture hotkey must never be registered; the caller either
+    // skips OCR entirely (boot) or keeps the runtime untouched (settings save).
+    if !hotkey.enabled {
+        tracing::info!("OCR runtime start skipped: ocr_capture hotkey is disabled");
+        return;
+    }
     let service = &state.ocr;
     let emit = |status: &OcrStatus| emit_ocr_status(app_handle, status);
     let register = |hotkey: &Hotkey| register_ocr_capture(app_handle, state, hotkey);
@@ -815,6 +821,14 @@ pub(crate) async fn stop_ocr_runtime_for_shutdown(app_handle: &AppHandle, state:
     service.stop_for_shutdown(emit, unregister).await;
 }
 
+/// Whether a save that turns OCR on must be rejected because the capture
+/// hotkey is switched off. Only an actual `false -> true` enable attempt is
+/// blocked; OCR already enabled with a disabled hotkey may still save unrelated
+/// settings (the Hotkeys panel warned that capture is unavailable).
+fn ocr_enable_blocked(requested_enabled: bool, was_enabled: bool, hotkey_enabled: bool) -> bool {
+    requested_enabled && !was_enabled && !hotkey_enabled
+}
+
 /// Re-register the OCR capture shortcut for a changed binding while `Ready`.
 ///
 /// Shared rebind seam used by the hotkey save/reset commands. The OCR service
@@ -832,6 +846,31 @@ pub(crate) async fn rebind_ocr_capture_hotkey(
     service
         .reregister_hotkey(hotkey, emit, register, unregister)
         .await;
+}
+
+/// Release the OCR capture shortcut while keeping the OCR runtime enabled.
+///
+/// Used by the per-hotkey enable command when `ocr_capture` is switched off.
+pub(crate) async fn unregister_ocr_capture_while_running(app_handle: &AppHandle, state: &AppState) {
+    let service = &state.ocr;
+    let unregister = |hotkey: &Hotkey| unregister_ocr_capture(app_handle, hotkey);
+    service.unregister_hotkey(unregister).await;
+}
+
+/// Register the OCR capture shortcut again while the OCR runtime is enabled.
+///
+/// Used by the per-hotkey enable command when `ocr_capture` is switched back
+/// on. Registration failures are returned so the command can keep the switch
+/// off instead of persisting an enabled hotkey that never registers.
+pub(crate) async fn register_ocr_capture_while_running(
+    app_handle: &AppHandle,
+    state: &AppState,
+    hotkey: &Hotkey,
+) -> Result<(), String> {
+    let service = &state.ocr;
+    let register = |hotkey: &Hotkey| register_ocr_capture(app_handle, state, hotkey);
+    let unregister = |hotkey: &Hotkey| unregister_ocr_capture(app_handle, hotkey);
+    service.register_hotkey(hotkey, register, unregister).await
 }
 
 #[tauri::command]
@@ -854,12 +893,6 @@ pub async fn save_ocr_settings(
         .try_state::<SettingsManager>()
         .ok_or_else(|| "SettingsManager not available".to_string())?;
 
-    let settings_for_persist = settings.clone();
-    super::persist_blocking(settings_manager.inner(), move |mgr| {
-        mgr.set_ocr_settings(settings_for_persist)
-    })
-    .await?;
-
     let service = state.ocr.clone();
     let old_settings = service.settings.read().await.clone();
     let old_hotkey = service.registered_hotkey();
@@ -873,6 +906,21 @@ pub async fn save_ocr_settings(
         .hotkeys
         .ocr_capture;
 
+    // Turning OCR on while its capture hotkey is switched off would enable a
+    // feature that can never be triggered. Refuse before persisting so the
+    // checkbox stays unticked and OcrPanel shows the error.
+    if ocr_enable_blocked(settings.enabled, old_settings.enabled, new_hotkey.enabled) {
+        return Err(
+            "Нельзя включить OCR: горячая клавиша «OCR: захват области» выключена".to_string(),
+        );
+    }
+
+    let settings_for_persist = settings.clone();
+    super::persist_blocking(settings_manager.inner(), move |mgr| {
+        mgr.set_ocr_settings(settings_for_persist)
+    })
+    .await?;
+
     {
         let mut snapshot = service.settings.write().await;
         snapshot.enabled = settings.enabled;
@@ -880,13 +928,21 @@ pub async fn save_ocr_settings(
         snapshot.capture_target = settings.capture_target.clone();
     }
 
-    let decision = decide_transition(
-        &old_settings,
-        &settings,
-        old_hotkey.as_ref(),
-        Some(&new_hotkey),
-        &service.status(),
-    );
+    // With the capture hotkey switched off OCR may stay enabled, but no
+    // start/restart may silently register that disabled combination. Such
+    // saves only update the persisted desired state; re-enabling the hotkey
+    // later brings the shortcut (and a missing runtime) back.
+    let decision = if settings.enabled && !new_hotkey.enabled {
+        OcrTransition::Noop
+    } else {
+        decide_transition(
+            &old_settings,
+            &settings,
+            old_hotkey.as_ref(),
+            Some(&new_hotkey),
+            &service.status(),
+        )
+    };
 
     match decision {
         OcrTransition::Noop => {}
@@ -1223,5 +1279,17 @@ mod tests {
         assert_eq!(after.ocr.model_id.as_deref(), Some("com.example.ocr"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enable_is_blocked_only_on_false_to_true_with_disabled_hotkey() {
+        assert!(super::ocr_enable_blocked(true, false, false));
+        // OCR already enabled with the hotkey off: unrelated saves still work.
+        assert!(!super::ocr_enable_blocked(true, true, false));
+        // Hotkey enabled: the transition is allowed.
+        assert!(!super::ocr_enable_blocked(true, false, true));
+        // Turning OCR off is always allowed.
+        assert!(!super::ocr_enable_blocked(false, true, false));
+        assert!(!super::ocr_enable_blocked(false, false, false));
     }
 }

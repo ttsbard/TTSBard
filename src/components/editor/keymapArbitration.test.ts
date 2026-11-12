@@ -111,6 +111,12 @@ describe('editor hotkey matching', () => {
     expect(matchesEditorHotkey({ modifiers: [], key: '' }, event({ code: 'KeyE' }))).toBe(false)
   })
 
+  it('does not match when the binding is switched off', () => {
+    expect(matchesEditorHotkey({ modifiers: ['ctrl'], key: 'E', enabled: false }, event({ code: 'KeyE', ctrlKey: true }))).toBe(false)
+    expect(matchesEditorHotkey({ modifiers: ['ctrl'], key: 'E', enabled: true }, event({ code: 'KeyE', ctrlKey: true }))).toBe(true)
+    expect(matchesEditorHotkey({ modifiers: ['ctrl'], key: 'E' }, event({ code: 'KeyE', ctrlKey: true }))).toBe(true)
+  })
+
   it('matches Ctrl+R for cycle_route default', () => {
     const ctrlR: HotkeyDto = { modifiers: ['ctrl'], key: 'R' }
     expect(matchesEditorHotkey(ctrlR, event({ code: 'KeyR', ctrlKey: true }))).toBe(true)

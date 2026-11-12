@@ -202,12 +202,12 @@ const soundPanelAction = computed(() => soundpanelVisible.value ? t('shell.sound
 const playbackAction = computed(() => playbackVisible.value ? t('shell.playback.hide') : t('shell.playback.show'))
 
 const soundPanelTitle = computed(() => {
-  const hk = formatHotkeyDisplay(soundPanelHotkey.value)
+  const hk = soundPanelHotkey.value?.enabled === false ? '' : formatHotkeyDisplay(soundPanelHotkey.value)
   return hk ? `${soundPanelAction.value} (${hk})` : soundPanelAction.value
 })
 
 const playbackTitle = computed(() => {
-  const hk = formatHotkeyDisplay(playbackHotkey.value)
+  const hk = playbackHotkey.value?.enabled === false ? '' : formatHotkeyDisplay(playbackHotkey.value)
   return hk ? `${playbackAction.value} (${hk})` : playbackAction.value
 })
 
@@ -402,7 +402,7 @@ function modifiersMatch(event: KeyboardEvent, hotkeyModifiers: string[]): boolea
 
 function handleReturnFocusKeydown(event: KeyboardEvent) {
   const hotkey = appSettings.settings.value?.hotkeys?.return_previous_window
-  if (!hotkey || !hotkey.key) return
+  if (!hotkey || !hotkey.key || hotkey.enabled === false) return
 
   const expectedCode = keyToCode(hotkey.key)
   if (event.code === expectedCode && modifiersMatch(event, hotkey.modifiers)) {
@@ -415,7 +415,7 @@ function handleReturnFocusKeydown(event: KeyboardEvent) {
 // Handled on the frontend like return_previous_window — no global registration.
 function handleToggleMinimalKeydown(event: KeyboardEvent) {
   const hotkey = appSettings.settings.value?.hotkeys?.toggle_minimal_mode
-  if (!hotkey || !hotkey.key) return
+  if (!hotkey || !hotkey.key || hotkey.enabled === false) return
 
   const expectedCode = keyToCode(hotkey.key)
   if (event.code === expectedCode && modifiersMatch(event, hotkey.modifiers)) {

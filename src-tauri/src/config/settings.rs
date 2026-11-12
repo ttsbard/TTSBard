@@ -1498,24 +1498,7 @@ pub fn normalize_typing_idle_timeout_ms(ms: u32) -> u32 {
 }
 
 fn editor_action_label(action_id: &str) -> &str {
-    match action_id {
-        "edit_word" => "редактирования слова",
-        "submit_continue" => "отправки/продолжения",
-        "submit_keep_text" => "отправки с сохранением текста",
-        "submit_keep_focus" => "отправки с сохранением текста и без смены фокуса",
-        "next_spelling_error" => "следующей ошибки",
-        "previous_spelling_error" => "предыдущей ошибки",
-        "next_tab" => "следующей вкладки",
-        "previous_tab" => "предыдущей вкладки",
-        "cycle_route" => "смены маршрута",
-        "toggle_typing" => "переключения передачи набора текста",
-        "cycle_quick_mode" => "смены режима быстрого редактора",
-        "toggle_history" => "показа/скрытия истории",
-        "accent_homographs" => "расстановки ударений",
-        "approve_next_incoming" => "подтверждения отправки входящего",
-        "edit_next_incoming" => "редактирования входящего",
-        _ => action_id,
-    }
+    super::hotkeys::EditorHotkeySettings::action_label(action_id)
 }
 
 impl Default for EditorSettings {
@@ -3301,18 +3284,40 @@ impl SettingsManager {
     /// * `hotkey` - The new hotkey configuration
     pub fn set_hotkey(&self, name: &str, hotkey: &super::hotkeys::Hotkey) -> Result<()> {
         let mut settings = self.load()?;
-        match name {
-            "main_window" => settings.hotkeys.main_window = hotkey.clone(),
-            "sound_panel" => settings.hotkeys.sound_panel = hotkey.clone(),
-            "playback_pause" => settings.hotkeys.playback_pause = hotkey.clone(),
-            "playback_stop" => settings.hotkeys.playback_stop = hotkey.clone(),
-            "playback_repeat" => settings.hotkeys.playback_repeat = hotkey.clone(),
-            "playback_control_window" => settings.hotkeys.playback_control_window = hotkey.clone(),
-            "return_previous_window" => settings.hotkeys.return_previous_window = hotkey.clone(),
-            "toggle_minimal_mode" => settings.hotkeys.toggle_minimal_mode = hotkey.clone(),
-            "ocr_capture" => settings.hotkeys.ocr_capture = hotkey.clone(),
-            _ => return Err(anyhow::anyhow!("Invalid hotkey name: {}", name)),
+        let field = settings
+            .hotkeys
+            .get_global_by_name_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
+        *field = hotkey.clone();
+        self.save(&settings)
+    }
+
+    /// Flip the per-hotkey `enabled` switch without touching the stored
+    /// combination. Conflict validation for a `false -> true` transition is the
+    /// command layer's responsibility.
+    pub fn set_hotkey_enabled_flag(&self, name: &str, enabled: bool) -> Result<()> {
+        let mut settings = self.load()?;
+        let field = settings
+            .hotkeys
+            .get_global_by_name_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
+        field.enabled = enabled;
+        self.save(&settings)
+    }
+
+    /// Flip the per-editor-hotkey `enabled` switch without touching the stored
+    /// combination.
+    pub fn set_editor_hotkey_enabled_flag(&self, action_id: &str, enabled: bool) -> Result<()> {
+        if !super::hotkeys::EditorHotkeySettings::is_valid_action_id(action_id) {
+            return Err(anyhow::anyhow!("Invalid editor action: {}", action_id));
         }
+        let mut settings = self.load()?;
+        let field = settings
+            .hotkeys
+            .editor
+            .get_mut_by_id(action_id)
+            .ok_or_else(|| anyhow::anyhow!("Invalid editor action: {}", action_id))?;
+        field.enabled = enabled;
         self.save(&settings)
     }
 
@@ -3363,12 +3368,15 @@ impl SettingsManager {
     }
 
     /// Reset an editor-scoped hotkey to its canonical default.
+    ///
+    /// The per-hotkey `enabled` switch is preserved: resetting a disabled
+    /// hotkey restores its default combination but leaves it switched off.
     pub fn reset_editor_hotkey(&self, action_id: &str) -> Result<super::hotkeys::Hotkey> {
         use super::hotkeys::Hotkey;
         if !super::hotkeys::EditorHotkeySettings::is_valid_action_id(action_id) {
             return Err(anyhow::anyhow!("Invalid editor action: {}", action_id));
         }
-        let default = match action_id {
+        let mut default = match action_id {
             "edit_word" => Hotkey::default_edit_word(),
             "submit_continue" => Hotkey::default_submit_continue(),
             "submit_keep_text" => Hotkey::default_submit_keep_text(),
@@ -3386,16 +3394,22 @@ impl SettingsManager {
             "edit_next_incoming" => Hotkey::default_edit_next_incoming(),
             _ => return Err(anyhow::anyhow!("Invalid editor action: {}", action_id)),
         };
+        if let Some(current) = self.load()?.hotkeys.editor.get_by_id(action_id) {
+            default.enabled = current.enabled;
+        }
         self.set_editor_hotkey(action_id, &default)?;
         Ok(default)
     }
 
-    /// Reset a hotkey to its default value
+    /// Reset a hotkey to its default value.
+    ///
+    /// The per-hotkey `enabled` switch is preserved: resetting a disabled
+    /// hotkey restores its default combination but leaves it switched off.
     ///
     /// # Arguments
     /// * `name` - Either "main_window" or "sound_panel"
     pub fn reset_hotkey_to_default(&self, name: &str) -> Result<super::hotkeys::Hotkey> {
-        let default = match name {
+        let mut default = match name {
             "main_window" => super::hotkeys::Hotkey::default_main_window(),
             "sound_panel" => super::hotkeys::Hotkey::default_sound_panel(),
             "playback_pause" => super::hotkeys::Hotkey::default_playback_pause(),
@@ -3407,6 +3421,9 @@ impl SettingsManager {
             "ocr_capture" => super::hotkeys::Hotkey::default_ocr_capture(),
             _ => return Err(anyhow::anyhow!("Invalid hotkey name: {}", name)),
         };
+        if let Some(current) = self.load()?.hotkeys.get_global_by_name(name) {
+            default.enabled = current.enabled;
+        }
         self.set_hotkey(name, &default)?;
         Ok(default)
     }
@@ -5867,6 +5884,7 @@ mod tests {
         let custom = crate::config::hotkeys::Hotkey {
             modifiers: vec![],
             key: "F11".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("accent_homographs", &custom).unwrap();
 
@@ -5902,6 +5920,7 @@ mod tests {
         let custom = crate::config::hotkeys::Hotkey {
             modifiers: vec![],
             key: "F12".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("approve_next_incoming", &custom)
             .unwrap();
@@ -7963,6 +7982,141 @@ mod tests {
 
         assert!(manager.set_legacy_models_migrated().is_err());
         assert!(!manager.load().unwrap().storage.legacy_models_migrated);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Per-hotkey enabled switch ====================
+
+    fn hotkey_tmp_manager(label: &str) -> (SettingsManager, std::path::PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-hotkey-enabled-{}-{}-{}",
+            std::process::id(),
+            unique,
+            label
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        (manager, dir)
+    }
+
+    #[test]
+    fn set_hotkey_enabled_flag_preserves_combination_and_persists() {
+        let (manager, dir) = hotkey_tmp_manager("global-preserve");
+        let before = manager.load().unwrap().hotkeys.main_window;
+
+        manager
+            .set_hotkey_enabled_flag("main_window", false)
+            .unwrap();
+
+        let after = manager.load().unwrap().hotkeys.main_window;
+        assert!(!after.enabled);
+        assert_eq!(after.key, before.key);
+        assert_eq!(after.modifiers, before.modifiers);
+        assert!(!read_disk_settings(&dir).hotkeys.main_window.enabled);
+
+        manager
+            .set_hotkey_enabled_flag("main_window", true)
+            .unwrap();
+        assert!(manager.load().unwrap().hotkeys.main_window.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_hotkey_enabled_flag_rejects_unknown_name() {
+        let (manager, dir) = hotkey_tmp_manager("global-invalid");
+        let error = manager.set_hotkey_enabled_flag("bogus", false).unwrap_err();
+        assert!(error.to_string().contains("Invalid hotkey name"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_editor_hotkey_enabled_flag_preserves_combination_and_persists() {
+        let (manager, dir) = hotkey_tmp_manager("editor-preserve");
+        let before = manager.load().unwrap().hotkeys.editor.edit_word;
+
+        manager
+            .set_editor_hotkey_enabled_flag("edit_word", false)
+            .unwrap();
+
+        let after = manager.load().unwrap().hotkeys.editor.edit_word;
+        assert!(!after.enabled);
+        assert_eq!(after.key, before.key);
+        assert_eq!(after.modifiers, before.modifiers);
+        assert!(!read_disk_settings(&dir).hotkeys.editor.edit_word.enabled);
+
+        manager
+            .set_editor_hotkey_enabled_flag("edit_word", true)
+            .unwrap();
+        assert!(manager.load().unwrap().hotkeys.editor.edit_word.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_hotkey_to_default_preserves_disabled_switch() {
+        let (manager, dir) = hotkey_tmp_manager("reset-disabled");
+        manager
+            .set_hotkey_enabled_flag("main_window", false)
+            .unwrap();
+
+        let default = manager.reset_hotkey_to_default("main_window").unwrap();
+
+        assert_eq!(default.key, "F3");
+        assert!(!default.enabled);
+        let stored = manager.load().unwrap().hotkeys.main_window;
+        assert_eq!(stored.key, "F3");
+        assert!(!stored.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_editor_hotkey_preserves_disabled_switch() {
+        let (manager, dir) = hotkey_tmp_manager("reset-editor-disabled");
+        manager
+            .set_editor_hotkey_enabled_flag("accent_homographs", false)
+            .unwrap();
+
+        let default = manager.reset_editor_hotkey("accent_homographs").unwrap();
+
+        assert_eq!(default.key, "U");
+        assert!(!default.enabled);
+        let stored = manager.load().unwrap().hotkeys.editor.accent_homographs;
+        assert_eq!(stored.key, "U");
+        assert!(!stored.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A disabled editor binding no longer occupies its combination, so another
+    /// action may use it. Enabling the first action again is rejected by the
+    /// transition check in the command layer (covered by `hotkeys` unit tests).
+    #[test]
+    fn disabled_editor_binding_is_not_occupied_for_other_actions() {
+        let (manager, dir) = hotkey_tmp_manager("disabled-not-occupied");
+        manager
+            .set_editor_hotkey_enabled_flag("edit_word", false)
+            .unwrap();
+
+        let ctrl_e = manager.load().unwrap().hotkeys.editor.edit_word;
+        assert!(!ctrl_e.enabled);
+        let mut enabled_candidate = ctrl_e.clone();
+        enabled_candidate.enabled = true;
+        manager
+            .set_editor_hotkey("next_tab", &enabled_candidate)
+            .unwrap();
+
+        let stored = manager.load().unwrap().hotkeys.editor.next_tab;
+        assert_eq!(stored.key, "E");
+        assert_eq!(stored.modifiers, ctrl_e.modifiers);
+        assert!(stored.enabled);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

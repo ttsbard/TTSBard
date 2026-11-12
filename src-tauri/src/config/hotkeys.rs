@@ -15,11 +15,21 @@ pub enum HotkeyModifier {
     Super, // Win key
 }
 
+/// Backward-compatible default for [`Hotkey::enabled`]: old `settings.json`
+/// files without the field keep every hotkey active.
+fn default_true() -> bool {
+    true
+}
+
 /// A single hotkey configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Hotkey {
     pub modifiers: Vec<HotkeyModifier>,
     pub key: String,
+    /// Per-hotkey switch. `false` keeps the assigned combination stored but
+    /// prevents it from being registered or matched.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Editor-scoped hotkeys (never registered as global Windows shortcuts)
@@ -89,6 +99,28 @@ impl EditorHotkeySettings {
         EDITOR_ACTION_IDS.contains(&id)
     }
 
+    /// Human-readable Russian action label used in conflict messages.
+    pub fn action_label(action_id: &str) -> &'static str {
+        match action_id {
+            "edit_word" => "редактирования слова",
+            "submit_continue" => "отправки/продолжения",
+            "submit_keep_text" => "отправки с сохранением текста",
+            "submit_keep_focus" => "отправки с сохранением текста и без смены фокуса",
+            "next_spelling_error" => "следующей ошибки",
+            "previous_spelling_error" => "предыдущей ошибки",
+            "next_tab" => "следующей вкладки",
+            "previous_tab" => "предыдущей вкладки",
+            "cycle_route" => "смены маршрута",
+            "toggle_typing" => "переключения передачи набора текста",
+            "cycle_quick_mode" => "смены режима быстрого редактора",
+            "toggle_history" => "показа/скрытия истории",
+            "accent_homographs" => "расстановки ударений",
+            "approve_next_incoming" => "подтверждения отправки входящего",
+            "edit_next_incoming" => "редактирования входящего",
+            _ => "действия редактора",
+        }
+    }
+
     pub fn get_by_id(&self, id: &str) -> Option<&Hotkey> {
         match id {
             "edit_word" => Some(&self.edit_word),
@@ -131,9 +163,21 @@ impl EditorHotkeySettings {
         }
     }
 
-    /// Find a duplicate binding among editor actions, returning the conflicting action name
+    /// Iterate over every editor action with its closed-list id.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &Hotkey)> {
+        EDITOR_ACTION_IDS
+            .iter()
+            .filter_map(|&id| self.get_by_id(id).map(|binding| (id, binding)))
+    }
+
+    /// Find a duplicate binding among **enabled** editor actions, returning the
+    /// conflicting action name.
+    ///
+    /// A disabled candidate never conflicts, and a disabled existing binding is
+    /// not considered occupied: its combination is kept only for the moment the
+    /// user turns it back on, when the enable transition re-checks conflicts.
     pub fn find_duplicate(&self, skip_id: &str, binding: &Hotkey) -> Option<&'static str> {
-        if binding.key.is_empty() {
+        if !binding.enabled || binding.key.is_empty() {
             return None;
         }
         for &action_id in EDITOR_ACTION_IDS {
@@ -141,7 +185,7 @@ impl EditorHotkeySettings {
                 continue;
             }
             if let Some(existing) = self.get_by_id(action_id) {
-                if existing == binding {
+                if existing.enabled && existing == binding {
                     return Some(action_id);
                 }
             }
@@ -189,12 +233,98 @@ impl Default for HotkeySettings {
     }
 }
 
+impl HotkeySettings {
+    /// Names accepted by `set_hotkey` / `reset_hotkey_to_default` and by the
+    /// per-hotkey enable command.
+    pub const GLOBAL_HOTKEY_NAMES: [&'static str; 9] = [
+        "main_window",
+        "sound_panel",
+        "playback_pause",
+        "playback_stop",
+        "playback_repeat",
+        "playback_control_window",
+        "return_previous_window",
+        "toggle_minimal_mode",
+        "ocr_capture",
+    ];
+
+    /// Resolve a global/main-window-local hotkey by its settings name.
+    pub fn get_global_by_name(&self, name: &str) -> Option<&Hotkey> {
+        match name {
+            "main_window" => Some(&self.main_window),
+            "sound_panel" => Some(&self.sound_panel),
+            "playback_pause" => Some(&self.playback_pause),
+            "playback_stop" => Some(&self.playback_stop),
+            "playback_repeat" => Some(&self.playback_repeat),
+            "playback_control_window" => Some(&self.playback_control_window),
+            "return_previous_window" => Some(&self.return_previous_window),
+            "toggle_minimal_mode" => Some(&self.toggle_minimal_mode),
+            "ocr_capture" => Some(&self.ocr_capture),
+            _ => None,
+        }
+    }
+
+    /// Mutable counterpart of [`Self::get_global_by_name`].
+    pub fn get_global_by_name_mut(&mut self, name: &str) -> Option<&mut Hotkey> {
+        match name {
+            "main_window" => Some(&mut self.main_window),
+            "sound_panel" => Some(&mut self.sound_panel),
+            "playback_pause" => Some(&mut self.playback_pause),
+            "playback_stop" => Some(&mut self.playback_stop),
+            "playback_repeat" => Some(&mut self.playback_repeat),
+            "playback_control_window" => Some(&mut self.playback_control_window),
+            "return_previous_window" => Some(&mut self.return_previous_window),
+            "toggle_minimal_mode" => Some(&mut self.toggle_minimal_mode),
+            "ocr_capture" => Some(&mut self.ocr_capture),
+            _ => None,
+        }
+    }
+
+    /// Find another **enabled** global/main-window-local hotkey that already
+    /// uses `candidate`'s combination.
+    ///
+    /// Disabled hotkeys are skipped on both sides: a disabled candidate is not
+    /// occupied and a disabled stored binding is not occupied either.
+    pub fn find_global_conflict(
+        &self,
+        skip_name: &str,
+        candidate: &Hotkey,
+    ) -> Option<&'static str> {
+        if !candidate.enabled || candidate.key.is_empty() {
+            return None;
+        }
+        for &name in &Self::GLOBAL_HOTKEY_NAMES {
+            if name == skip_name {
+                continue;
+            }
+            if let Some(binding) = self.get_global_by_name(name) {
+                if binding.enabled && binding == candidate {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// First enabled editor action that already uses `candidate`'s combination.
+    pub fn find_editor_conflict(&self, candidate: &Hotkey) -> Option<&'static str> {
+        if !candidate.enabled || candidate.key.is_empty() {
+            return None;
+        }
+        self.editor
+            .iter()
+            .find(|(_, binding)| binding.enabled && *binding == candidate)
+            .map(|(id, _)| id)
+    }
+}
+
 impl Hotkey {
     /// Create a hotkey with Ctrl+Shift+F3 (main window default)
     pub fn default_main_window() -> Self {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F3".to_string(),
+            enabled: true,
         }
     }
 
@@ -203,6 +333,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F2".to_string(),
+            enabled: true,
         }
     }
 
@@ -211,6 +342,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F4".to_string(),
+            enabled: true,
         }
     }
 
@@ -219,6 +351,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F5".to_string(),
+            enabled: true,
         }
     }
 
@@ -227,6 +360,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F6".to_string(),
+            enabled: true,
         }
     }
 
@@ -235,6 +369,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "F".to_string(),
+            enabled: true,
         }
     }
 
@@ -243,6 +378,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F7".to_string(),
+            enabled: true,
         }
     }
 
@@ -251,6 +387,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "M".to_string(),
+            enabled: true,
         }
     }
 
@@ -259,6 +396,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "P".to_string(),
+            enabled: true,
         }
     }
 
@@ -267,6 +405,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "E".to_string(),
+            enabled: true,
         }
     }
 
@@ -275,6 +414,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "Enter".to_string(),
+            enabled: true,
         }
     }
 
@@ -283,6 +423,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Alt],
             key: "Enter".to_string(),
+            enabled: true,
         }
     }
 
@@ -291,6 +432,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Alt],
             key: "Enter".to_string(),
+            enabled: true,
         }
     }
 
@@ -299,6 +441,7 @@ impl Hotkey {
         Self {
             modifiers: vec![],
             key: "F7".to_string(),
+            enabled: true,
         }
     }
 
@@ -307,6 +450,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Shift],
             key: "F7".to_string(),
+            enabled: true,
         }
     }
 
@@ -315,6 +459,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "Tab".to_string(),
+            enabled: true,
         }
     }
 
@@ -323,6 +468,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "Tab".to_string(),
+            enabled: true,
         }
     }
 
@@ -331,6 +477,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "R".to_string(),
+            enabled: true,
         }
     }
 
@@ -339,6 +486,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "T".to_string(),
+            enabled: true,
         }
     }
 
@@ -347,6 +495,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "W".to_string(),
+            enabled: true,
         }
     }
 
@@ -355,6 +504,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "H".to_string(),
+            enabled: true,
         }
     }
 
@@ -363,6 +513,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "U".to_string(),
+            enabled: true,
         }
     }
 
@@ -371,6 +522,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "K".to_string(),
+            enabled: true,
         }
     }
 
@@ -379,6 +531,7 @@ impl Hotkey {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "I".to_string(),
+            enabled: true,
         }
     }
 
@@ -388,20 +541,15 @@ impl Hotkey {
         self.key.is_empty()
     }
 
-    /// Check if this binding conflicts with any global hotkey
+    /// Check if this enabled binding conflicts with any enabled global hotkey.
+    ///
+    /// Disabled bindings on either side are ignored: their stored combination
+    /// is not reserved while the switch is off.
     pub fn conflicts_with_global(&self, global: &HotkeySettings) -> bool {
-        if self.key.is_empty() {
+        if !self.enabled || self.key.is_empty() {
             return false;
         }
-        global.main_window == *self
-            || global.sound_panel == *self
-            || global.playback_pause == *self
-            || global.playback_stop == *self
-            || global.playback_repeat == *self
-            || global.playback_control_window == *self
-            || global.return_previous_window == *self
-            || global.toggle_minimal_mode == *self
-            || global.ocr_capture == *self
+        global.find_global_conflict("", self).is_some()
     }
 
     /// Convert to tauri_plugin_global_shortcut::Shortcut
@@ -518,6 +666,7 @@ mod tests {
         let hotkey = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F3".to_string(),
+            enabled: true,
         };
         let shortcut = hotkey.to_shortcut().unwrap();
         assert!(shortcut.to_string().contains("F3"));
@@ -539,12 +688,14 @@ mod tests {
         let hotkey = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F3".to_string(),
+            enabled: true,
         };
         assert_eq!(hotkey.format_display(), "Ctrl+Shift+F3");
 
         let hotkey_no_mods = Hotkey {
             modifiers: vec![],
             key: "A".to_string(),
+            enabled: true,
         };
         assert_eq!(hotkey_no_mods.format_display(), "A");
     }
@@ -698,11 +849,13 @@ mod tests {
         let empty = Hotkey {
             modifiers: vec![],
             key: String::new(),
+            enabled: true,
         };
         assert!(empty.is_empty());
         let not_empty = Hotkey {
             modifiers: vec![],
             key: "F7".to_string(),
+            enabled: true,
         };
         assert!(!not_empty.is_empty());
     }
@@ -780,10 +933,12 @@ mod tests {
             edit_word: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "E".to_string(),
+                enabled: true,
             },
             next_tab: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "E".to_string(),
+                enabled: true,
             },
             ..Default::default()
         };
@@ -797,6 +952,7 @@ mod tests {
         let binding = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "E".to_string(),
+            enabled: true,
         };
         let conflict = s.find_duplicate("edit_word", &binding);
         assert!(conflict.is_none());
@@ -808,10 +964,12 @@ mod tests {
             cycle_route: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "R".to_string(),
+                enabled: true,
             },
             toggle_typing: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "R".to_string(),
+                enabled: true,
             },
             ..Default::default()
         };
@@ -825,6 +983,7 @@ mod tests {
         let empty = Hotkey {
             modifiers: vec![],
             key: String::new(),
+            enabled: true,
         };
         assert!(s.find_duplicate("edit_word", &empty).is_none());
     }
@@ -835,10 +994,12 @@ mod tests {
             accent_homographs: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "U".to_string(),
+                enabled: true,
             },
             toggle_history: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl],
                 key: "U".to_string(),
+                enabled: true,
             },
             ..Default::default()
         };
@@ -851,6 +1012,7 @@ mod tests {
         let editor_binding = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "F3".to_string(),
+            enabled: true,
         };
         let global = HotkeySettings::default();
         assert!(editor_binding.conflicts_with_global(&global));
@@ -861,6 +1023,7 @@ mod tests {
         let empty = Hotkey {
             modifiers: vec![],
             key: String::new(),
+            enabled: true,
         };
         let global = HotkeySettings::default();
         assert!(!empty.conflicts_with_global(&global));
@@ -871,6 +1034,7 @@ mod tests {
         let unique = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "F12".to_string(),
+            enabled: true,
         };
         let global = HotkeySettings::default();
         assert!(!unique.conflicts_with_global(&global));
@@ -940,6 +1104,7 @@ mod tests {
                 edit_word: Hotkey {
                     modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Alt],
                     key: "W".to_string(),
+                    enabled: true,
                 },
                 ..EditorHotkeySettings::default()
             },
@@ -983,6 +1148,7 @@ mod tests {
         let editor_binding = Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
             key: "P".to_string(),
+            enabled: true,
         };
         let global = HotkeySettings::default();
         assert!(editor_binding.conflicts_with_global(&global));
@@ -995,6 +1161,7 @@ mod tests {
             ocr_capture: Hotkey {
                 modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Alt],
                 key: "O".to_string(),
+                enabled: true,
             },
             ..HotkeySettings::default()
         };
@@ -1004,5 +1171,127 @@ mod tests {
         assert_eq!(back.ocr_capture.modifiers.len(), 2);
         assert_eq!(back.ocr_capture.modifiers[0], HotkeyModifier::Ctrl);
         assert_eq!(back.ocr_capture.modifiers[1], HotkeyModifier::Alt);
+    }
+
+    // ==================== Per-hotkey enabled switch ====================
+
+    /// Old settings.json without `enabled` must load every hotkey as enabled.
+    #[test]
+    fn legacy_hotkeys_without_enabled_default_to_true() {
+        let old_json = r#"{
+            "main_window": { "modifiers": ["ctrl", "shift"], "key": "F3" },
+            "sound_panel": { "modifiers": ["ctrl", "alt"], "key": "P" },
+            "editor": {
+                "edit_word": { "modifiers": ["ctrl"], "key": "E" }
+            }
+        }"#;
+        let settings: HotkeySettings = serde_json::from_str(old_json).unwrap();
+        assert!(settings.main_window.enabled);
+        assert!(settings.sound_panel.enabled);
+        assert!(settings.editor.edit_word.enabled);
+        // Every fully-defaulted editor field is enabled too.
+        assert!(settings.editor.iter().all(|(_, binding)| binding.enabled));
+        assert!(settings.ocr_capture.enabled);
+    }
+
+    #[test]
+    fn disabled_hotkey_round_trips_and_is_not_equal_to_enabled_one() {
+        let disabled = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl],
+            key: "E".to_string(),
+            enabled: false,
+        };
+        let json = serde_json::to_string(&disabled).unwrap();
+        assert!(json.contains("\"enabled\":false"));
+        let back: Hotkey = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, disabled);
+
+        let mut enabled = disabled.clone();
+        enabled.enabled = true;
+        assert_ne!(back, enabled);
+    }
+
+    #[test]
+    fn find_duplicate_ignores_disabled_existing_binding() {
+        let s = EditorHotkeySettings {
+            edit_word: Hotkey {
+                modifiers: vec![HotkeyModifier::Ctrl],
+                key: "E".to_string(),
+                enabled: false,
+            },
+            ..Default::default()
+        };
+        let candidate = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl],
+            key: "E".to_string(),
+            enabled: true,
+        };
+        assert!(s.find_duplicate("next_tab", &candidate).is_none());
+    }
+
+    #[test]
+    fn find_duplicate_ignores_disabled_candidate() {
+        let s = EditorHotkeySettings::default();
+        let candidate = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl],
+            key: "Enter".to_string(),
+            enabled: false,
+        };
+        // submit_continue already uses Ctrl+Enter, but a disabled candidate is
+        // allowed to keep the same combination while switched off.
+        assert!(s.find_duplicate("edit_word", &candidate).is_none());
+    }
+
+    #[test]
+    fn conflicts_with_global_ignores_disabled_global() {
+        let mut global = HotkeySettings::default();
+        global.main_window.enabled = false;
+        let candidate = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
+            key: "F3".to_string(),
+            enabled: true,
+        };
+        assert!(!candidate.conflicts_with_global(&global));
+        assert_eq!(global.find_global_conflict("", &candidate), None);
+    }
+
+    #[test]
+    fn conflicts_with_global_ignores_disabled_candidate() {
+        let global = HotkeySettings::default();
+        let mut candidate = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
+            key: "F3".to_string(),
+            enabled: false,
+        };
+        assert!(!candidate.conflicts_with_global(&global));
+        candidate.enabled = true;
+        assert!(candidate.conflicts_with_global(&global));
+    }
+
+    #[test]
+    fn find_global_conflict_reports_other_enabled_name() {
+        let global = HotkeySettings::default();
+        let candidate = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
+            key: "F2".to_string(),
+            enabled: true,
+        };
+        assert_eq!(
+            global.find_global_conflict("main_window", &candidate),
+            Some("sound_panel")
+        );
+        assert_eq!(global.find_global_conflict("sound_panel", &candidate), None);
+    }
+
+    #[test]
+    fn find_editor_conflict_ignores_disabled_editor_binding() {
+        let mut settings = HotkeySettings::default();
+        settings.editor.edit_word.enabled = false;
+        let candidate = settings.editor.edit_word.clone();
+        let mut enabled_candidate = candidate.clone();
+        enabled_candidate.enabled = true;
+        assert_eq!(settings.find_editor_conflict(&candidate), None);
+        // With the stored editor binding disabled, the same combination is free.
+        assert_eq!(settings.find_editor_conflict(&enabled_candidate), None);
     }
 }

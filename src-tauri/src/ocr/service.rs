@@ -263,6 +263,10 @@ pub struct OcrService {
     packs_root: PathBuf,
     runtime: tokio::sync::Mutex<Option<OcrRuntime>>,
     registered_hotkey: Mutex<Option<Hotkey>>,
+    /// True while an OCR runtime is installed, even if the capture shortcut was
+    /// released because the per-hotkey switch is off. Kept separate from
+    /// `registered_hotkey` so OCR stays logically enabled without its shortcut.
+    runtime_active: Mutex<bool>,
     /// The single in-flight capture session (`SelectingArea`/`Recognizing`), if
     /// any. Async mutex so the frame is never read while another task mutates
     /// the session; guards are never held across the status/settings locks.
@@ -299,6 +303,7 @@ impl OcrService {
             packs_root,
             runtime: tokio::sync::Mutex::new(None),
             registered_hotkey: Mutex::new(None),
+            runtime_active: Mutex::new(false),
             session: tokio::sync::Mutex::new(None),
             transition_lock: tokio::sync::Mutex::new(()),
         }
@@ -352,15 +357,16 @@ impl OcrService {
         self.registered_hotkey.lock().clone()
     }
 
-    /// True while the OCR runtime is live and the capture shortcut is held
-    /// (the feature is enabled), regardless of the current one-shot session
-    /// phase (`Ready`, `SelectingArea` or `Recognizing`).
+    /// True while the OCR runtime is live, regardless of the current one-shot
+    /// session phase (`Ready`, `SelectingArea` or `Recognizing`) and regardless
+    /// of whether the capture shortcut is currently held.
     ///
-    /// The sync `registered_hotkey` slot is populated exactly when the async
-    /// runtime slot is, so this mirrors a non-empty runtime slot without an
-    /// async lock.
+    /// The shortcut may be deliberately released when the per-hotkey `enabled`
+    /// switch is off; OCR itself stays enabled then, so this must not be derived
+    /// from `registered_hotkey` alone. The fallback keeps hand-built test
+    /// services (status/registration only) behaving as active.
     pub fn is_runtime_active(&self) -> bool {
-        self.registered_hotkey.lock().is_some()
+        *self.runtime_active.lock() || self.registered_hotkey.lock().is_some()
     }
 
     /// The runtime storage slot.
@@ -434,6 +440,7 @@ impl OcrService {
 
         *self.runtime.lock().await = Some(runtime);
         *self.registered_hotkey.lock() = Some(hotkey.clone());
+        *self.runtime_active.lock() = true;
 
         self.publish_status(OcrStatus::Ready, &mut emit);
     }
@@ -483,6 +490,7 @@ impl OcrService {
     {
         let runtime = self.runtime.lock().await.take();
         let hotkey = self.registered_hotkey.lock().take();
+        *self.runtime_active.lock() = false;
         // Drop any in-flight capture session so a stale overlay submit/cancel
         // can never resurrect `Ready` from the disabled state.
         self.session.lock().await.take();
@@ -551,6 +559,80 @@ impl OcrService {
         }
 
         *self.registered_hotkey.lock() = Some(new_hotkey.clone());
+    }
+
+    /// Release the capture shortcut while keeping the OCR runtime enabled.
+    ///
+    /// Used when the per-hotkey `enabled` switch is turned off: OCR stays
+    /// enabled (and its status is left unchanged), but Windows must stop
+    /// intercepting the combination immediately. Clearing `registered_hotkey`
+    /// is not enough — the injected `unregister` releases the OS registration
+    /// owned by [`crate::ocr::OcrService`]. Errors are logged, never surfaced as
+    /// an OCR runtime `Error`: this is an expected part of a normal disable.
+    pub async fn unregister_hotkey<U>(&self, mut unregister: U)
+    where
+        U: FnMut(&Hotkey) -> Result<(), String>,
+    {
+        let _guard = self.transition_lock.lock().await;
+        let hotkey = self.registered_hotkey.lock().take();
+        if let Some(hotkey) = &hotkey {
+            if let Err(error) = unregister(hotkey) {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to release OCR hotkey after it was disabled"
+                );
+            }
+        }
+    }
+
+    /// Register the capture shortcut again while the OCR runtime is active.
+    ///
+    /// Used when the per-hotkey `enabled` switch is turned back on without
+    /// restarting OCR. A disabled/empty binding or an inactive runtime is a
+    /// no-op. On registration failure the old binding (if any) stays untouched
+    /// and the error is returned so the command can keep the switch off.
+    pub async fn register_hotkey<R, U>(
+        &self,
+        new_hotkey: &Hotkey,
+        register: R,
+        unregister: U,
+    ) -> Result<(), String>
+    where
+        R: FnOnce(&Hotkey) -> Result<(), String>,
+        U: Fn(&Hotkey) -> Result<(), String>,
+    {
+        if !new_hotkey.enabled || new_hotkey.key.is_empty() {
+            return Ok(());
+        }
+
+        let _guard = self.transition_lock.lock().await;
+
+        if !self.is_runtime_active() {
+            return Ok(());
+        }
+        match self.status() {
+            OcrStatus::Ready | OcrStatus::SelectingArea | OcrStatus::Recognizing => {}
+            _ => return Ok(()),
+        }
+
+        let old_hotkey = self.registered_hotkey.lock().clone();
+        if old_hotkey.as_ref() == Some(new_hotkey) {
+            return Ok(());
+        }
+
+        register(new_hotkey)?;
+
+        if let Some(old) = &old_hotkey {
+            if let Err(error) = unregister(old) {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to unregister old OCR hotkey after re-enable"
+                );
+            }
+        }
+
+        *self.registered_hotkey.lock() = Some(new_hotkey.clone());
+        Ok(())
     }
 
     /// Begin the one-shot capture session from `Ready`.
@@ -1609,6 +1691,7 @@ mod tests {
         let service = OcrService::with_packs_root(PathBuf::new());
         service.set_status(OcrStatus::Ready);
         *service.registered_hotkey.lock() = Some(dummy_hotkey());
+        *service.runtime_active.lock() = true;
         service
     }
 
@@ -2278,6 +2361,138 @@ mod tests {
         assert!(!registered, "no register call with an empty runtime slot");
         assert_eq!(service.status(), OcrStatus::Disabled);
         assert_eq!(service.registered_hotkey(), None);
+    }
+
+    // --- Disabling/re-enabling ocr_capture without stopping OCR ---
+
+    #[tokio::test]
+    async fn unregister_hotkey_releases_shortcut_and_keeps_ocr_active() {
+        let service = ready_service();
+        let mut released = Vec::<String>::new();
+
+        service
+            .unregister_hotkey(|hotkey| {
+                released.push(hotkey.key.clone());
+                Ok(())
+            })
+            .await;
+
+        assert_eq!(released, vec![dummy_hotkey().key]);
+        assert_eq!(service.registered_hotkey(), None);
+        assert!(
+            service.is_runtime_active(),
+            "OCR stays enabled after its hotkey is switched off"
+        );
+        assert_eq!(service.status(), OcrStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn unregister_hotkey_is_noop_without_registered_shortcut() {
+        let service = ready_service();
+        service.unregister_hotkey(noop_unregister()).await;
+
+        let mut called = false;
+        service
+            .unregister_hotkey(|_| {
+                called = true;
+                Ok(())
+            })
+            .await;
+
+        assert!(!called);
+        assert!(service.is_runtime_active());
+    }
+
+    #[tokio::test]
+    async fn register_hotkey_registers_again_after_disable() {
+        let service = ready_service();
+        service.unregister_hotkey(noop_unregister()).await;
+        assert_eq!(service.registered_hotkey(), None);
+
+        let mut new_hotkey = dummy_hotkey();
+        new_hotkey.key = "O".to_string();
+        let mut registered = Vec::<String>::new();
+
+        service
+            .register_hotkey(
+                &new_hotkey,
+                |hotkey| {
+                    registered.push(hotkey.key.clone());
+                    Ok(())
+                },
+                noop_unregister(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(registered, vec!["O".to_string()]);
+        assert_eq!(service.registered_hotkey(), Some(new_hotkey));
+        assert!(service.is_runtime_active());
+        assert_eq!(service.status(), OcrStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn register_hotkey_skips_disabled_binding_and_inactive_runtime() {
+        let service = ready_service();
+        service.unregister_hotkey(noop_unregister()).await;
+        let mut disabled = dummy_hotkey();
+        disabled.enabled = false;
+        let mut called = false;
+
+        service
+            .register_hotkey(
+                &disabled,
+                |_| {
+                    called = true;
+                    Ok(())
+                },
+                noop_unregister(),
+            )
+            .await
+            .unwrap();
+        assert!(!called, "a disabled binding must not be registered");
+        assert_eq!(service.registered_hotkey(), None);
+
+        let inactive = OcrService::with_packs_root(PathBuf::new());
+        let mut enabled = dummy_hotkey();
+        enabled.key = "O".to_string();
+        inactive
+            .register_hotkey(
+                &enabled,
+                |_| {
+                    called = true;
+                    Ok(())
+                },
+                noop_unregister(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !called,
+            "an inactive OCR runtime must not register anything"
+        );
+        assert_eq!(inactive.registered_hotkey(), None);
+    }
+
+    #[tokio::test]
+    async fn register_hotkey_failure_keeps_shortcut_released() {
+        let service = ready_service();
+        service.unregister_hotkey(noop_unregister()).await;
+        let mut new_hotkey = dummy_hotkey();
+        new_hotkey.key = "O".to_string();
+
+        let error = service
+            .register_hotkey(
+                &new_hotkey,
+                |_| Err("registration failed".to_string()),
+                noop_unregister(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "registration failed");
+        assert_eq!(service.registered_hotkey(), None);
+        assert!(service.is_runtime_active());
     }
 
     // --- Presented-overlay session identity and guards ---

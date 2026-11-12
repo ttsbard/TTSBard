@@ -490,6 +490,26 @@ describe('useOcr', () => {
     expect(mocks.mockDebugError).not.toHaveBeenCalled()
   })
 
+  it('keeps OCR disabled and surfaces the error when the capture hotkey is off', async () => {
+    const { settings, saveSettings, message } = await setupAndMount()
+    mocks.mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'save_ocr_settings') {
+        throw new Error('Нельзя включить OCR: горячая клавиша «OCR: захват области» выключена')
+      }
+      if (cmd === 'get_ocr_settings') {
+        return { enabled: false, model_id: null, capture_target: { type: 'all' } }
+      }
+      return undefined
+    })
+
+    settings.value.enabled = true
+    settings.value.model_id = 'pack-1'
+    await saveSettings()
+
+    expect(settings.value.enabled).toBe(false)
+    expect(message.value).toContain('Нельзя включить OCR')
+  })
+
   it('a successful save becomes the fallback snapshot for later failures', async () => {
     const { settings, saveSettings } = await setupAndMount()
 

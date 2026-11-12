@@ -8,6 +8,79 @@ use crate::state::AppState;
 use tauri::{AppHandle, Manager, State};
 use tracing::{debug, info, warn};
 
+/// Russian conflict label for a global/main-window-local hotkey name.
+fn global_hotkey_label(name: &str) -> &'static str {
+    match name {
+        "main_window" => "главного окна",
+        "sound_panel" => "звуковой панели",
+        "playback_pause" => "паузы воспроизведения",
+        "playback_stop" => "остановки воспроизведения",
+        "playback_repeat" => "повтора воспроизведения",
+        "playback_control_window" => "окна управления воспроизведением",
+        "return_previous_window" => "возврата в предыдущее окно",
+        "toggle_minimal_mode" => "переключения компактного режима",
+        "ocr_capture" => "OCR: захвата области",
+        _ => "другого хоткея",
+    }
+}
+
+/// Validate a global/main-window-local binding against every *enabled* other
+/// hotkey. Returns a user-facing conflict message.
+///
+/// Disabled hotkeys are not occupied, so a disabled binding never blocks a
+/// change. This function must be called for the binding as it will be stored
+/// (including its `enabled` value).
+fn global_hotkey_conflict(
+    settings: &HotkeySettings,
+    skip_name: &str,
+    candidate: &Hotkey,
+) -> Option<String> {
+    if !candidate.enabled || candidate.key.is_empty() {
+        return None;
+    }
+    if let Some(name) = settings.find_global_conflict(skip_name, candidate) {
+        return Some(format!(
+            "Этот хоткей уже используется для {}",
+            global_hotkey_label(name)
+        ));
+    }
+    if settings.find_editor_conflict(candidate).is_some() {
+        return Some("Этот хоткей уже используется для действия редактора".to_string());
+    }
+    None
+}
+
+/// Validate an editor-scoped binding against the editor group and the enabled
+/// global hotkeys.
+fn editor_hotkey_conflict(
+    settings: &HotkeySettings,
+    action_id: &str,
+    candidate: &Hotkey,
+) -> Option<String> {
+    if !candidate.enabled || candidate.key.is_empty() {
+        return None;
+    }
+    if let Some(conflict) = settings.editor.find_duplicate(action_id, candidate) {
+        return Some(format!(
+            "Этот хоткей уже используется для {}",
+            EditorHotkeySettings::action_label(conflict)
+        ));
+    }
+    if candidate.conflicts_with_global(settings) {
+        return Some("Этот хоткей конфликтует с назначенным глобальным хоткеем".to_string());
+    }
+    None
+}
+
+/// Whether a per-binding switch request actually changes the stored flag.
+///
+/// A same-state request is a successful no-op: re-applying it would only
+/// re-register (or release) an unchanged shortcut and could disturb unrelated
+/// registrations.
+fn hotkey_toggle_changes_state(current_enabled: bool, requested_enabled: bool) -> bool {
+    current_enabled != requested_enabled
+}
+
 /// Тестируемое ядро `return_to_previous_window`.
 ///
 /// Атомарно читает и очищает HWND под одной блокировкой, проверяет валидность
@@ -381,6 +454,182 @@ pub async fn get_hotkey_settings(
         .map_err(|e| e.to_string())
 }
 
+/// Enable or disable a single global/main-window-local hotkey.
+///
+/// The assigned combination is preserved. Enabling re-checks conflicts against
+/// enabled hotkeys only; disabling unregisters the shortcut (for OCR the
+/// `OcrService` owner is asked to release it while keeping OCR itself enabled).
+/// Only the switched binding is touched: other global registrations keep
+/// working. The switch is persisted after the runtime change succeeds, and a
+/// failed persistence rolls the runtime change back, so the stored flag never
+/// claims a registration that Windows rejected.
+#[tauri::command]
+pub async fn set_hotkey_binding_enabled(
+    name: String,
+    enabled: bool,
+    settings_manager: State<'_, SettingsManager>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let settings = settings_manager
+        .load()
+        .map_err(|e| format!("Failed to load settings: {}", e))?;
+
+    let current = settings
+        .hotkeys
+        .get_global_by_name(&name)
+        .ok_or_else(|| format!("Invalid hotkey name: {}", name))?
+        .clone();
+
+    if !hotkey_toggle_changes_state(current.enabled, enabled) {
+        debug!(
+            hotkey = %name,
+            enabled,
+            "Hotkey switch already reflects the requested state"
+        );
+        return Ok(());
+    }
+
+    let mut updated = current.clone();
+    updated.enabled = enabled;
+
+    if let Some(conflict) = global_hotkey_conflict(&settings.hotkeys, &name, &updated) {
+        return Err(conflict);
+    }
+
+    if name == "ocr_capture" {
+        apply_ocr_capture_binding_toggle(&name, &updated, settings_manager.inner(), &app_handle)
+            .await?;
+    } else {
+        apply_global_binding_toggle(&name, &updated, settings_manager.inner(), &app_handle).await?;
+    }
+
+    super::emit_settings_changed(&app_handle);
+
+    Ok(())
+}
+
+/// Apply a switch for a binding registered by [`crate::hotkeys`] (or a
+/// main-window-local binding, which needs no OS work).
+///
+/// The runtime change runs first and reports whether it touched anything. The
+/// switch is persisted only afterwards, and a persistence failure rolls the
+/// runtime change back. Because the transaction is scoped to one binding, an
+/// OS rejection for it leaves every other registration in place.
+async fn apply_global_binding_toggle(
+    name: &str,
+    updated: &Hotkey,
+    settings_manager: &SettingsManager,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let app_state = app_handle
+        .try_state::<AppState>()
+        .ok_or_else(|| "Application state is unavailable".to_string())?
+        .inner()
+        .clone();
+    let enabled = updated.enabled;
+
+    let apply_name = name.to_string();
+    let apply_hotkey = updated.clone();
+    let apply_state = app_state.clone();
+    let apply_handle = app_handle.clone();
+
+    let rollback_name = name.to_string();
+    let rollback_hotkey = updated.clone();
+    let rollback_handle = app_handle.clone();
+    let persist_name = name.to_string();
+
+    crate::hotkeys::apply_binding_toggle(
+        move || {
+            crate::hotkeys::set_global_binding_runtime_state(
+                &apply_handle,
+                &apply_state,
+                &apply_name,
+                &apply_hotkey,
+                enabled,
+            )
+        },
+        super::persist_blocking(settings_manager, move |mgr| {
+            mgr.set_hotkey_enabled_flag(&persist_name, enabled)
+        }),
+        move || {
+            crate::hotkeys::set_global_binding_runtime_state(
+                &rollback_handle,
+                &app_state,
+                &rollback_name,
+                &rollback_hotkey,
+                !enabled,
+            )
+            .map(|_| ())
+        },
+    )
+    .await
+}
+
+/// Apply the `ocr_capture` switch while `OcrService` stays the shortcut owner.
+///
+/// The service keeps the previous registration when a new one is rejected, so
+/// the only rollback needed here is restoring the persisted switch. OCR
+/// readiness and the OCR enable flag are otherwise untouched.
+async fn apply_ocr_capture_binding_toggle(
+    name: &str,
+    updated: &Hotkey,
+    settings_manager: &SettingsManager,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let enabled = updated.enabled;
+    let persist_name = name.to_string();
+    super::persist_blocking(settings_manager, move |mgr| {
+        mgr.set_hotkey_enabled_flag(&persist_name, enabled)
+    })
+    .await
+    .map_err(|error| format!("Failed to persist hotkey state: {}", error))?;
+
+    let Some(app_state) = app_handle.try_state::<AppState>() else {
+        return Ok(());
+    };
+    let app_state = app_state.inner().clone();
+
+    if enabled {
+        if app_state.ocr.is_runtime_active() {
+            if let Err(error) = crate::commands::ocr::register_ocr_capture_while_running(
+                app_handle, &app_state, updated,
+            )
+            .await
+            {
+                // Keep the persisted switch truthful with the runtime:
+                // registration failed, so the hotkey stays disabled.
+                let rollback_name = name.to_string();
+                let rollback = super::persist_blocking(settings_manager, move |mgr| {
+                    mgr.set_hotkey_enabled_flag(&rollback_name, false)
+                })
+                .await;
+                return Err(match rollback {
+                    Ok(()) => format!(
+                        "Failed to register the OCR capture shortcut: {}; the hotkey stays off",
+                        error
+                    ),
+                    Err(rollback_error) => format!(
+                        "Failed to register the OCR capture shortcut: {}; restoring the disabled state failed: {}",
+                        error, rollback_error
+                    ),
+                });
+            }
+        } else {
+            // OCR stayed enabled while this hotkey was off, but the
+            // runtime was never started (e.g. boot skipped it). Turning
+            // the hotkey back on is the moment to bring OCR up.
+            let ocr_enabled = app_state.ocr.settings.read().await.enabled;
+            if ocr_enabled {
+                crate::commands::ocr::start_ocr_runtime(app_handle, &app_state, updated).await;
+            }
+        }
+    } else if app_state.ocr.is_runtime_active() {
+        crate::commands::ocr::unregister_ocr_capture_while_running(app_handle, &app_state).await;
+    }
+
+    Ok(())
+}
+
 /// Set a hotkey
 #[tauri::command]
 pub async fn set_hotkey(
@@ -397,56 +646,10 @@ pub async fn set_hotkey(
         .load()
         .map_err(|e| format!("Failed to load settings: {}", e))?;
 
-    // Проверка конфликтов со всеми остальными хоткеями
-    let all_global_names = [
-        "main_window",
-        "sound_panel",
-        "playback_pause",
-        "playback_stop",
-        "playback_repeat",
-        "playback_control_window",
-        "return_previous_window",
-        "toggle_minimal_mode",
-        "ocr_capture",
-    ];
-    let conflict_labels: [(&str, &str); 9] = [
-        ("main_window", "главного окна"),
-        ("sound_panel", "звуковой панели"),
-        ("playback_pause", "паузы воспроизведения"),
-        ("playback_stop", "остановки воспроизведения"),
-        ("playback_repeat", "повтора воспроизведения"),
-        (
-            "playback_control_window",
-            "окна управления воспроизведением",
-        ),
-        ("return_previous_window", "возврата в предыдущее окно"),
-        ("toggle_minimal_mode", "переключения компактного режима"),
-        ("ocr_capture", "OCR: захвата области"),
-    ];
-    for other_name in &all_global_names {
-        if *other_name == name.as_str() {
-            continue;
-        }
-        let other_hotkey = match *other_name {
-            "main_window" => &settings.hotkeys.main_window,
-            "sound_panel" => &settings.hotkeys.sound_panel,
-            "playback_pause" => &settings.hotkeys.playback_pause,
-            "playback_stop" => &settings.hotkeys.playback_stop,
-            "playback_repeat" => &settings.hotkeys.playback_repeat,
-            "playback_control_window" => &settings.hotkeys.playback_control_window,
-            "return_previous_window" => &settings.hotkeys.return_previous_window,
-            "toggle_minimal_mode" => &settings.hotkeys.toggle_minimal_mode,
-            "ocr_capture" => &settings.hotkeys.ocr_capture,
-            _ => continue,
-        };
-        if hotkey == *other_hotkey {
-            let label = conflict_labels
-                .iter()
-                .find(|(n, _)| *n == *other_name)
-                .map(|(_, l)| *l)
-                .unwrap_or(other_name);
-            return Err(format!("Этот хоткей уже используется для {}", label));
-        }
+    // Проверка конфликтов только с включёнными хоткеями: выключенные
+    // сохраняют комбинацию, но не занимают её.
+    if let Some(conflict) = global_hotkey_conflict(&settings.hotkeys, &name, &hotkey) {
+        return Err(conflict);
     }
 
     let name_clone = name.clone();
@@ -464,17 +667,31 @@ pub async fn set_hotkey(
     if name == "ocr_capture" {
         if let Some(app_state) = app_handle.try_state::<AppState>() {
             if app_state.ocr.is_runtime_active() {
-                let hotkey_clone = hotkey.clone();
-                let app_handle_clone = app_handle.clone();
-                let state_clone = app_state.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    crate::commands::ocr::rebind_ocr_capture_hotkey(
-                        &app_handle_clone,
-                        &state_clone,
-                        &hotkey_clone,
-                    )
-                    .await;
-                });
+                if hotkey.enabled {
+                    let hotkey_clone = hotkey.clone();
+                    let app_handle_clone = app_handle.clone();
+                    let state_clone = app_state.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::ocr::rebind_ocr_capture_hotkey(
+                            &app_handle_clone,
+                            &state_clone,
+                            &hotkey_clone,
+                        )
+                        .await;
+                    });
+                } else {
+                    // A disabled `ocr_capture` must stop intercepting the
+                    // combination, while OCR itself stays enabled.
+                    let app_handle_clone = app_handle.clone();
+                    let state_clone = app_state.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::ocr::unregister_ocr_capture_while_running(
+                            &app_handle_clone,
+                            &state_clone,
+                        )
+                        .await;
+                    });
+                }
             }
         }
     }
@@ -503,17 +720,29 @@ pub async fn reset_hotkey_to_default(
     if name == "ocr_capture" {
         if let Some(app_state) = app_handle.try_state::<AppState>() {
             if app_state.ocr.is_runtime_active() {
-                let default_clone = default.clone();
-                let app_handle_clone = app_handle.clone();
-                let state_clone = app_state.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    crate::commands::ocr::rebind_ocr_capture_hotkey(
-                        &app_handle_clone,
-                        &state_clone,
-                        &default_clone,
-                    )
-                    .await;
-                });
+                if default.enabled {
+                    let default_clone = default.clone();
+                    let app_handle_clone = app_handle.clone();
+                    let state_clone = app_state.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::ocr::rebind_ocr_capture_hotkey(
+                            &app_handle_clone,
+                            &state_clone,
+                            &default_clone,
+                        )
+                        .await;
+                    });
+                } else {
+                    let app_handle_clone = app_handle.clone();
+                    let state_clone = app_state.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::commands::ocr::unregister_ocr_capture_while_running(
+                            &app_handle_clone,
+                            &state_clone,
+                        )
+                        .await;
+                    });
+                }
             }
         }
     }
@@ -572,6 +801,47 @@ pub async fn reset_editor_hotkey(
     // Never call reregister_hotkeys for editor bindings
 
     Ok(default)
+}
+
+/// Enable or disable a single editor-scoped hotkey.
+///
+/// The assigned combination is preserved. Enabling re-checks conflicts against
+/// enabled editor/global hotkeys; editor bindings are never registered as OS
+/// shortcuts, so nothing is unregistered here.
+#[tauri::command]
+pub async fn set_editor_hotkey_enabled(
+    action_id: String,
+    enabled: bool,
+    settings_manager: State<'_, SettingsManager>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    if !EditorHotkeySettings::is_valid_action_id(&action_id) {
+        return Err(format!("Invalid editor action: {}", action_id));
+    }
+
+    let settings = settings_manager
+        .load()
+        .map_err(|e| format!("Failed to load settings: {}", e))?;
+    let current = settings
+        .hotkeys
+        .editor
+        .get_by_id(&action_id)
+        .ok_or_else(|| format!("Invalid editor action: {}", action_id))?;
+    let mut updated = current.clone();
+    updated.enabled = enabled;
+
+    if let Some(conflict) = editor_hotkey_conflict(&settings.hotkeys, &action_id, &updated) {
+        return Err(conflict);
+    }
+
+    let action_id_clone = action_id.clone();
+    super::persist_blocking(settings_manager.inner(), move |mgr| {
+        mgr.set_editor_hotkey_enabled_flag(&action_id_clone, enabled)
+    })
+    .await?;
+
+    super::emit_settings_changed(&app_handle);
+    Ok(())
 }
 
 /// Get all editor hotkey settings
@@ -1036,6 +1306,7 @@ mod tests {
         let new_hk = Hotkey {
             modifiers: vec![],
             key: "F9".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &new_hk).unwrap();
         let settings = mgr.load().unwrap();
@@ -1051,6 +1322,7 @@ mod tests {
         let new_hk = Hotkey {
             modifiers: vec![],
             key: "F9".to_string(),
+            enabled: true,
         };
         let err = mgr.set_editor_hotkey("bogus", &new_hk).unwrap_err();
         assert!(err.to_string().contains("Invalid editor action"));
@@ -1064,6 +1336,7 @@ mod tests {
         let empty = Hotkey {
             modifiers: vec![],
             key: String::new(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &empty).unwrap();
         let settings = mgr.load().unwrap();
@@ -1078,6 +1351,7 @@ mod tests {
         let binding = Hotkey {
             modifiers: vec![crate::config::HotkeyModifier::Ctrl],
             key: "F9".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &binding).unwrap();
         // Same binding for another action should fail
@@ -1096,6 +1370,7 @@ mod tests {
                 crate::config::HotkeyModifier::Shift,
             ],
             key: "F3".to_string(),
+            enabled: true,
         };
         let err = mgr.set_editor_hotkey("edit_word", &binding).unwrap_err();
         assert!(err.to_string().contains("конфликтует"));
@@ -1113,6 +1388,7 @@ mod tests {
                 crate::config::HotkeyModifier::Shift,
             ],
             key: "F3".to_string(),
+            enabled: true,
         };
         let _ = mgr.set_editor_hotkey("next_tab", &binding);
         let settings = mgr.load().unwrap();
@@ -1131,6 +1407,7 @@ mod tests {
         let custom = Hotkey {
             modifiers: vec![],
             key: "F9".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &custom).unwrap();
 
@@ -1161,6 +1438,7 @@ mod tests {
         let hotkey = Hotkey {
             modifiers: vec![crate::config::HotkeyModifier::Ctrl],
             key: String::new(),
+            enabled: true,
         };
         // The command checks: empty key + non-empty modifiers = error
         // This invariant is enforced at the command layer, not the manager.
@@ -1180,6 +1458,7 @@ mod tests {
         let binding = Hotkey {
             modifiers: vec![],
             key: "F8".to_string(),
+            enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &binding).unwrap();
         // If reregister were called, it would create a new SettingsManager
@@ -1189,5 +1468,108 @@ mod tests {
         assert_eq!(settings.hotkeys.editor.edit_word.key, "F8");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Enabled-switch conflict validation ====================
+
+    #[test]
+    fn global_conflict_rejects_duplicate_with_enabled_global() {
+        let settings = HotkeySettings::default();
+        let candidate = settings.sound_panel.clone();
+
+        let error = global_hotkey_conflict(&settings, "main_window", &candidate).unwrap();
+
+        assert!(error.contains("звуковой панели"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn global_conflict_ignores_disabled_candidate() {
+        let settings = HotkeySettings::default();
+        let mut candidate = settings.sound_panel.clone();
+        candidate.enabled = false;
+
+        assert!(global_hotkey_conflict(&settings, "main_window", &candidate).is_none());
+    }
+
+    #[test]
+    fn global_conflict_ignores_disabled_existing_global() {
+        let mut settings = HotkeySettings::default();
+        settings.sound_panel.enabled = false;
+        let mut candidate = settings.sound_panel.clone();
+        candidate.enabled = true;
+
+        assert!(global_hotkey_conflict(&settings, "main_window", &candidate).is_none());
+    }
+
+    #[test]
+    fn global_conflict_rejects_overlap_with_enabled_editor_binding() {
+        let settings = HotkeySettings::default();
+        let candidate = settings.editor.edit_word.clone();
+
+        let error = global_hotkey_conflict(&settings, "main_window", &candidate).unwrap();
+
+        assert!(error.contains("действия редактора"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn same_state_toggle_is_a_noop() {
+        assert!(!hotkey_toggle_changes_state(true, true));
+        assert!(!hotkey_toggle_changes_state(false, false));
+        assert!(hotkey_toggle_changes_state(false, true));
+        assert!(hotkey_toggle_changes_state(true, false));
+    }
+
+    #[test]
+    fn enabling_an_empty_global_binding_is_not_a_conflict() {
+        // An empty combination has nothing to register, so switching it on must
+        // not be rejected as an in-app conflict.
+        let settings = HotkeySettings::default();
+        let candidate = Hotkey {
+            modifiers: vec![],
+            key: String::new(),
+            enabled: true,
+        };
+
+        assert!(global_hotkey_conflict(&settings, "main_window", &candidate).is_none());
+    }
+
+    #[test]
+    fn editor_conflict_rejects_duplicate_with_enabled_editor_binding() {
+        let settings = HotkeySettings::default();
+        let candidate = settings.editor.submit_continue.clone();
+
+        let error = editor_hotkey_conflict(&settings, "edit_word", &candidate).unwrap();
+
+        assert!(error.contains("уже используется"), "unexpected: {error}");
+        assert!(
+            error.contains("отправки/продолжения"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn editor_conflict_rejects_enabled_global_overlap() {
+        let settings = HotkeySettings::default();
+        let candidate = Hotkey {
+            modifiers: vec![
+                crate::config::HotkeyModifier::Ctrl,
+                crate::config::HotkeyModifier::Shift,
+            ],
+            key: "F3".to_string(),
+            enabled: true,
+        };
+
+        let error = editor_hotkey_conflict(&settings, "edit_word", &candidate).unwrap();
+
+        assert!(error.contains("конфликтует"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn editor_conflict_allows_disabled_candidate() {
+        let settings = HotkeySettings::default();
+        let mut candidate = settings.editor.submit_continue.clone();
+        candidate.enabled = false;
+
+        assert!(editor_hotkey_conflict(&settings, "edit_word", &candidate).is_none());
     }
 }

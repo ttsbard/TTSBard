@@ -35,6 +35,7 @@ export function hotkeyCode(key: string): string | null {
 }
 
 export function matchesEditorHotkey(binding: HotkeyDto, event: HotkeyEventLike): boolean {
+  if (binding.enabled === false) return false
   const code = hotkeyCode(binding.key)
   if (code === null || event.code !== code) return false
 

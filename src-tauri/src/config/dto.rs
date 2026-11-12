@@ -1334,6 +1334,15 @@ impl From<HotkeyModifierDto> for HotkeyModifier {
 pub struct HotkeyDto {
     pub modifiers: Vec<HotkeyModifierDto>,
     pub key: String,
+    /// Per-hotkey switch. Omitted from the wire for the default `true` so the
+    /// large settings payload stays unchanged for every active hotkey; the
+    /// frontend treats a missing value as enabled.
+    #[serde(default = "default_true_dto", skip_serializing_if = "is_true_dto")]
+    pub enabled: bool,
+}
+
+fn is_true_dto(value: &bool) -> bool {
+    *value
 }
 
 impl From<Hotkey> for HotkeyDto {
@@ -1341,6 +1350,7 @@ impl From<Hotkey> for HotkeyDto {
         Self {
             modifiers: h.modifiers.into_iter().map(|m| m.into()).collect(),
             key: h.key,
+            enabled: h.enabled,
         }
     }
 }
@@ -1350,6 +1360,7 @@ impl From<HotkeyDto> for Hotkey {
         Self {
             modifiers: dto.modifiers.into_iter().map(|m| m.into()).collect(),
             key: dto.key,
+            enabled: dto.enabled,
         }
     }
 }
@@ -1993,99 +2004,123 @@ mod tests {
             main_window: HotkeyDto {
                 modifiers: vec![HotkeyModifierDto::Ctrl],
                 key: "F3".into(),
+                enabled: true,
             },
             sound_panel: HotkeyDto {
                 modifiers: vec![HotkeyModifierDto::Ctrl],
                 key: "F2".into(),
+                enabled: true,
             },
             playback_pause: HotkeyDto {
                 modifiers: vec![],
                 key: "F5".into(),
+                enabled: true,
             },
             playback_stop: HotkeyDto {
                 modifiers: vec![],
                 key: "F6".into(),
+                enabled: true,
             },
             playback_repeat: HotkeyDto {
                 modifiers: vec![],
                 key: "F7".into(),
+                enabled: true,
             },
             playback_control_window: HotkeyDto {
                 modifiers: vec![],
                 key: "F8".into(),
+                enabled: true,
             },
             return_previous_window: HotkeyDto {
                 modifiers: vec![HotkeyModifierDto::Ctrl],
                 key: "F".into(),
+                enabled: true,
             },
             toggle_minimal_mode: HotkeyDto {
                 modifiers: vec![HotkeyModifierDto::Ctrl],
                 key: "F".into(),
+                enabled: true,
             },
             ocr_capture: HotkeyDto {
                 modifiers: vec![HotkeyModifierDto::Ctrl, HotkeyModifierDto::Shift],
                 key: "P".into(),
+                enabled: true,
             },
             editor: EditorHotkeySettingsDto {
                 edit_word: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "E".into(),
+                    enabled: true,
                 },
                 submit_continue: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "Enter".into(),
+                    enabled: true,
                 },
                 submit_keep_text: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Alt],
                     key: "Enter".into(),
+                    enabled: true,
                 },
                 submit_keep_focus: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl, HotkeyModifierDto::Alt],
                     key: "Enter".into(),
+                    enabled: true,
                 },
                 next_spelling_error: HotkeyDto {
                     modifiers: vec![],
                     key: "F7".into(),
+                    enabled: true,
                 },
                 previous_spelling_error: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Shift],
                     key: "F7".into(),
+                    enabled: true,
                 },
                 next_tab: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "Tab".into(),
+                    enabled: true,
                 },
                 previous_tab: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl, HotkeyModifierDto::Shift],
                     key: "Tab".into(),
+                    enabled: true,
                 },
                 cycle_route: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "R".into(),
+                    enabled: true,
                 },
                 toggle_typing: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "T".into(),
+                    enabled: true,
                 },
                 cycle_quick_mode: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "W".into(),
+                    enabled: true,
                 },
                 toggle_history: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "H".into(),
+                    enabled: true,
                 },
                 accent_homographs: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "U".into(),
+                    enabled: true,
                 },
                 approve_next_incoming: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "K".into(),
+                    enabled: true,
                 },
                 edit_next_incoming: HotkeyDto {
                     modifiers: vec![HotkeyModifierDto::Ctrl],
                     key: "I".into(),
+                    enabled: true,
                 },
             },
         };
@@ -2391,99 +2426,123 @@ mod tests {
             main_window: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             sound_panel: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             playback_pause: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             playback_stop: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             playback_repeat: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             playback_control_window: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             return_previous_window: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             toggle_minimal_mode: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             ocr_capture: HotkeyDto {
                 modifiers: vec![],
                 key: String::new(),
+                enabled: true,
             },
             editor: EditorHotkeySettingsDto {
                 edit_word: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 submit_continue: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 submit_keep_text: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 submit_keep_focus: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 next_spelling_error: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 previous_spelling_error: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 next_tab: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 previous_tab: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 cycle_route: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 toggle_typing: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 cycle_quick_mode: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 toggle_history: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 accent_homographs: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 approve_next_incoming: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
                 edit_next_incoming: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
+                    enabled: true,
                 },
             },
         };
@@ -2757,5 +2816,47 @@ mod tests {
         std::fs::write(format!("{}/omit-null.json", fixture_dir), &omit_null_json)
             .expect("write omit-null fixture");
         eprintln!("Fixture written: {}/omit-null.json", fixture_dir);
+    }
+
+    /// Active hotkeys omit `enabled` from the wire (default `true`), while a
+    /// switched-off binding serializes the explicit `false`.
+    #[test]
+    fn hotkey_dto_omits_enabled_true_and_serializes_enabled_false() {
+        let active = HotkeyDto {
+            modifiers: vec![HotkeyModifierDto::Ctrl],
+            key: "E".into(),
+            enabled: true,
+        };
+        let active_json = serde_json::to_value(&active).unwrap();
+        assert!(active_json.get("enabled").is_none());
+
+        let disabled = HotkeyDto {
+            enabled: false,
+            ..active
+        };
+        let disabled_json = serde_json::to_value(&disabled).unwrap();
+        assert_eq!(disabled_json["enabled"], serde_json::json!(false));
+    }
+
+    /// Legacy/imported DTOs without `enabled` deserialize as enabled.
+    #[test]
+    fn hotkey_dto_without_enabled_defaults_to_true() {
+        let dto: HotkeyDto = serde_json::from_str(r#"{"modifiers":["ctrl"],"key":"E"}"#).unwrap();
+        assert!(dto.enabled);
+        let hotkey: Hotkey = dto.into();
+        assert!(hotkey.enabled);
+    }
+
+    #[test]
+    fn hotkey_dto_disabled_flag_survives_both_conversions() {
+        let hotkey = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl],
+            key: "E".to_string(),
+            enabled: false,
+        };
+        let dto: HotkeyDto = hotkey.clone().into();
+        assert!(!dto.enabled);
+        let back: Hotkey = dto.into();
+        assert_eq!(back, hotkey);
     }
 }

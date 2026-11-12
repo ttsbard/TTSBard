@@ -127,6 +127,8 @@ async function mountHotkeysPanel(options: {
     getRecordingIndicator: () => container?.querySelector('.hotkey-value.recording') as HTMLDivElement | null,
     getCancelBtn: () => container?.querySelector('.cancel-btn') as HTMLButtonElement | null,
     getErrorMessage: () => container?.querySelector('.message-box') as HTMLDivElement | null,
+    getToggle: (name: string) => container?.querySelector(`input[data-hotkey="${name}"]`) as HTMLInputElement | null,
+    getRow: (name: string) => container?.querySelector(`input[data-hotkey="${name}"]`)?.closest('.hotkey-row') as HTMLDivElement | null,
     async unmount() {
       if (appInstance) {
         appInstance.unmount()
@@ -192,7 +194,7 @@ describe('HotkeysPanel mounted lifecycle and recording', () => {
 
       expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
         name: 'main_window',
-        hotkey: { key: 'G', modifiers: ['ctrl', 'shift'] },
+        hotkey: { key: 'G', modifiers: ['ctrl', 'shift'], enabled: true },
       })
     } finally {
       vi.useRealTimers()
@@ -260,7 +262,7 @@ describe('HotkeysPanel mounted lifecycle and recording', () => {
 
     expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
       name: 'main_window',
-      hotkey: { modifiers: ['ctrl', 'shift'], key: expected },
+      hotkey: { modifiers: ['ctrl', 'shift'], key: expected, enabled: true },
     })
   })
 
@@ -331,5 +333,123 @@ describe('HotkeysPanel mounted lifecycle and recording', () => {
     dispatchKey('keyup', { key: 'R', code: 'KeyR' })
     await flushAsync()
     expect(mockedInvoke).not.toHaveBeenCalledWith('set_hotkey', expect.anything())
+  })
+})
+
+describe('HotkeysPanel per-hotkey enable switch', () => {
+  it('renders one accessible toggle per hotkey row', async () => {
+    const { container } = await mountHotkeysPanel()
+    const toggles = container.querySelectorAll('.toggle-switch input')
+
+    expect(toggles).toHaveLength(21)
+    for (const toggle of Array.from(toggles)) {
+      expect(toggle.getAttribute('aria-label')).toBeTruthy()
+    }
+    expect((toggles[0] as HTMLInputElement).getAttribute('data-hotkey')).toBe('main_window')
+  })
+
+  it('dims a disabled binding and disables both action buttons', async () => {
+    const { getRow, getToggle } = await mountHotkeysPanel({
+      hotkeys: {
+        main_window: { key: 'M', modifiers: ['ctrl'], enabled: false },
+      },
+    })
+
+    const toggle = getToggle('main_window')!
+    const row = getRow('main_window')!
+    expect(toggle.checked).toBe(false)
+    expect(row.querySelector('.hotkey-value')?.classList.contains('disabled')).toBe(true)
+    expect((row.querySelector('.record-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect((row.querySelector('.reset-btn') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('persists a global toggle without changing the combination', async () => {
+    const { getToggle, mockedInvoke } = await mountHotkeysPanel()
+    const toggle = getToggle('sound_panel')!
+
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey_binding_enabled', {
+      name: 'sound_panel',
+      enabled: false,
+    })
+  })
+
+  it('persists an editor toggle through the editor command', async () => {
+    const { getToggle, mockedInvoke } = await mountHotkeysPanel()
+    const toggle = getToggle('edit_word')!
+
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    expect(mockedInvoke).toHaveBeenCalledWith('set_editor_hotkey_enabled', {
+      actionId: 'edit_word',
+      enabled: false,
+    })
+  })
+
+  it('shows a warning when disabling ocr_capture while OCR is enabled', async () => {
+    const { getToggle, getErrorMessage, settingsRef } = await mountHotkeysPanel()
+    settingsRef.value = {
+      ...(settingsRef.value as AppSettingsDto),
+      ocr: { enabled: true, model_id: null, capture_target: { type: 'all' } },
+    } as AppSettingsDto
+    await flushAsync()
+
+    const toggle = getToggle('ocr_capture')!
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    const message = getErrorMessage()
+    expect(message?.classList.contains('warning')).toBe(true)
+    expect(message?.textContent).toContain('OCR')
+  })
+
+  it('reverts the switch and shows the conflict when the backend rejects enabling', async () => {
+    const { getToggle, getErrorMessage, mockedInvoke } = await mountHotkeysPanel({
+      hotkeys: {
+        main_window: { key: 'M', modifiers: ['ctrl'], enabled: false },
+      },
+    })
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_hotkey_binding_enabled') {
+        throw new Error('Этот хоткей уже используется для главного окна')
+      }
+      return undefined
+    })
+
+    const toggle = getToggle('main_window')!
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    expect(toggle.checked).toBe(false)
+    expect(getErrorMessage()?.classList.contains('error')).toBe(true)
+    expect(getErrorMessage()?.textContent).toContain('Этот хоткей уже используется')
+  })
+
+  it('does not treat a disabled hotkey as occupied while recording', async () => {
+    const { getMainRecordBtn, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel({
+      hotkeys: {
+        sound_panel: { key: 'G', modifiers: ['ctrl', 'shift'], enabled: false },
+      },
+    })
+
+    getMainRecordBtn()!.click()
+    await flushAsync()
+    expect(getRecordingIndicator()).not.toBeNull()
+
+    dispatchKey('keydown', { key: 'G', code: 'KeyG', ctrlKey: true, shiftKey: true })
+    dispatchKey('keyup', { key: 'G', code: 'KeyG' })
+    await flushAsync()
+
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: 'G', modifiers: ['ctrl', 'shift'], enabled: true },
+    })
   })
 })

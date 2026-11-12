@@ -1158,10 +1158,23 @@ fn init_input_server(app_state: &AppState, app_handle: AppHandle) {
     info!("Input server supervisor started");
 }
 
+/// Whether boot should start the OCR runtime.
+///
+/// OCR enabled with its capture hotkey switched off must not start: starting it
+/// would register a combination the user turned off. Turning the hotkey back on
+/// from the hotkeys panel starts the runtime then.
+fn ocr_boot_should_start(enabled: bool, hotkey_enabled: bool) -> bool {
+    enabled && hotkey_enabled
+}
+
 /// Initialize the OCR runtime from the persisted `enabled` setting.
 fn init_ocr(app_state: &AppState, app_handle: AppHandle, enabled: bool, hotkey: Hotkey) {
-    if !enabled {
-        info!("OCR disabled on boot (enabled=false)");
+    if !ocr_boot_should_start(enabled, hotkey.enabled) {
+        info!(
+            enabled,
+            hotkey_enabled = hotkey.enabled,
+            "OCR boot start skipped"
+        );
         return;
     }
 
@@ -2113,5 +2126,13 @@ mod tests {
         assert!(app_state.twitch.auth.blocking_read().is_some());
 
         let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn ocr_boot_starts_only_when_enabled_and_hotkey_enabled() {
+        assert!(super::ocr_boot_should_start(true, true));
+        assert!(!super::ocr_boot_should_start(true, false));
+        assert!(!super::ocr_boot_should_start(false, true));
+        assert!(!super::ocr_boot_should_start(false, false));
     }
 }

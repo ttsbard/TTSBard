@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onUnmounted, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Keyboard, RotateCcw, AppWindow, Music, MonitorPlay, SquarePen, ScanLine } from 'lucide-vue-next'
 import type { HotkeyDto } from '../types/settings'
@@ -34,7 +34,46 @@ function isEditorHotkeyName(name: string): name is EditorHotkeyName {
 
 type HotkeyMessageType = 'error' | 'success' | 'warning' | null
 
+interface HotkeyRow {
+  name: HotkeyName | EditorHotkeyName
+  icon?: Component
+}
+
+const GLOBAL_HOTKEY_ROWS: HotkeyRow[] = [
+  { name: 'main_window', icon: AppWindow },
+  { name: 'sound_panel', icon: Music },
+  { name: 'playback_control_window', icon: MonitorPlay },
+  { name: 'ocr_capture', icon: ScanLine },
+]
+
+const MAIN_WINDOW_HOTKEY_ROWS: HotkeyRow[] = [
+  { name: 'toggle_minimal_mode' },
+  { name: 'return_previous_window' },
+]
+
+const EDITOR_HOTKEY_ROWS: HotkeyRow[] = [
+  { name: 'edit_word' },
+  { name: 'submit_continue' },
+  { name: 'submit_keep_text' },
+  { name: 'submit_keep_focus' },
+  { name: 'next_spelling_error' },
+  { name: 'previous_spelling_error' },
+  { name: 'next_tab' },
+  { name: 'previous_tab' },
+  { name: 'cycle_route' },
+  { name: 'toggle_typing' },
+  { name: 'cycle_quick_mode' },
+  { name: 'toggle_history' },
+  { name: 'accent_homographs' },
+]
+
+const INCOMING_HOTKEY_ROWS: HotkeyRow[] = [
+  { name: 'approve_next_incoming' },
+  { name: 'edit_next_incoming' },
+]
+
 const recordingFor = ref<HotkeyName | EditorHotkeyName | null>(null)
+const pendingToggle = ref<HotkeyName | EditorHotkeyName | null>(null)
 const keyOccupied = ref(false)
 let occupiedTimeoutId: ReturnType<typeof setTimeout> | null = null
 
@@ -44,17 +83,46 @@ function clearOccupied() {
   keyOccupied.value = false
 }
 
+function getBinding(name: HotkeyName | EditorHotkeyName): HotkeyDto | undefined {
+  const all = hotkeys.value
+  if (!all) return undefined
+  return isEditorHotkeyName(name) ? all.editor[name] : all[name]
+}
+
+// A missing `enabled` comes from a legacy payload and means "enabled": the
+// backend omits the default `true` on the wire.
+function isHotkeyEnabled(binding: HotkeyDto | undefined | null): boolean {
+  return binding?.enabled !== false
+}
+
+function formattedHotkey(name: HotkeyName | EditorHotkeyName): string {
+  const binding = getBinding(name)
+  return binding ? formatHotkey(binding) : ''
+}
+
+function hotkeyName(name: HotkeyName | EditorHotkeyName): string {
+  return t(`hotkeys.name.${name}`)
+}
+
+function toggleTitle(name: HotkeyName | EditorHotkeyName): string {
+  const state = isHotkeyEnabled(getBinding(name)) ? t('editor.typing.on') : t('editor.typing.off')
+  return `${hotkeyName(name)}: ${state}`
+}
+
 function bindingOccupied(candidate: HotkeyDto): boolean {
-  if (!hotkeys.value) return false
-  const matches = (binding: HotkeyDto) => binding.key.toUpperCase() === candidate.key.toUpperCase()
+  const all = hotkeys.value
+  if (!all) return false
+  const matches = (binding: HotkeyDto) => isHotkeyEnabled(binding)
+    && binding.key.toUpperCase() === candidate.key.toUpperCase()
     && binding.modifiers.length === candidate.modifiers.length
     && binding.modifiers.every(modifier => candidate.modifiers.includes(modifier))
-  return Object.entries(hotkeys.value).some(([name, binding]) =>
+  return Object.entries(all).some(([name, binding]) =>
     name !== 'editor' && name !== recordingFor.value && matches(binding as HotkeyDto),
-  ) || Object.entries(hotkeys.value.editor).some(([name, binding]) =>
+  ) || Object.entries(all.editor).some(([name, binding]) =>
     name !== recordingFor.value && matches(binding),
   )
 }
+
 const errorMessage = ref<string | null>(null)
 const messageState = ref<HotkeyMessageType>(null)
 const currentRecording = ref<{ modifiers: HotkeyDto['modifiers']; key: string } | null>(null)
@@ -127,6 +195,14 @@ async function startEditorRecording(name: EditorHotkeyName) {
     } catch {}
   } finally {
     recordingStartPending = false
+  }
+}
+
+function startRecordingFor(name: HotkeyName | EditorHotkeyName) {
+  if (isEditorHotkeyName(name)) {
+    void startEditorRecording(name)
+  } else {
+    void startRecording(name)
   }
 }
 
@@ -217,12 +293,15 @@ function handleKeyUp(e: KeyboardEvent) {
   }
 }
 
-async function saveHotkey(name: string, hotkey: HotkeyDto) {
+async function saveHotkey(name: HotkeyName | EditorHotkeyName, hotkey: HotkeyDto) {
   try {
+    // Persist the current switch state explicitly so the backend never has to
+    // infer it while replacing the combination.
+    const payload: HotkeyDto = { ...hotkey, enabled: isHotkeyEnabled(getBinding(name)) }
     if (isEditorHotkeyName(name)) {
-      await invoke('set_editor_hotkey', { actionId: name, hotkey })
+      await invoke('set_editor_hotkey', { actionId: name, hotkey: payload })
     } else {
-      await invoke('set_hotkey', { name, hotkey })
+      await invoke('set_hotkey', { name, hotkey: payload })
     }
     await reload()
     // set_hotkey уже вызывает reregister_hotkeys внутри, set_editor_hotkey — нет
@@ -245,6 +324,41 @@ async function saveHotkey(name: string, hotkey: HotkeyDto) {
   }
 }
 
+// Toggle one hotkey without touching its stored combination.
+async function toggleHotkeyEnabled(name: HotkeyName | EditorHotkeyName, event: Event) {
+  if (pendingToggle.value !== null) return
+  const input = event.target as HTMLInputElement | null
+  if (!input) return
+  const next = input.checked
+
+  pendingToggle.value = name
+  try {
+    if (isEditorHotkeyName(name)) {
+      await invoke('set_editor_hotkey_enabled', { actionId: name, enabled: next })
+    } else {
+      await invoke('set_hotkey_binding_enabled', { name, enabled: next })
+    }
+    await reload()
+
+    if (name === 'ocr_capture' && !next && settings.value?.ocr?.enabled) {
+      // OCR itself stays enabled; only its global shortcut is released until
+      // the hotkey is switched back on.
+      showMessage(
+        `${t('hotkeys.name.ocr_capture')}: ${t('ocr.status.disabled')} — ${t('ocr.failure.runtime_unavailable')}`,
+        'warning',
+      )
+    }
+  } catch (e) {
+    // The backend rejected the transition (for example an enabled hotkey
+    // already owns this combination): put the switch back and show the error.
+    input.checked = !next
+    showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
+    await reload()
+  } finally {
+    pendingToggle.value = null
+  }
+}
+
 // Reset to default
 async function resetToDefault(name: HotkeyName) {
   try {
@@ -264,6 +378,14 @@ async function resetEditorToDefault(name: EditorHotkeyName) {
     showMessage(t('hotkeys.reset_success'), 'success')
   } catch (e) {
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
+  }
+}
+
+function resetToDefaultFor(name: HotkeyName | EditorHotkeyName) {
+  if (isEditorHotkeyName(name)) {
+    void resetEditorToDefault(name)
+  } else {
+    void resetToDefault(name)
   }
 }
 
@@ -344,166 +466,48 @@ onUnmounted(async () => {
         <span class="section-title ui-section-title">{{ t('hotkeys.section.global') }}</span>
       </div>
 
-      <!-- Main Window Hotkey -->
-      <div class="hotkey-row">
+      <div v-for="row in GLOBAL_HOTKEY_ROWS" :key="row.name" class="hotkey-row">
+        <label class="toggle-switch" :title="toggleTitle(row.name)">
+          <input
+            type="checkbox"
+            :data-hotkey="row.name"
+            :checked="isHotkeyEnabled(getBinding(row.name))"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :aria-label="toggleTitle(row.name)"
+            @change="toggleHotkeyEnabled(row.name, $event)"
+          />
+          <span class="toggle-slider" />
+        </label>
         <div class="hotkey-label ui-label">
-          <AppWindow :size="16" />
-          <span>{{ t('hotkeys.name.main_window') }}</span>
+          <component :is="row.icon" v-if="row.icon" :size="16" />
+          <span>{{ hotkeyName(row.name) }}</span>
         </div>
         <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'main_window'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.main_window) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'main_window' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'main_window'"
-            @click="startRecording('main_window')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'main_window'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
+          <span
+            v-if="hotkeys && recordingFor !== row.name"
+            class="hotkey-value"
+            :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
           >
-            ✕
-          </button>
-
-          <button
-            @click="resetToDefault('main_window')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Sound Panel Hotkey -->
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <Music :size="16" />
-          <span>{{ t('hotkeys.name.sound_panel') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'sound_panel'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.sound_panel) }}
+            {{ formattedHotkey(row.name) }}
           </span>
           <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
 
           <!-- Recording state -->
-          <div v-if="recordingFor === 'sound_panel' && currentRecording" class="hotkey-value recording">
+          <div v-if="recordingFor === row.name && currentRecording" class="hotkey-value recording">
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
           <button
-            v-if="recordingFor !== 'sound_panel'"
-            @click="startRecording('sound_panel')"
-            :disabled="recordingFor !== null || isLoading"
+            v-if="recordingFor !== row.name"
+            @click="startRecordingFor(row.name)"
+            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
           </button>
 
           <button
-            v-if="recordingFor === 'sound_panel'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetToDefault('sound_panel')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Playback Control Window Hotkey -->
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <MonitorPlay :size="16" />
-          <span>{{ t('hotkeys.name.playback_control_window') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'playback_control_window'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.playback_control_window) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'playback_control_window' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'playback_control_window'"
-            @click="startRecording('playback_control_window')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'playback_control_window'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetToDefault('playback_control_window')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <!-- OCR Capture Hotkey -->
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <ScanLine :size="16" />
-          <span>{{ t('hotkeys.name.ocr_capture') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'ocr_capture'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.ocr_capture) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'ocr_capture' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'ocr_capture'"
-            @click="startRecording('ocr_capture')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'ocr_capture'"
+            v-if="recordingFor === row.name"
             @click="cancelRecording"
             class="cancel-btn"
             :title="t('hotkeys.action.cancel_esc')"
@@ -513,7 +517,8 @@ onUnmounted(async () => {
           </button>
 
           <button
-            @click="resetToDefault('ocr_capture')"
+            @click="resetToDefaultFor(row.name)"
+            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -529,74 +534,46 @@ onUnmounted(async () => {
         <span class="section-title ui-section-title">{{ t('hotkeys.section.main_window') }}</span>
       </div>
 
-      <!-- Minimal Mode Toggle Hotkey (main-window-local, like return focus) -->
-      <div class="hotkey-row">
+      <div v-for="row in MAIN_WINDOW_HOTKEY_ROWS" :key="row.name" class="hotkey-row">
+        <label class="toggle-switch" :title="toggleTitle(row.name)">
+          <input
+            type="checkbox"
+            :data-hotkey="row.name"
+            :checked="isHotkeyEnabled(getBinding(row.name))"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :aria-label="toggleTitle(row.name)"
+            @change="toggleHotkeyEnabled(row.name, $event)"
+          />
+          <span class="toggle-slider" />
+        </label>
         <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.toggle_minimal_mode') }}</span>
+          <span>{{ hotkeyName(row.name) }}</span>
         </div>
         <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'toggle_minimal_mode'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.toggle_minimal_mode) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <div v-if="recordingFor === 'toggle_minimal_mode' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'toggle_minimal_mode'"
-            @click="startRecording('toggle_minimal_mode')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'toggle_minimal_mode'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
+          <span
+            v-if="hotkeys && recordingFor !== row.name"
+            class="hotkey-value"
+            :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
           >
-            ✕
-          </button>
-
-          <button
-            @click="resetToDefault('toggle_minimal_mode')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.return_previous_window') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'return_previous_window'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.return_previous_window) }}
+            {{ formattedHotkey(row.name) }}
           </span>
           <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
 
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'return_previous_window' && currentRecording" class="hotkey-value recording">
+          <div v-if="recordingFor === row.name && currentRecording" class="hotkey-value recording">
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
           <button
-            v-if="recordingFor !== 'return_previous_window'"
-            @click="startRecording('return_previous_window')"
-            :disabled="recordingFor !== null || isLoading"
+            v-if="recordingFor !== row.name"
+            @click="startRecordingFor(row.name)"
+            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
           </button>
 
           <button
-            v-if="recordingFor === 'return_previous_window'"
+            v-if="recordingFor === row.name"
             @click="cancelRecording"
             class="cancel-btn"
             :title="t('hotkeys.action.cancel_esc')"
@@ -606,7 +583,8 @@ onUnmounted(async () => {
           </button>
 
           <button
-            @click="resetToDefault('return_previous_window')"
+            @click="resetToDefaultFor(row.name)"
+            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -626,32 +604,46 @@ onUnmounted(async () => {
         {{ t('hotkeys.editor_note') }}
       </p>
 
-      <div class="hotkey-row">
+      <div v-for="row in EDITOR_HOTKEY_ROWS" :key="row.name" class="hotkey-row">
+        <label class="toggle-switch" :title="toggleTitle(row.name)">
+          <input
+            type="checkbox"
+            :data-hotkey="row.name"
+            :checked="isHotkeyEnabled(getBinding(row.name))"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :aria-label="toggleTitle(row.name)"
+            @change="toggleHotkeyEnabled(row.name, $event)"
+          />
+          <span class="toggle-slider" />
+        </label>
         <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.edit_word') }}</span>
+          <span>{{ hotkeyName(row.name) }}</span>
         </div>
         <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'edit_word'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.edit_word) }}
+          <span
+            v-if="hotkeys && recordingFor !== row.name"
+            class="hotkey-value"
+            :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
+          >
+            {{ formattedHotkey(row.name) }}
           </span>
           <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
 
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'edit_word' && currentRecording" class="hotkey-value recording">
+          <div v-if="recordingFor === row.name && currentRecording" class="hotkey-value recording">
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
           <button
-            v-if="recordingFor !== 'edit_word'"
-            @click="startEditorRecording('edit_word')"
-            :disabled="recordingFor !== null || isLoading"
+            v-if="recordingFor !== row.name"
+            @click="startRecordingFor(row.name)"
+            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
           </button>
 
           <button
-            v-if="recordingFor === 'edit_word'"
+            v-if="recordingFor === row.name"
             @click="cancelRecording"
             class="cancel-btn"
             :title="t('hotkeys.action.cancel_esc')"
@@ -661,523 +653,8 @@ onUnmounted(async () => {
           </button>
 
           <button
-            @click="resetEditorToDefault('edit_word')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.submit_continue') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'submit_continue'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.submit_continue) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'submit_continue' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'submit_continue'"
-            @click="startEditorRecording('submit_continue')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'submit_continue'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('submit_continue')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.submit_keep_text') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'submit_keep_text'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.submit_keep_text) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'submit_keep_text' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'submit_keep_text'"
-            @click="startEditorRecording('submit_keep_text')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'submit_keep_text'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('submit_keep_text')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.submit_keep_focus') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'submit_keep_focus'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.submit_keep_focus) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'submit_keep_focus' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'submit_keep_focus'"
-            @click="startEditorRecording('submit_keep_focus')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'submit_keep_focus'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('submit_keep_focus')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.next_spelling_error') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'next_spelling_error'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.next_spelling_error) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'next_spelling_error' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'next_spelling_error'"
-            @click="startEditorRecording('next_spelling_error')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'next_spelling_error'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('next_spelling_error')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.previous_spelling_error') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'previous_spelling_error'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.previous_spelling_error) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'previous_spelling_error' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'previous_spelling_error'"
-            @click="startEditorRecording('previous_spelling_error')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'previous_spelling_error'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('previous_spelling_error')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.next_tab') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'next_tab'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.next_tab) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'next_tab' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'next_tab'"
-            @click="startEditorRecording('next_tab')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'next_tab'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('next_tab')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.previous_tab') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'previous_tab'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.previous_tab) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'previous_tab' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'previous_tab'"
-            @click="startEditorRecording('previous_tab')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'previous_tab'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('previous_tab')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.cycle_route') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'cycle_route'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.cycle_route) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'cycle_route' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'cycle_route'"
-            @click="startEditorRecording('cycle_route')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'cycle_route'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('cycle_route')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.toggle_typing') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'toggle_typing'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.toggle_typing) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'toggle_typing' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'toggle_typing'"
-            @click="startEditorRecording('toggle_typing')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'toggle_typing'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('toggle_typing')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.cycle_quick_mode') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'cycle_quick_mode'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.cycle_quick_mode) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'cycle_quick_mode' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'cycle_quick_mode'"
-            @click="startEditorRecording('cycle_quick_mode')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'cycle_quick_mode'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('cycle_quick_mode')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.toggle_history') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'toggle_history'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.toggle_history) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'toggle_history' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'toggle_history'"
-            @click="startEditorRecording('toggle_history')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'toggle_history'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('toggle_history')"
-            class="reset-btn ui-icon-button"
-           :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-            <RotateCcw :size="18" />
-          </button>
-        </div>
-      </div>
-
-      <div class="hotkey-row">
-        <div class="hotkey-label ui-label">
-          <span>{{ t('hotkeys.name.accent_homographs') }}</span>
-        </div>
-        <div class="hotkey-actions">
-          <span v-if="hotkeys && recordingFor !== 'accent_homographs'" class="hotkey-value">
-            {{ formatHotkey(hotkeys.editor.accent_homographs) }}
-          </span>
-          <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-          <!-- Recording state -->
-          <div v-if="recordingFor === 'accent_homographs' && currentRecording" class="hotkey-value recording">
-            {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-          </div>
-
-          <button
-            v-if="recordingFor !== 'accent_homographs'"
-            @click="startEditorRecording('accent_homographs')"
-            :disabled="recordingFor !== null || isLoading"
-            class="record-btn ui-icon-button"
-           :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-          </button>
-
-          <button
-            v-if="recordingFor === 'accent_homographs'"
-            @click="cancelRecording"
-            class="cancel-btn"
-            :title="t('hotkeys.action.cancel_esc')"
-            :aria-label="t('hotkeys.action.cancel_aria')"
-          >
-            ✕
-          </button>
-
-          <button
-            @click="resetEditorToDefault('accent_homographs')"
+            @click="resetToDefaultFor(row.name)"
+            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -1187,32 +664,46 @@ onUnmounted(async () => {
 
       <div class="hotkey-subgroup">
         <div class="subgroup-title">{{ t('hotkeys.subgroup.incoming') }}</div>
-        <div class="hotkey-row">
+        <div v-for="row in INCOMING_HOTKEY_ROWS" :key="row.name" class="hotkey-row">
+          <label class="toggle-switch" :title="toggleTitle(row.name)">
+            <input
+              type="checkbox"
+              :data-hotkey="row.name"
+              :checked="isHotkeyEnabled(getBinding(row.name))"
+              :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+              :aria-label="toggleTitle(row.name)"
+              @change="toggleHotkeyEnabled(row.name, $event)"
+            />
+            <span class="toggle-slider" />
+          </label>
           <div class="hotkey-label ui-label">
-            <span>{{ t('hotkeys.name.approve_next_incoming') }}</span>
+            <span>{{ hotkeyName(row.name) }}</span>
           </div>
           <div class="hotkey-actions">
-            <span v-if="hotkeys && recordingFor !== 'approve_next_incoming'" class="hotkey-value">
-              {{ formatHotkey(hotkeys.editor.approve_next_incoming) }}
+            <span
+              v-if="hotkeys && recordingFor !== row.name"
+              class="hotkey-value"
+              :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
+            >
+              {{ formattedHotkey(row.name) }}
             </span>
             <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
 
-            <!-- Recording state -->
-            <div v-if="recordingFor === 'approve_next_incoming' && currentRecording" class="hotkey-value recording">
+            <div v-if="recordingFor === row.name && currentRecording" class="hotkey-value recording">
               {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
             </div>
 
             <button
-              v-if="recordingFor !== 'approve_next_incoming'"
-              @click="startEditorRecording('approve_next_incoming')"
-              :disabled="recordingFor !== null || isLoading"
+              v-if="recordingFor !== row.name"
+              @click="startRecordingFor(row.name)"
+              :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
               class="record-btn ui-icon-button"
              :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
+              <Keyboard :size="18" />
             </button>
 
             <button
-              v-if="recordingFor === 'approve_next_incoming'"
+              v-if="recordingFor === row.name"
               @click="cancelRecording"
               class="cancel-btn"
               :title="t('hotkeys.action.cancel_esc')"
@@ -1222,50 +713,8 @@ onUnmounted(async () => {
             </button>
 
             <button
-              @click="resetEditorToDefault('approve_next_incoming')"
-              class="reset-btn ui-icon-button"
-             :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
-              <RotateCcw :size="18" />
-            </button>
-          </div>
-        </div>
-
-        <div class="hotkey-row">
-          <div class="hotkey-label ui-label">
-            <span>{{ t('hotkeys.name.edit_next_incoming') }}</span>
-          </div>
-          <div class="hotkey-actions">
-            <span v-if="hotkeys && recordingFor !== 'edit_next_incoming'" class="hotkey-value">
-              {{ formatHotkey(hotkeys.editor.edit_next_incoming) }}
-            </span>
-            <span v-else-if="!hotkeys" class="hotkey-value placeholder">{{ t('hotkeys.loading') }}</span>
-
-            <!-- Recording state -->
-            <div v-if="recordingFor === 'edit_next_incoming' && currentRecording" class="hotkey-value recording">
-              {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
-            </div>
-
-            <button
-              v-if="recordingFor !== 'edit_next_incoming'"
-              @click="startEditorRecording('edit_next_incoming')"
-              :disabled="recordingFor !== null || isLoading"
-              class="record-btn ui-icon-button"
-             :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
-            <Keyboard :size="18" />
-            </button>
-
-            <button
-              v-if="recordingFor === 'edit_next_incoming'"
-              @click="cancelRecording"
-              class="cancel-btn"
-              :title="t('hotkeys.action.cancel_esc')"
-              :aria-label="t('hotkeys.action.cancel_aria')"
-            >
-              ✕
-            </button>
-
-            <button
-              @click="resetEditorToDefault('edit_next_incoming')"
+              @click="resetToDefaultFor(row.name)"
+              :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
               class="reset-btn ui-icon-button"
              :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
               <RotateCcw :size="18" />
@@ -1351,6 +800,7 @@ onUnmounted(async () => {
 .hotkey-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 1rem;
 }
@@ -1371,6 +821,8 @@ onUnmounted(async () => {
   margin-left: auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.5rem;
 }
 
@@ -1384,6 +836,10 @@ onUnmounted(async () => {
   min-width: 80px;
   text-align: center;
   color: var(--color-text-primary);
+}
+
+.hotkey-value.disabled {
+  opacity: 0.45;
 }
 
 .hotkey-value.placeholder {
@@ -1401,7 +857,6 @@ onUnmounted(async () => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
 }
-
 
 .cancel-btn {
   padding: 0.35rem 0.5rem;
@@ -1431,5 +886,80 @@ onUnmounted(async () => {
   font-weight: var(--ui-text-weight-hint);
   letter-spacing: 0.03em;
   color: var(--color-text-muted);
+}
+
+/* Compact per-hotkey switch, aligned with the shared .toggle-switch pattern. */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 20px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  transition: 0.25s;
+  border-radius: 20px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--color-text-secondary);
+  transition: 0.25s;
+  border-radius: 50%;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(16px);
+  background: var(--color-text-white);
+}
+
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.toggle-switch input:disabled + .toggle-slider {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .hotkey-row {
+    gap: 0.6rem;
+  }
+
+  .hotkey-label {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .hotkey-actions {
+    width: 100%;
+  }
 }
 </style>

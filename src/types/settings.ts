@@ -16,6 +16,12 @@ export type HotkeyModifier = 'ctrl' | 'shift' | 'alt' | 'super'
 export interface HotkeyDto {
   modifiers: HotkeyModifier[]
   key: string
+  /**
+   * Per-hotkey switch. The backend omits it for the default `true`, so a
+   * missing value means enabled; `false` keeps the combination stored but
+   * inactive.
+   */
+  enabled?: boolean
 }
 
 export interface EditorHotkeySettingsDto {
