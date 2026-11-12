@@ -45,13 +45,15 @@ related_tasks: []
 
 ## Активные направления
 
-- [ROADMAP-136 — Локальные модели RUAccent, OCR и Pocket TTS](./active/136-local-model-management.md) — `in_progress`, вкладка настроек, каталог скачивания и адаптивная раскладка вкладок.
-
-- [ROADMAP-135 — Локальный Pocket TTS с выбором модели](./active/135-pocket-tts.md) — `in_progress`, Shtorm RU и Kyutai EN в отдельной карточке TTS.
-
-- [ROADMAP-134 — Отключаемое преобразование чисел в слова](./active/134-number-conversion-toggle.md) — `in_progress`: отдельная галочка после шрифтов редактора, включена по умолчанию.
+Сейчас активных направлений нет. См. [индекс](./active/README.md).
 
 ## Завершённые направления
+
+- [ROADMAP-136 — Локальные модели RUAccent, OCR и Pocket TTS](./completed/136-local-model-management.md) — каталог из репозитория, установка и обновление пакетов.
+
+- [ROADMAP-135 — Локальный Pocket TTS с выбором модели](./completed/135-pocket-tts.md) — локальный синтез на CPU, выбор модели и голоса.
+
+- [ROADMAP-134 — Отключаемое преобразование чисел в слова](./completed/134-number-conversion-toggle.md) — настройка редактора, включена по умолчанию.
 
 - [ROADMAP-133 — Настройка времени ожидания ответа Silero в интерфейсе](./completed/133-silero-synthesis-timeout-ui.md) — completed: дефолт 60 с, снятие верхнего лимита, шестерёнка [⚙] в карточке Silero и поле ввода секунд с автосохранением.
 
