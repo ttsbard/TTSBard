@@ -11,6 +11,8 @@ permissions: read-all
 
 env:
   CARGO_TERM_COLOR: always
+  # ort-sys and Piper still depend on the build directory layout before Cargo 1.100.
+  WINDOWS_RUST_TOOLCHAIN: '1.99.1'
 
 jobs:
   check-docs:
@@ -80,8 +82,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.WINDOWS_RUST_TOOLCHAIN }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -130,7 +133,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.WINDOWS_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -172,7 +177,9 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.WINDOWS_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri

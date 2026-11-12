@@ -75,8 +75,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          # Match the Windows CI toolchain while native builds need the old Cargo layout.
+          toolchain: '1.99.1'
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
