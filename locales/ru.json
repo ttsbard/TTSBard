@@ -111,7 +111,7 @@
     "settings.models.package.recommended": "Рекомендуется",
     "settings.models.package.details": "Подробнее",
     "settings.models.package.license": "Лицензия: {license}",
-    "settings.models.package.source": "Открыть страницу модели",
+    "settings.models.package.source": "Страница модели",
     "settings.models.package.download_unavailable": "Скачивание недоступно",
     "settings.models.package.outdated_hint": "Версия или хеш не совпадают — желательно переустановить.",
     "settings.models.action.download": "Скачать",
