@@ -35,6 +35,8 @@ implementation details и журналы обсуждений сюда не по
 
 - [DECISION-026 — Авторизация Twitch через Device Code Flow](./026-twitch-device-flow.md) — ссылка с кодом активации для бота и каналов; localhost callback не используется.
 
+- [DECISION-027 — Локальный нейросетевой Pocket TTS и нормализация референса](./027-pocket-tts-onnx-runtime.md) — локальный ONNX Runtime на CPU (Mimi + FlowLM), режимы `reference_wav` и `voice_state`, нормализация входного референса до RMS ~0.048 и компенсация выходного гейна до RMS ~0.12.
+
 ## Заменённые решения
 
 - [DECISION-015 — Отдельный F6-режим](./015-hardcoded-f6-mode.md)

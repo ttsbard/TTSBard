@@ -6,7 +6,7 @@
 
 - [First launch](guide.md): setup and your first spoken phrase.
 - [Interface language and packs](language-packs.md).
-- [TTS providers](tts.md): Silero, OpenAI, ElevenLabs, Fish Audio, local HTTP and Piper.
+- [TTS providers](tts.md): Silero, OpenAI, ElevenLabs, Fish Audio, local HTTP, Piper, and Pocket TTS.
 - [Virtual audio cable](virtual-audio-cable.md): Discord, OBS, VTube Studio and games.
 - [Audio devices/output format](audio-devices.md): output selection, tests and i32.
 - [FAQ](../faq.md): voice, format and hotkey problems.

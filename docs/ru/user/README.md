@@ -6,7 +6,7 @@
 
 - [Первый запуск](guide.md) — настройка и первая фраза.
 - [Язык интерфейса и языковые пакеты](language-packs.md) — смена языка и перевод приложения.
-- [TTS-провайдеры](tts.md) — Silero, OpenAI, ElevenLabs, Fish Audio, локальный сервер и Piper.
+- [TTS-провайдеры](tts.md) — Silero, OpenAI, ElevenLabs, Fish Audio, локальный сервер, Piper и Pocket TTS.
 - [Виртуальный аудиокабель](virtual-audio-cable.md) — передача голоса в Discord, OBS, VTube Studio и игры.
 - [Аудиоустройства и формат вывода](audio-devices.md) — выбор выходов, проверка звука и сохранённый общий формат i32.
 - [Частые вопросы](../faq.md) — проблемы с голосом, форматом аудио и горячими клавишами.

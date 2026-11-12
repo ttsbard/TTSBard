@@ -98,22 +98,103 @@ text processing with its own [model package](ruaccent.md).
 
 ## Pocket TTS
 
-Pocket TTS runs locally on CPU without external servers or API keys.
+Pocket TTS synthesizes speech locally on CPU without external servers, API keys,
+or dedicated GPUs. Powered by the Kyutai architecture (Mimi neural audio codec +
+FlowLM autoregressive language model), it runs via ONNX Runtime within TTSBard's
+native Rust runtime.
 
-1. Install a Pocket TTS model package (such as **Shtorm RU v2 Fast** or **Kyutai English**)
-   under **Settings → Models**.
-2. Open the **TTS** panel, expand the **Pocket TTS** card, and select the model.
-3. For voice-cloning models (reference WAV mode):
-   - Click **"Choose WAV"** and pick a short voice clip (up to 12 seconds; 5–8 seconds
-     of clear speech with a complete sentence is recommended).
-   - If the cloned voice sounds too low in pitch or muffled due to an overly loud
-     recording, click **"Prepare"** next to the selected reference. The app will
-     generate an optimized copy normalized for the model (target speech RMS ~0.048,
-     24 kHz mono) in the application data folder and switch to it automatically without
-     modifying your original file.
-   - Use the **"Listen"** button to preview the active reference audio.
-4. For models with bundled voices (such as Kyutai English with Alba), select the
-   desired voice from the list.
+### Models and Installation
+
+Model packages are installed via the built-in catalog in **Settings → Models**:
+- **Shtorm RU v2 Fast** — Russian voice cloning model from a reference audio clip,
+  optimized for fast inference (INT8 quantization);
+- **Shtorm RU v2 Slow** — Russian voice cloning model with more expressive intonations;
+- **Kyutai English Clone** — English voice cloning model from a reference WAV;
+- **Bundled voice models** (such as Kyutai English with prepackaged voices like Alba
+  stored as safetensors embeddings).
+
+Model files reside in `%LOCALAPPDATA%\ttsbard\models\pocket\<package-id>`
+(or `models\pocket\<package-id>` under the working directory). Each package
+contains a `config.yaml` manifest, weights, a tokenizer (SentencePiece for
+Russian, JSON for English), and a set of ONNX graphs (`mimi_encoder`,
+`text_conditioner`, `flow_lm_main`, `flow_lm_flow`, `mimi_decoder`).
+
+### Voice Modes
+
+1. **Voice cloning (`reference_wav`):**
+   - In the Pocket TTS card, click **"Choose WAV"** to select an audio file containing
+     a voice sample.
+   - Click **"Listen"** to preview the active reference audio via the preview device.
+   - Click **"Prepare"** to normalize and adapt the reference file for optimal neural
+     synthesis (detailed below).
+2. **Preset voices (`voice_state`):**
+   - If the package includes bundled voice states (`embeddings/*.safetensors`),
+     a dropdown menu will list the available voices. Select the desired voice
+     without supplying an audio clip.
+
+### Reference Requirements and Model Peculiarities
+
+Cloned voice fidelity directly depends on the characteristics of the reference clip:
+
+- **Duration:** 0.05 to 12 seconds (the 12s hard cap prevents ONNX memory overflow).
+  The recommended sweet spot is **5–8 seconds** of continuous speech.
+- **Content:** clean, coherent speech from a single speaker with natural intonation
+  and a **complete sentence** (avoid clipping mid-word, background music, background
+  talkers, or heavy room reverb).
+- **Sampling and quality:** use high-quality audio (24–48 kHz) without aggressively
+  low-passed high frequencies.
+
+### Why Reference Normalization is Essential
+
+Acoustic investigation of the Mimi + FlowLM pipeline revealed critical physical
+behavior:
+
+1. **No amplitude invariance in the Mimi encoder:**
+   `mimi_encoder` lacks built-in automatic gain control or input normalization.
+   The raw amplitude scale of the input audio passes directly into the latent space
+   and into FlowLM.
+2. **Pitch (F0) collapse on loud references:**
+   When given a typical loud studio recording (active speech RMS ~0.15–0.20 or
+   peaked at 0 dBFS), FlowLM **depresses the fundamental frequency (F0) by 1.5–2.5
+   semitones** (`-1.7..-2.4 st`), and halves the intonation range (IQR). A female voice
+   sounds unnaturally deep, muffled, and flat, while male voices lose articulation.
+3. **Pitch inflation on quiet references:**
+   If the input is too quiet (RMS below 0.03), FlowLM artificially shifts the pitch
+   upward (`+3..+5 st`), making deep male voices unnaturally high.
+4. **Treble attenuation in the Mimi codec:**
+   The Mimi codec naturally attenuates frequencies above 2 kHz by 3.7–5.4 dB (dropping
+   the spectral centroid by 80–105 Hz) even in roundtrip encode-decode. Starting
+   with a muffled reference makes the synthetic speech noticeably dark.
+
+**The optimal F0 calibration target** across both female and male voices is an
+active speech level of **`RMS ~0.045–0.050 (~ -26 dBFS)`**.
+
+### The "Prepare" Function (Reference Normalization)
+
+To eliminate pitch and timbre distortion, the Pocket TTS card features a dedicated
+**"Prepare"** button next to the selected reference WAV:
+
+1. The app decodes the source WAV (leaving the original file completely untouched).
+2. The audio is downmixed to mono and resampled to 24 kHz using a windowed-sinc
+   polyphase filter (with anti-aliasing cutoff aligned to the target Nyquist
+   frequency: `cutoff = min(1.0, f_out / f_in)`, preserving the full spectrum up
+   to 12 kHz without high-frequency attenuation).
+3. Active speech frames (20 ms frames with energy >= 10% of overall RMS) are
+   analyzed, isolating speech from silence.
+4. The signal is scaled precisely to **`RMS = 0.048`** with a protective peak cap of
+   `0.98` to avoid clipping.
+5. The prepared copy is saved to `%APPDATA%\ttsbard\pocket-references\<package-id>.wav`,
+   and the model immediately switches to this optimized file.
+
+### Automatic Output Gain Compensation
+
+Because the normalized reference (RMS ~0.048) causes raw model output to be quieter
+(`out_rms ~0.04–0.05`), the TTSBard Pocket TTS runtime applies automatic soft gain
+compensation:
+- Output PCM is gently boosted toward **`RMS = 0.12`** (with peak limit `0.98` and a
+  maximum boost factor of 4.0×).
+- This ensures Pocket TTS matches the loudness of other engines (Silero, Piper,
+  ElevenLabs) without distortion.
 
 ## Check your setup
 

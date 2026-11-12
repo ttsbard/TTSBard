@@ -54,6 +54,10 @@ Combine cloud services and locally installed voices:
   style, voice boost and proxy; requires a suitably permitted API key.
 - **Fish Audio**: saved voice models, synthesis/audio-format settings and proxy;
   requires an API key.
+- **Pocket TTS**: local neural synthesis running on CPU (Kyutai architecture:
+  Mimi codec + FlowLM model via ONNX Runtime) without network or GPU.
+  Supports instant voice cloning from a short reference WAV with reference
+  level normalization, as well as preset bundled voices.
 - **Local HTTP TTS**: compatible servers including TTS Voice Wizard's Locally
   Hosted mode; distinct from embedded Piper.
 
