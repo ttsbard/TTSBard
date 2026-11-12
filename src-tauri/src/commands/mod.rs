@@ -7,6 +7,9 @@ use crate::state::AppState;
 use crate::stress::packs::RuAccentPackDescriptor;
 use crate::stress::runtime::RuAccentRuntimeSlot;
 use crate::system_fonts::SystemFontCatalog;
+use crate::tts::pocket::{
+    with_voice_store, PocketError, PocketModelDto, PocketTts, PocketVoiceInput,
+};
 use crate::tts::TtsProvider;
 use tauri::{AppHandle, Emitter, EventTarget, Listener, Manager, State};
 use tracing::{error, info, warn};
@@ -402,6 +405,7 @@ pub async fn get_all_app_settings(
                             "discovered"
                         }),
                     ),
+                    TtsProvider::Pocket(tts) => ("pocket", Some(tts.status_string())),
                 };
                 TtsProviderInfoDto {
                     id: entry.id.clone(),
@@ -881,6 +885,159 @@ pub async fn select_tts_provider_by_id(
         .map_err(|e| CommandError::new(error_code::SELECTION_FAILED, e, false))?;
     emit_settings_changed(&app_handle);
     Ok(())
+}
+
+fn pocket_provider(state: &AppState, id: &str) -> Result<PocketTts, CommandError> {
+    let provider = {
+        let registry = state.tts_registry.lock();
+        registry.get(id).map(|entry| entry.provider.clone())
+    };
+    match provider {
+        Some(TtsProvider::Pocket(provider)) => Ok(provider),
+        _ => Err(CommandError::new(
+            crate::ipc::pocket::error_code::UNKNOWN_MODEL,
+            format!("Unknown Pocket TTS model ID: {id}"),
+            false,
+        )),
+    }
+}
+
+fn pocket_error(error: PocketError) -> CommandError {
+    CommandError::new(error.code().as_str(), error.message(), false)
+}
+
+fn pocket_models_snapshot(state: &AppState) -> Vec<PocketModelDto> {
+    state
+        .tts_registry
+        .lock()
+        .iter()
+        .filter_map(|entry| match &entry.provider {
+            TtsProvider::Pocket(provider) => Some(provider.dto()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// DTO returned by the WAV reference check. `status` distinguishes a missing
+/// file from an invalid one without throwing for the normal "user picked a bad
+/// file" path.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PocketReferenceCheckDto {
+    pub status: String,
+    pub error_code: Option<String>,
+    pub file_name: Option<String>,
+    pub duration_seconds: Option<f32>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<usize>,
+}
+
+/// List every valid Pocket TTS package with its selected voice and readiness.
+#[tauri::command]
+pub fn list_pocket_models(state: State<'_, AppState>) -> Vec<PocketModelDto> {
+    pocket_models_snapshot(state.inner())
+}
+
+/// Re-scan `models/pocket` in the shared Piper root order. New packages are
+/// registered, changed packages replaced, and removed packages dropped. The
+/// returned snapshot is ready for the card to render.
+#[tauri::command]
+pub async fn refresh_pocket_models(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<PocketModelDto>, String> {
+    state.register_pocket_providers();
+    emit_settings_changed(&app_handle);
+    Ok(pocket_models_snapshot(state.inner()))
+}
+
+/// Validate a user-selected WAV reference. Readiness distinguishes missing and
+/// invalid files; the command itself is total for those user-facing outcomes.
+#[tauri::command]
+pub fn validate_pocket_reference(path: String) -> PocketReferenceCheckDto {
+    use crate::tts::pocket::audio::validate_reference_wav;
+
+    let path = std::path::PathBuf::from(path);
+    match validate_reference_wav(&path) {
+        Ok(info) => PocketReferenceCheckDto {
+            status: crate::ipc::pocket::readiness::READY.to_string(),
+            error_code: None,
+            file_name: Some(info.file_name),
+            duration_seconds: Some(info.duration_seconds),
+            sample_rate: Some(info.sample_rate),
+            channels: Some(info.channels),
+        },
+        Err(error) => {
+            let status = match &error {
+                PocketError::ReferenceMissing => crate::ipc::pocket::readiness::REFERENCE_MISSING,
+                _ => crate::ipc::pocket::readiness::REFERENCE_INVALID,
+            };
+            PocketReferenceCheckDto {
+                status: status.to_string(),
+                error_code: Some(match &error {
+                    PocketError::ReferenceTooLong { .. } => "pocket.reference_too_long".to_string(),
+                    _ => error.code().as_str().to_string(),
+                }),
+                file_name: path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string),
+                duration_seconds: None,
+                sample_rate: None,
+                channels: None,
+            }
+        }
+    }
+}
+
+/// Set (or clear) the voice of a Pocket TTS model and persist it by package ID.
+///
+/// The selection is validated before persistence and the registry entry is
+/// replaced only after the store write succeeds. Queue snapshots already taken
+/// keep the previous selection.
+#[tauri::command]
+pub async fn set_pocket_voice(
+    model_id: String,
+    voice: Option<PocketVoiceInput>,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PocketModelDto, CommandError> {
+    use crate::tts::pocket::validate_selection;
+
+    let dto: PocketModelDto = with_voice_store(|store| -> Result<_, CommandError> {
+        let provider = pocket_provider(state.inner(), &model_id)?;
+        let selection = match voice {
+            Some(input) => {
+                Some(validate_selection(provider.descriptor(), &input).map_err(pocket_error)?)
+            }
+            None => None,
+        };
+        let package_id = provider.descriptor().package_id.clone();
+        let persistence_result = match &selection {
+            Some(selection) => store.set(&package_id, selection),
+            None => store.clear(&package_id),
+        };
+        persistence_result.map_err(|error| {
+            CommandError::new(
+                crate::ipc::pocket::error_code::PERSISTENCE_FAILED,
+                error.message(),
+                false,
+            )
+        })?;
+
+        let updated = provider.with_voice(selection);
+        {
+            let mut registry = state.tts_registry.lock();
+            let display_name = provider.descriptor().display_name.clone();
+            registry.add_or_replace(crate::tts::registry::TtsProviderEntry {
+                id: model_id,
+                display_name,
+                provider: TtsProvider::Pocket(updated.clone()),
+            });
+        }
+        Ok(updated.dto())
+    })?;
+    emit_settings_changed(&app_handle);
+    Ok(dto)
 }
 
 /// DTO for a discovered local RUAccent pack without filesystem paths.

@@ -128,8 +128,14 @@ rand = "0.10"
 spellbook = "0.4"
 
 # Piper TTS embedded runtime: static ONNX Runtime + phonemization
-ort = "=2.0.0-rc.13"
+ort = { version = "=2.0.0-rc.13", features = ["half"] }
 espeak-rs = { git = "https://github.com/alksef/piper-rs.git", rev = "346f10f6e8520b2ee21e4d0117c1ca0e38e5cd0f", package = "espeak-rs" }
+
+# Pocket TTS local runtime (ROADMAP-135): ONNX graphs plus the two tokenizer
+# formats used by the supported model packages.
+half = "2.7.1"
+tokenizers = { version = "0.22.2", default-features = false }
+unicode-normalization = "0.1.25"
 
 # PP-OCRv5 one-shot screen OCR backend (ROADMAP-088). Default features are off:
 # no model downloader, no DirectML. Only the tokio worker wrapper is enabled.

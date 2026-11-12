@@ -11,6 +11,12 @@ use crate::tts::{
     openai::OpenAiTts,
     piper::runtime::LocalModelTts,
     piper::scanner::{discover_piper_models, merge_piper_roots, scan_piper_models_root},
+    pocket::{
+        descriptor::PocketModelDescriptor, discover_pocket_models,
+        merge_pocket_roots as merge_pocket_model_roots,
+        resolved_selection as resolved_pocket_selection, scan_pocket_models_root, with_voice_store,
+        PocketTts, PocketVoiceStore,
+    },
     registry::TtsProviderEntry,
     registry::TtsProviderRegistry,
     silero::SileroTts,
@@ -767,6 +773,35 @@ impl AppState {
         info!(count = count, "Piper provider registration complete");
     }
 
+    /// Discover and register Pocket TTS packages across the same shared model
+    /// roots as Piper. Voice selections are loaded from `pocket-voices.json`
+    /// and applied to the provider instances. Repeated scans replace entries
+    /// for changed packages and drop entries whose directory disappeared.
+    ///
+    /// No ONNX session is created here: models stay lazy until selection,
+    /// readiness preparation, or synthesis.
+    pub fn register_pocket_providers(&self) -> usize {
+        let per_root: Vec<Vec<_>> = crate::paths::model_search_roots()
+            .iter()
+            .map(|root| {
+                if root.managed {
+                    discover_pocket_models(&root.path)
+                } else {
+                    scan_pocket_models_root(&root.path)
+                }
+            })
+            .collect();
+        let descriptors = merge_pocket_model_roots(per_root);
+        let count = with_voice_store(|store| {
+            let mut registry = self.tts_registry.lock();
+            let saved_id = self.settings_cache.read().tts.provider_id.clone();
+            reconcile_pocket_registry(&mut registry, &descriptors, store, saved_id.as_deref())
+        });
+
+        info!(count = count, "Pocket TTS provider registration complete");
+        count
+    }
+
     /// Snapshot the currently discovered RUAccent packs.
     #[allow(dead_code)]
     pub fn get_ruaccent_packs(&self) -> Vec<RuAccentPackDescriptor> {
@@ -886,6 +921,49 @@ impl AppState {
         info!(id, legacy = ?legacy_type, "TTS provider selected");
         Ok(())
     }
+}
+
+/// Reconcile Pocket provider entries with a freshly scanned descriptor list.
+///
+/// The caller must hold the Pocket voice-store transaction lock and pass the
+/// store loaded inside it. This keeps a concurrent voice change that already
+/// updated the registry from being overwritten by a refresh using an older
+/// preference snapshot.
+fn reconcile_pocket_registry(
+    registry: &mut TtsProviderRegistry,
+    descriptors: &[PocketModelDescriptor],
+    store: &PocketVoiceStore,
+    saved_id: Option<&str>,
+) -> usize {
+    let discovered: std::collections::HashSet<String> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.id.clone())
+        .collect();
+    let stale: Vec<String> = registry
+        .iter()
+        .filter(|entry| {
+            matches!(entry.provider, TtsProvider::Pocket(_)) && !discovered.contains(&entry.id)
+        })
+        .map(|entry| entry.id.clone())
+        .collect();
+    for id in stale {
+        registry.remove(&id);
+    }
+
+    for desc in descriptors {
+        let selection = resolved_pocket_selection(desc, store);
+        let tts = PocketTts::new(desc.clone(), selection);
+        registry.add_or_replace(TtsProviderEntry {
+            id: desc.id.clone(),
+            display_name: desc.display_name.clone(),
+            provider: TtsProvider::Pocket(tts),
+        });
+    }
+
+    if registry.active_id().is_none() {
+        registry.restore_saved_or_first(saved_id);
+    }
+    descriptors.len()
 }
 
 /// Bounded RUAccent retry policy with injectable scan and pause.
@@ -1680,6 +1758,123 @@ mod tests {
         assert_eq!(scans.get(), 1);
         assert_eq!(pauses.get(), 0);
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn pocket_test_descriptor(root: &std::path::Path) -> PocketModelDescriptor {
+        PocketModelDescriptor {
+            id: "local-pocket:serialized".to_string(),
+            package_id: "serialized".to_string(),
+            display_name: "Serialized".to_string(),
+            language: "en".to_string(),
+            format: "pocket-tts-onnx".to_string(),
+            format_version: 1,
+            package_root: root.to_path_buf(),
+            config_path: root.join("config.yaml"),
+            weights_path: root.join("model.safetensors"),
+            tokenizer_path: root.join("tokenizer.json"),
+            tokenizer_kind: crate::tts::pocket::PocketTokenizerKind::Json,
+            n_bins: 10,
+            sample_rate: 24_000,
+            frame_rate: 12.5,
+            num_layers: 1,
+            latent_dim: 32,
+            insert_bos_before_voice: true,
+            temperature: 0.3,
+            eos_threshold: -4.0,
+            voice_modes: vec![crate::tts::pocket::PocketVoiceMode::ReferenceWav],
+            voices: Vec::new(),
+            graphs: crate::tts::pocket::descriptor::PocketGraphs {
+                encoder: root.join("mimi_encoder.onnx"),
+                conditioner: root.join("text_conditioner.onnx"),
+                main: root.join("flow_lm_main.onnx"),
+                flow: root.join("flow_lm_flow.onnx"),
+                decoder: root.join("mimi_decoder.onnx"),
+                quantized: false,
+            },
+            asset_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pocket_refresh_and_voice_change_serialize_registry_reconciliation() {
+        use crate::tts::pocket::voice::with_voice_store_at;
+        use crate::tts::pocket::PocketVoiceSelection;
+
+        let root = crate::stress::packs::test_util::unique_test_root("pocket-reconcile");
+        std::fs::create_dir_all(&root).unwrap();
+        let descriptor = pocket_test_descriptor(&root);
+        let store_path = root.join("pocket-voices.json");
+        let first = PocketVoiceSelection::ReferenceWav(root.join("first.wav"));
+        let second = PocketVoiceSelection::ReferenceWav(root.join("second.wav"));
+        let registry = Arc::new(Mutex::new(TtsProviderRegistry::new()));
+
+        with_voice_store_at(store_path.clone(), |store| {
+            store.set(&descriptor.package_id, &first).unwrap();
+            let mut registry = registry.lock();
+            reconcile_pocket_registry(
+                &mut registry,
+                std::slice::from_ref(&descriptor),
+                store,
+                None,
+            );
+        });
+
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let second_for_setter = second.clone();
+        let setter = {
+            let path = store_path.clone();
+            let registry = Arc::clone(&registry);
+            let descriptor = descriptor.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                with_voice_store_at(path, |store| {
+                    store
+                        .set(&descriptor.package_id, &second_for_setter)
+                        .unwrap();
+                    let mut registry = registry.lock();
+                    reconcile_pocket_registry(
+                        &mut registry,
+                        std::slice::from_ref(&descriptor),
+                        store,
+                        None,
+                    );
+                });
+            })
+        };
+        let refresher = {
+            let path = store_path.clone();
+            let registry = Arc::clone(&registry);
+            let descriptor = descriptor.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                with_voice_store_at(path, |store| {
+                    let mut registry = registry.lock();
+                    reconcile_pocket_registry(
+                        &mut registry,
+                        std::slice::from_ref(&descriptor),
+                        store,
+                        None,
+                    );
+                });
+            })
+        };
+        barrier.wait();
+        setter.join().unwrap();
+        refresher.join().unwrap();
+
+        let registry = registry.lock();
+        let entry = registry.get(&descriptor.id).expect("Pocket provider");
+        let TtsProvider::Pocket(provider) = &entry.provider else {
+            panic!("expected a Pocket provider");
+        };
+        assert_eq!(provider.selection(), Some(&second));
+        let store = PocketVoiceStore::load(store_path);
+        assert_eq!(store.selection_for(&descriptor.package_id), Some(second));
+
+        drop(registry);
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -6,4 +6,4 @@ implementation plans и не задания AI-агентам.
 
 ## Текущие направления
 
-Нет активных направлений.
+- [ROADMAP-135 — Локальный Pocket TTS с выбором модели](./135-pocket-tts.md) — `in_progress`, Shtorm RU и Kyutai EN в отдельной карточке TTS.

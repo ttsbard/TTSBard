@@ -24,6 +24,7 @@ import TelegramAuthModal from './TelegramAuthModal.vue';
 import StatusMessage from './shared/StatusMessage.vue';
 import TtsSileroCard from './tts/TtsSileroCard.vue';
 import TtsLocalCard from './tts/TtsLocalCard.vue';
+import TtsPocketCard from './tts/TtsPocketCard.vue';
 import TtsOpenAICard from './tts/TtsOpenAICard.vue';
 import TtsFishAudioCard from './tts/TtsFishAudioCard.vue';
 import TtsElevenLabsCard from './tts/TtsElevenLabsCard.vue';
@@ -62,7 +63,10 @@ const providers = ref<Record<TtsProviderType, TtsProviderState>>({
 
 // Get settings from composable
 const ttsSettings = useTtsSettings();
-const { reload: reloadSettings } = useAppSettings();
+const { settings: appSettings, reload: reloadSettings } = useAppSettings();
+
+const speakerDevice = computed(() => appSettings.value?.audio.speaker_device ?? null);
+const speakerVolume = computed(() => appSettings.value?.audio.speaker_volume ?? 100);
 
 // OpenAI settings
 const openaiApiKey = ref('');
@@ -107,6 +111,10 @@ const piperProviders = ref<TtsProviderInfoDto[]>([]);
 const piperLoading = ref<Record<string, boolean>>({});
 const piperError = ref<Record<string, string | null>>({});
 const activePiperId = ref<string | null>(null);
+
+// Pocket TTS active concrete provider. The card discovers its own model list;
+// only the persisted active ID is owned by this panel.
+const activePocketId = ref<string | null>(null);
 
 // Provider visibility
 const visibilityOpen = ref(false);
@@ -571,6 +579,7 @@ async function setActiveProvider(provider: TtsProviderType) {
     await selectBuiltinTtsProvider(provider);
     activeProvider.value = provider;
     activePiperId.value = null;
+    activePocketId.value = null;
     activeProviderId.value = BUILTIN_PROVIDER_ID_BY_TYPE[provider];
     await reloadSettings();
   } catch (error) {
@@ -588,6 +597,7 @@ async function selectPiperProvider(id: string) {
     await selectConcreteTtsProvider(id);
     activeProvider.value = null;
     activePiperId.value = id;
+    activePocketId.value = null;
     activeProviderId.value = id;
     showSuccess(t('tts.model.loaded'));
   } catch (error) {
@@ -599,6 +609,14 @@ async function selectPiperProvider(id: string) {
     piperLoading.value[id] = false;
     await reloadSettings();
   }
+}
+
+async function handlePocketActivated(id: string) {
+  activeProvider.value = null;
+  activePiperId.value = null;
+  activePocketId.value = id;
+  activeProviderId.value = id;
+  await reloadSettings();
 }
 
 function piperUiStatus(provider: TtsProviderInfoDto) {
@@ -786,10 +804,16 @@ watch(ttsSettings, (newSettings) => {
   if (newSettings.providers) {
     piperProviders.value = newSettings.providers.filter(p => p.kind === 'piper');
     const activePiper = newSettings.providers.find(p => p.kind === 'piper' && p.active);
+    const activePocket = newSettings.providers.find(p => p.kind === 'pocket' && p.active);
     activePiperId.value = activePiper?.id ?? null;
+    activePocketId.value = activePocket?.id ?? null;
   }
 
-  if (activePiperId.value) {
+  if (activePocketId.value) {
+    activeProvider.value = null;
+    activePiperId.value = null;
+    activeProviderId.value = activePocketId.value;
+  } else if (activePiperId.value) {
     activeProvider.value = null;
     activeProviderId.value = activePiperId.value;
   } else if (newSettings.provider) {
@@ -1106,6 +1130,14 @@ function dismissStatus() {
         @select="setActiveProvider('local')"
         @toggle="toggleProvider('local')"
         @save="saveLocalTtsUrl"
+      />
+
+      <!-- Pocket TTS local provider -->
+      <TtsPocketCard
+        :active-model-id="activePocketId"
+        :speaker-device="speakerDevice"
+        :speaker-volume="speakerVolume"
+        @activate="handlePocketActivated"
       />
 
       <!-- Piper Runtime Providers -->

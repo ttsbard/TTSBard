@@ -121,10 +121,14 @@ fn provider_to_stress_adapter(provider: &TtsProvider) -> ProviderStressAdapter {
     match provider {
         TtsProvider::Silero(_) => ProviderStressAdapter::Silero,
         TtsProvider::Piper(_) => ProviderStressAdapter::Piper,
+        TtsProvider::Pocket(tts) if tts.language().eq_ignore_ascii_case("ru") => {
+            ProviderStressAdapter::Piper
+        }
         TtsProvider::OpenAi(_)
         | TtsProvider::Fish(_)
         | TtsProvider::Local(_)
-        | TtsProvider::ElevenLabs(_) => ProviderStressAdapter::PlainText,
+        | TtsProvider::ElevenLabs(_)
+        | TtsProvider::Pocket(_) => ProviderStressAdapter::PlainText,
     }
 }
 

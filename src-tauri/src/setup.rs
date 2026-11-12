@@ -266,6 +266,8 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
 
     // Register discovered Piper providers (no ONNX session created yet)
     app_state.register_piper_providers();
+    // Register discovered Pocket TTS providers (no ONNX session created yet).
+    app_state.register_pocket_providers();
 
     // Discover local RUAccent packs (no model/ONNX session loaded). The retry
     // wrapper keeps a transient boot-time filesystem failure from reading as
@@ -316,16 +318,36 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
 
         app_state.push_notification(missing_piper_notification(&model_name));
     } else {
-        let restored_piper = {
+        let (restored_piper, restored_pocket) = {
             let mut registry = app_state.tts_registry.lock();
             registry.restore_saved_or_first(saved_id.as_deref());
-            registry.active().and_then(|entry| match &entry.provider {
-                crate::tts::TtsProvider::Piper(provider) => {
-                    Some((entry.id.clone(), provider.clone()))
+            let active = registry
+                .active()
+                .map(|entry| (entry.id.clone(), entry.provider.clone()));
+            match active {
+                Some((id, crate::tts::TtsProvider::Piper(provider))) => {
+                    (Some((id, provider)), None)
                 }
-                _ => None,
-            })
+                Some((id, crate::tts::TtsProvider::Pocket(provider))) => {
+                    (None, Some((id, provider)))
+                }
+                _ => (None, None),
+            }
         };
+
+        // A persisted Pocket model keeps the saved selection even when its
+        // voice is not ready; synthesis will surface the specific readiness
+        // error and other providers stay available.
+        if let Some((provider_id, provider)) = restored_pocket {
+            info!(provider_id, "Preparing restored Pocket TTS provider");
+            if let Err(error) = provider.prepare() {
+                warn!(
+                    provider_id,
+                    error = %error,
+                    "Restored Pocket TTS provider is not ready"
+                );
+            }
+        }
 
         // A persisted Piper choice is already selected from the user's point
         // of view. Verify eSpeak phonemization readiness before loading the

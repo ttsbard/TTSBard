@@ -51,7 +51,6 @@ impl TtsProviderRegistry {
         self.entries.is_empty()
     }
 
-    #[cfg(test)]
     pub fn remove(&mut self, id: &str) -> bool {
         if self.active_id.as_deref() == Some(id) {
             self.active_id = None;

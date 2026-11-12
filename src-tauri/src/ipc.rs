@@ -51,6 +51,31 @@ pub mod tts_provider {
     }
 }
 
+/// Stable error/status codes for the Pocket TTS discovery and voice contract.
+pub mod pocket {
+    pub mod error_code {
+        pub const UNKNOWN_MODEL: &str = "pocket.unknown_model";
+        pub const PACKAGE_INVALID: &str = "pocket.package_invalid";
+        pub const REFERENCE_REQUIRED: &str = "pocket.reference_required";
+        pub const REFERENCE_MISSING: &str = "pocket.reference_missing";
+        pub const REFERENCE_INVALID: &str = "pocket.reference_invalid";
+        pub const VOICE_MISSING: &str = "pocket.voice_missing";
+        pub const RUNTIME_FAILED: &str = "pocket.runtime_failed";
+        pub const GENERATION_FAILED: &str = "pocket.generation_failed";
+        pub const CANCELLED: &str = "pocket.cancelled";
+        pub const PERSISTENCE_FAILED: &str = "pocket.persistence_failed";
+    }
+
+    pub mod readiness {
+        pub const READY: &str = "ready";
+        pub const NEEDS_REFERENCE: &str = "needs_reference";
+        pub const REFERENCE_MISSING: &str = "reference_missing";
+        pub const REFERENCE_INVALID: &str = "reference_invalid";
+        pub const VOICE_MISSING: &str = "voice_missing";
+        pub const PACKAGE_INVALID: &str = "package_invalid";
+    }
+}
+
 /// Exhaustive production declaration: every `submit_speech` error code and its retryability.
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeechErrorDef {

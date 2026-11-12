@@ -4,6 +4,7 @@ pub mod fish;
 pub mod local_http_server;
 pub mod openai;
 pub mod piper;
+pub mod pocket;
 pub mod proxy_utils;
 pub mod registry;
 pub mod silero;
@@ -39,12 +40,14 @@ pub enum TtsProvider {
     Fish(fish::FishTts),
     ElevenLabs(elevenlabs::ElevenLabsTts),
     Piper(Arc<LocalModelTts>),
+    Pocket(pocket::PocketTts),
 }
 
 impl TtsProvider {
     pub fn prepare(&self) -> Result<(), String> {
         match self {
             TtsProvider::Piper(tts) => tts.prepare(),
+            TtsProvider::Pocket(tts) => tts.prepare(),
             _ => Ok(()),
         }
     }
@@ -57,6 +60,7 @@ impl TtsProvider {
             TtsProvider::Fish(tts) => tts.synthesize(text).await.map_err(|e| e.to_string()),
             TtsProvider::ElevenLabs(tts) => tts.synthesize(text).await,
             TtsProvider::Piper(tts) => tts.synthesize(text).await,
+            TtsProvider::Pocket(tts) => tts.synthesize(text).await,
         }
     }
 
@@ -68,27 +72,32 @@ impl TtsProvider {
             TtsProvider::Fish(_) => "fish",
             TtsProvider::ElevenLabs(_) => "elevenlabs",
             TtsProvider::Piper(_) => "piper",
+            TtsProvider::Pocket(_) => "pocket",
         }
     }
 
-    pub fn voice_identity(&self) -> &str {
+    pub fn voice_identity(&self) -> String {
         match self {
-            TtsProvider::OpenAi(tts) => tts.voice(),
-            TtsProvider::Fish(tts) => tts.reference_id(),
-            TtsProvider::ElevenLabs(tts) => tts.voice_id(),
-            TtsProvider::Silero(tts) => tts.captured_speaker().unwrap_or(""),
-            TtsProvider::Local(_) => "local",
-            TtsProvider::Piper(_) => "piper",
+            TtsProvider::OpenAi(tts) => tts.voice().to_string(),
+            TtsProvider::Fish(tts) => tts.reference_id().to_string(),
+            TtsProvider::ElevenLabs(tts) => tts.voice_id().to_string(),
+            TtsProvider::Silero(tts) => tts.captured_speaker().unwrap_or("").to_string(),
+            TtsProvider::Local(_) => "local".to_string(),
+            TtsProvider::Piper(_) => "piper".to_string(),
+            TtsProvider::Pocket(tts) => tts.voice_identity(),
         }
     }
 
-    pub fn voice_identity_or_registry<'a>(&'a self, registry_id: &'a str) -> &'a str {
+    pub fn voice_identity_or_registry(&self, registry_id: &str) -> String {
         match self {
-            TtsProvider::OpenAi(tts) => tts.voice(),
-            TtsProvider::Fish(tts) => tts.reference_id(),
-            TtsProvider::ElevenLabs(tts) => tts.voice_id(),
-            TtsProvider::Silero(tts) => tts.captured_speaker().unwrap_or(""),
-            TtsProvider::Local(_) | TtsProvider::Piper(_) => registry_id,
+            TtsProvider::OpenAi(tts) => tts.voice().to_string(),
+            TtsProvider::Fish(tts) => tts.reference_id().to_string(),
+            TtsProvider::ElevenLabs(tts) => tts.voice_id().to_string(),
+            TtsProvider::Silero(tts) => tts.captured_speaker().unwrap_or("").to_string(),
+            TtsProvider::Local(_) | TtsProvider::Piper(_) => registry_id.to_string(),
+            TtsProvider::Pocket(tts) => {
+                format!("{registry_id}:{}", tts.voice_identity())
+            }
         }
     }
 }

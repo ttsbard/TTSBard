@@ -5152,6 +5152,7 @@ version = "2.0.0-rc.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4336a1e2b38848325241c72889086886004e589b7c74f335e60a8e8db5138a0b"
 dependencies = [
+ "half",
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",
@@ -8528,6 +8529,7 @@ dependencies = [
  "grammers-mtsender",
  "grammers-session",
  "grammers-tl-types",
+ "half",
  "hex",
  "http 1.5.0",
  "igd",
@@ -8558,6 +8560,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "thiserror 1.0.69",
+ "tokenizers",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -8573,6 +8576,7 @@ dependencies = [
  "twitch-irc",
  "twitch_api",
  "twitch_oauth2",
+ "unicode-normalization",
  "unicode-segmentation",
  "urlencoding",
  "uuid",
