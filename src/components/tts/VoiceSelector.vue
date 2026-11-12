@@ -53,7 +53,6 @@ function handleChange(event: Event) {
 }
 
 .voice-selector .ui-label {
-  color: var(--color-text-secondary);
   min-width: 60px;
 }
 

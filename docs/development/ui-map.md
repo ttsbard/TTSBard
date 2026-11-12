@@ -18,7 +18,7 @@
 | ID | Экран | Компонент | Вложенные поверхности |
 |---|---|---|---|
 | `input` | Ввод | `InputPanel.vue` | `editor/TtsEditor.vue`, `EditorTabs.vue`, `EditorMenu.vue`, `RouteSelector.vue`, `IncomingTextsTab.vue`, `IncomingRouteSelector.vue`, `SpellContextMenu.vue`, `PhraseHistoryList.vue` |
-| `tts` | Синтез речи | `TtsPanel.vue` | `tts/TtsOpenAICard.vue`, `TtsSileroCard.vue`, `TtsLocalCard.vue`, `TtsPocketCard.vue`, `TtsFishAudioCard.vue`, `TtsElevenLabsCard.vue`, `VoiceSelector.vue`, `FishAudioModelPicker.vue`, `TelegramConnectionStatus.vue`, `TelegramAuthModal.vue` |
+| `tts` | Синтез речи | `TtsPanel.vue` | `tts/TtsOpenAICard.vue`, `TtsSileroCard.vue`, `TtsLocalCard.vue`, `TtsPocketCard.vue`, `TtsPiperCard.vue`, `TtsFishAudioCard.vue`, `TtsElevenLabsCard.vue`, `VoiceSelector.vue`, `FishAudioModelPicker.vue`, `TelegramConnectionStatus.vue`, `TelegramAuthModal.vue` |
 | `audio` | Аудио | `AudioPanel.vue` | `audio/AudioDevicesTab.vue`, `AudioEffectsTab.vue`, `AudioPreviewBar.vue`, `DspSettings.vue`, `EqSettings.vue`, `CompressorSettings.vue`, `LimiterSettings.vue`, `EffectsSettings.vue` |
 | `preprocessor` | Препроцессор | `PreprocessorPanel.vue` | Правила обработки и их условные настройки |
 | `webview` | WebView | `WebViewPanel.vue` | Сервер с постоянным LAN bind, порт, локальный/LAN URL; шаблоны, тест, внешнее подключение и UPnP |

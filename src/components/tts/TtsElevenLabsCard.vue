@@ -392,7 +392,7 @@ function handleProxyToggle(event: Event) {
       <!-- Voice Management -->
       <div class="setting-group">
         <div class="catalog-row">
-          <label class="catalog-label ui-label ui-label--secondary">{{ t('tts.voice') }}</label>
+          <label class="catalog-label ui-label">{{ t('tts.voice') }}</label>
           <select
             v-if="voices.length > 0"
             :value="voiceId"
@@ -450,7 +450,6 @@ function handleProxyToggle(event: Event) {
 
 .setting-group > .ui-label {
   display: block;
-  color: var(--color-text-secondary);
   margin-bottom: 8px;
 }
 
@@ -467,7 +466,6 @@ function handleProxyToggle(event: Event) {
 }
 
 .key-label {
-  color: var(--color-text-secondary);
   flex-shrink: 0;
 }
 
@@ -602,7 +600,6 @@ function handleProxyToggle(event: Event) {
 
 .model-output-row .control-group > .ui-label {
   flex-shrink: 0;
-  color: var(--color-text-secondary);
 }
 
 .model-output-row .setting-select {
@@ -635,7 +632,6 @@ function handleProxyToggle(event: Event) {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  color: var(--color-text-secondary);
   flex-shrink: 0;
 }
 

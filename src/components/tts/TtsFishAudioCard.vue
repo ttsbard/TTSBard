@@ -186,7 +186,7 @@ function handleProxyToggle(event: Event) {
         <!-- Temperature in separate row -->
         <div class="audio-settings-row">
           <div class="audio-setting">
-            <label class="ui-label"><span class="ui-label--secondary">{{ t('tts.temperature') }}</span> <span class="temperature-value">{{ localTemperature }}</span></label>
+            <label class="ui-label">{{ t('tts.temperature') }} <span class="temperature-value">{{ localTemperature }}</span></label>
             <input
               type="range"
               :value="localTemperature"
@@ -206,7 +206,7 @@ function handleProxyToggle(event: Event) {
             :disabled="isSaving"
             class="ui-button ui-button--primary save-button-inline"
           >
-            <Loader2 v-if="isSaving" :size="16" class="spinner" />
+            <Loader2 v-if="isSaving" :size="16" class="ui-spin" />
             {{ isSaving ? t('tts.saving') : t('common.save') }}
           </button>
         </div>
@@ -231,7 +231,7 @@ function handleProxyToggle(event: Event) {
       <!-- Voice Management -->
       <div class="setting-group">
         <div class="voice-header">
-          <label class="ui-label ui-label--secondary">{{ t('tts.voices') }}</label>
+          <label class="ui-label">{{ t('tts.voices') }}</label>
           <button @click="handleOpenModelPicker" class="ui-icon-button" :title="t('tts.add_voice')" :aria-label="t('tts.add_voice')">
             <Plus :size="18" />
           </button>
@@ -294,7 +294,6 @@ function handleProxyToggle(event: Event) {
 
 .setting-group > .ui-label {
   display: block;
-  color: var(--color-text-secondary);
   margin-bottom: 8px;
 }
 
@@ -303,10 +302,6 @@ function handleProxyToggle(event: Event) {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-}
-
-.form-row .ui-label {
-  color: var(--color-text-secondary);
 }
 
 .input-wide {
@@ -327,15 +322,6 @@ function handleProxyToggle(event: Event) {
 
 .save-button-inline {
   gap: 8px;
-}
-
-.spinner {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 .voice-header {
@@ -390,14 +376,14 @@ function handleProxyToggle(event: Event) {
 }
 
 .voice-languages {
-  font-size: 11px;
+  font-size: var(--ui-text-size-hint);
   text-transform: uppercase;
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
 .voice-description {
-  font-size: 12px;
+  font-size: var(--ui-text-size-hint);
   color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -431,10 +417,6 @@ function handleProxyToggle(event: Event) {
   align-items: center;
   gap: 12px;
   flex: 1;
-}
-
-.audio-setting .ui-label {
-  color: var(--color-text-secondary);
 }
 
 .card-content-inner {

@@ -162,7 +162,6 @@ function handleProxyToggle(event: Event) {
 
 .openai-form-row .ui-label {
   min-width: 60px;
-  color: var(--color-text-secondary);
 }
 
 .openai-input-wide {

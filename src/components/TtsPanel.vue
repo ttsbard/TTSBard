@@ -25,19 +25,21 @@ import StatusMessage from './shared/StatusMessage.vue';
 import TtsSileroCard from './tts/TtsSileroCard.vue';
 import TtsLocalCard from './tts/TtsLocalCard.vue';
 import TtsPocketCard from './tts/TtsPocketCard.vue';
+import TtsPiperCard from './tts/TtsPiperCard.vue';
 import TtsOpenAICard from './tts/TtsOpenAICard.vue';
 import TtsFishAudioCard from './tts/TtsFishAudioCard.vue';
 import TtsElevenLabsCard from './tts/TtsElevenLabsCard.vue';
 import {
   BUILTIN_PROVIDER_ID_BY_TYPE,
+  PIPER_VISIBILITY_ID,
   deriveLegacyVisibleIds,
   forceActiveVisible,
-  hasPiperRows,
   isPersistedVisibility,
+  normalizeVisibleIds,
+  normalizeVisibilityId,
   toggleVisibleId,
 } from './ttsProviderVisibility';
 import {
-  getPiperProviderUiStatus,
   selectBuiltinTtsProvider,
   selectConcreteTtsProvider,
 } from './ttsProviderSelection';
@@ -121,6 +123,8 @@ const visibilityOpen = ref(false);
 const visibilityButtonRef = ref<HTMLButtonElement | null>(null);
 const visibilityPopoverRef = ref<HTMLElement | null>(null);
 const visibilityOverride = ref<string[] | null>(null);
+// One visibility entry controls the card regardless of the selected Pocket model.
+const POCKET_VISIBILITY_ID = 'pocket';
 
 const cloudVisibilityEntries = computed(() => [
   { id: BUILTIN_PROVIDER_ID_BY_TYPE.silero, label: t('tts.providers.silero') },
@@ -131,11 +135,9 @@ const cloudVisibilityEntries = computed(() => [
 
 const localVisibilityEntries = computed(() => [
   { id: BUILTIN_PROVIDER_ID_BY_TYPE.local, label: t('tts.local.title') },
+  { id: POCKET_VISIBILITY_ID, label: t('tts.pocket.title') },
+  { id: PIPER_VISIBILITY_ID, label: t('tts.piper.title') },
 ]);
-
-const piperVisibilityEntries = computed(() =>
-  piperProviders.value.map(p => ({ id: p.id, label: p.display_name })),
-);
 
 const configuredProviderIds = computed<string[]>(() => {
   const settings = ttsSettings.value;
@@ -153,7 +155,7 @@ const piperIds = computed<string[]>(() => piperProviders.value.map(p => p.id));
 const baseVisibleIds = computed<string[]>(() => {
   const persisted = ttsSettings.value?.visible_provider_ids;
   if (isPersistedVisibility(persisted)) {
-    return [...(persisted as string[])];
+    return normalizeVisibleIds(persisted as string[]);
   }
   return deriveLegacyVisibleIds({
     activeProviderId: activeProviderId.value,
@@ -162,8 +164,18 @@ const baseVisibleIds = computed<string[]>(() => {
   });
 });
 
+const visibilityActiveId = computed(() => {
+  if (activePocketId.value) return POCKET_VISIBILITY_ID;
+  if (
+    activePiperId.value
+    || (activeProviderId.value && normalizeVisibilityId(activeProviderId.value) === PIPER_VISIBILITY_ID)
+  ) {
+    return PIPER_VISIBILITY_ID;
+  }
+  return activeProviderId.value;
+});
 const visibleIds = computed<string[]>(() =>
-  forceActiveVisible(visibilityOverride.value ?? baseVisibleIds.value, activeProviderId.value),
+  forceActiveVisible(visibilityOverride.value ?? baseVisibleIds.value, visibilityActiveId.value),
 );
 
 const sileroVisible = computed(() => visibleIds.value.includes(BUILTIN_PROVIDER_ID_BY_TYPE.silero));
@@ -172,13 +184,7 @@ const fishVisible = computed(() => visibleIds.value.includes(BUILTIN_PROVIDER_ID
 const elevenLabsVisible = computed(() => visibleIds.value.includes(BUILTIN_PROVIDER_ID_BY_TYPE.elevenlabs));
 const localVisible = computed(() => visibleIds.value.includes(BUILTIN_PROVIDER_ID_BY_TYPE.local));
 
-const piperBlockVisible = computed(() =>
-  hasPiperRows(visibleIds.value, piperIds.value, activeProviderId.value),
-);
-
-const visiblePiperProviders = computed(() =>
-  piperProviders.value.filter(p => visibleIds.value.includes(p.id)),
-);
+const piperVisible = computed(() => visibleIds.value.includes(PIPER_VISIBILITY_ID));
 
 // Telegram auth
 const showTelegramModal = ref(false);
@@ -272,9 +278,9 @@ function handleVisibilityDocumentKeydown(event: KeyboardEvent) {
 }
 
 async function onVisibilityToggle(id: string) {
-  if (id === activeProviderId.value) return;
+  if (id === visibilityActiveId.value) return;
   const previous = visibilityOverride.value;
-  const next = toggleVisibleId(visibleIds.value, id, activeProviderId.value);
+  const next = toggleVisibleId(visibleIds.value, id, visibilityActiveId.value);
   visibilityOverride.value = next;
   try {
     await invoke('set_visible_tts_provider_ids', { providerIds: next });
@@ -617,22 +623,6 @@ async function handlePocketActivated(id: string) {
   activePocketId.value = id;
   activeProviderId.value = id;
   await reloadSettings();
-}
-
-function piperUiStatus(provider: TtsProviderInfoDto) {
-  return getPiperProviderUiStatus(
-    provider,
-    !!piperLoading.value[provider.id],
-    piperError.value[provider.id],
-  );
-}
-
-function piperRowStatus(provider: TtsProviderInfoDto) {
-  const ui = piperUiStatus(provider);
-  if (ui.kind === 'loading') return { kind: 'loading', text: t('tts.model.loading'), title: undefined };
-  if (ui.kind === 'ready') return { kind: 'ready', text: t('tts.model.ready'), title: undefined };
-  if (ui.kind === 'error') return { kind: 'error', text: t('tts.model.load_error'), title: ui.label };
-  return { kind: 'none', text: '', title: undefined };
 }
 
 function openTelegramModal() {
@@ -980,7 +970,7 @@ function dismissStatus() {
         </div>
 
         <div class="visibility-group">
-          <div class="visibility-group-label">{{ t('tts.local.title') }}</div>
+          <div class="visibility-group-label">{{ t('tts.visibility.local') }}</div>
           <label
             v-for="entry in localVisibilityEntries"
             :key="entry.id"
@@ -989,29 +979,11 @@ function dismissStatus() {
             <input
               type="checkbox"
               :checked="visibleIds.includes(entry.id)"
-              :disabled="entry.id === activeProviderId"
+              :disabled="entry.id === visibilityActiveId"
               @change="onVisibilityToggle(entry.id)"
             />
             <span class="visibility-entry-label ui-choice-label">{{ entry.label }}</span>
-            <span v-if="entry.id === activeProviderId" class="visibility-active">{{ t('tts.visibility.active') }}</span>
-          </label>
-        </div>
-
-        <div class="visibility-group">
-          <div class="visibility-group-label">{{ t('tts.piper.title') }}</div>
-          <label
-            v-for="entry in piperVisibilityEntries"
-            :key="entry.id"
-            class="visibility-entry"
-          >
-            <input
-              type="checkbox"
-              :checked="visibleIds.includes(entry.id)"
-              :disabled="entry.id === activeProviderId"
-              @change="onVisibilityToggle(entry.id)"
-            />
-            <span class="visibility-entry-label ui-choice-label">{{ entry.label }}</span>
-            <span v-if="entry.id === activeProviderId" class="visibility-active">{{ t('tts.visibility.active') }}</span>
+            <span v-if="entry.id === visibilityActiveId" class="visibility-active">{{ t('tts.visibility.active') }}</span>
           </label>
         </div>
       </div>
@@ -1134,41 +1106,22 @@ function dismissStatus() {
 
       <!-- Pocket TTS local provider -->
       <TtsPocketCard
+        v-show="visibleIds.includes(POCKET_VISIBILITY_ID)"
         :active-model-id="activePocketId"
         :speaker-device="speakerDevice"
         :speaker-volume="speakerVolume"
         @activate="handlePocketActivated"
       />
 
-      <!-- Piper Runtime Providers -->
-      <div
-        v-if="piperBlockVisible"
-        class="piper-block"
-        :class="{ active: activePiperId !== null }"
-      >
-        <div class="piper-block-title ui-section-title">{{ t('tts.piper.title') }}</div>
-        <div class="ui-menu ui-menu--embedded">
-        <label
-          v-for="p in visiblePiperProviders"
-          :key="p.id"
-          class="piper-row"
-        >
-          <input
-            type="radio"
-            name="piper-provider"
-            :checked="activeProviderId === p.id"
-            :disabled="!!piperLoading[p.id]"
-            @change="selectPiperProvider(p.id)"
-          />
-          <span class="piper-row-name ui-choice-label">{{ p.display_name }}</span>
-          <span
-            class="piper-row-status"
-            :class="`piper-row-status--${piperRowStatus(p).kind}`"
-            :title="piperRowStatus(p).title"
-          >{{ piperRowStatus(p).text }}</span>
-        </label>
-        </div>
-      </div>
+      <!-- Piper local provider -->
+      <TtsPiperCard
+        v-if="piperVisible && piperProviders.length > 0"
+        :providers="piperProviders"
+        :active-id="activePiperId"
+        :loading="piperLoading"
+        :errors="piperError"
+        @select="selectPiperProvider"
+      />
     </div>
 
     <!-- Telegram Auth Modal -->
@@ -1209,7 +1162,7 @@ function dismissStatus() {
 
 .visibility-group-label {
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--ui-text-size-hint);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -1247,66 +1200,6 @@ function dismissStatus() {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.piper-block {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px;
-  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.3));
-  border-radius: 10px;
-  background: var(--color-bg-field);
-  transition: background 0.2s ease, border-color 0.2s ease;
-}
-
-.piper-block.active {
-  border-color: var(--card-active-border);
-  background: var(--card-active-bg);
-}
-
-.piper-block-title {
-  /* With the block's 2px gap, matches its 12px bottom padding. */
-  margin-bottom: 10px;
-}
-
-.piper-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 4px;
-  cursor: pointer;
-}
-
-.piper-row:hover {
-  background: var(--color-bg-field-hover);
-  border-radius: 6px;
-}
-
-.piper-row input {
-  margin: 0;
-}
-
-.piper-row-name {
-  flex: 1;
-}
-
-.piper-row-status {
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  white-space: nowrap;
-}
-
-.piper-row-status--loading {
-  color: var(--color-text-secondary, #888888);
-}
-
-.piper-row-status--ready {
-  color: var(--color-success, #2ecc71);
-}
-
-.piper-row-status--error {
-  color: var(--color-error, #e74c3c);
 }
 
 @media (max-width: 480px) {

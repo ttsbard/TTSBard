@@ -1,0 +1,109 @@
+/* Shared local TTS model list for the Pocket TTS and Piper cards. */
+
+.local-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--ui-radius);
+  background: var(--color-bg-field);
+  min-width: 0;
+}
+
+.local-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--ui-radius-menu-item);
+  cursor: pointer;
+}
+
+.local-model-row:hover {
+  background: var(--color-bg-field-hover);
+}
+
+.local-model-row--active {
+  background: var(--card-active-bg);
+}
+
+/*
+ * The row whose details are open while another model stays active. A quiet
+ * inset outline marks "being configured" without imitating an active fill.
+ */
+.local-model-row--focused {
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+/* Compact native radio: do not inherit the 18px .ui-choice-input size. */
+.local-model-radio {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.local-model-name {
+  flex: 1 1 150px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-model-status {
+  flex: 0 0 auto;
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: var(--ui-line-height-control);
+  white-space: nowrap;
+}
+
+.local-model-status--loading {
+  color: var(--color-text-secondary);
+}
+
+.local-model-status--ready {
+  color: var(--color-success);
+}
+
+.local-model-status--warning {
+  color: var(--color-warning);
+}
+
+.local-model-status--error {
+  color: var(--color-danger);
+}
+
+.local-model-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: var(--ui-radius);
+  border: 1px solid transparent;
+  background: var(--color-bg-field);
+  color: var(--color-text-primary);
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: var(--ui-line-height-multiline);
+}
+
+.local-model-message-text {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-model-message--error {
+  background: var(--danger-bg-weak);
+  border-color: var(--danger-border-strong);
+}
+
+.local-model-message--success {
+  background: var(--success-bg-weak);
+  border-color: var(--success-border-weak);
+}

@@ -92,9 +92,6 @@ async function mountCard(activeModelId: string | null = null) {
     },
   })
   await flush()
-  const expand = host.querySelector('.expand-icon') as HTMLElement | null
-  if (expand) expand.click()
-  await flush()
   return { host, activate }
 }
 
@@ -137,6 +134,40 @@ describe('TtsPocketCard', () => {
     expect(refresh.getAttribute('aria-label')).toBeTruthy()
   })
 
+  it('renders as an always-expanded, non-selectable card with a Cpu icon and header refresh', async () => {
+    installList([shtorm()])
+    const { host } = await mountCard()
+
+    expect(host.querySelector('.provider-card')).not.toBeNull()
+    expect(host.querySelector('.expand-icon')).toBeNull()
+    expect(host.querySelector('.card-content')).not.toBeNull()
+    expect(host.querySelector('.card-header input[type="radio"]')).toBeNull()
+    expect(host.querySelector('.card-header')?.firstElementChild?.classList.contains('provider-icon')).toBe(true)
+    expect(host.querySelector('.provider-icon.lucide-cpu')).not.toBeNull()
+    expect(host.querySelector('.header-actions .pocket-refresh-button')).not.toBeNull()
+    expect(host.querySelector('.card-subtitle')).toBeNull()
+    expect(host.textContent).not.toContain('Local CPU synthesis')
+    expect(host.querySelector('.local-model-list')).not.toBeNull()
+  })
+
+  it('uses compact native radios for models and ready voices', async () => {
+    const english = kyutai()
+    installList([english])
+    const { host } = await mountCard(english.id)
+
+    const modelRadio = modelRadios(host)[0]
+    expect(modelRadio.classList.contains('local-model-radio')).toBe(true)
+    expect(modelRadio.classList.contains('ui-choice-input')).toBe(false)
+
+    const voiceRadio = host.querySelector<HTMLInputElement>(
+      `input[name="pocket-voice-${english.id}"]`,
+    )
+    expect(voiceRadio).not.toBeNull()
+    expect(voiceRadio!.classList.contains('local-model-radio')).toBe(true)
+    expect(voiceRadio!.classList.contains('ui-choice-input')).toBe(false)
+    expect(host.textContent).toContain('Ready')
+  })
+
   it('reloads the Pocket registry when a model has been installed', async () => {
     let models: PocketModelDto[] = []
     installList(() => models)
@@ -159,12 +190,97 @@ describe('TtsPocketCard', () => {
     expect(host.querySelector('.pocket-model-language')?.textContent).toContain('RU')
     expect(host.textContent).toContain('Shtorm RU v2 Fast')
     expect(host.textContent).toContain('WAV needed')
-    expect(host.querySelector('.pocket-choose-button')).not.toBeNull()
+    expect(host.querySelector('.pocket-choose-button')?.textContent).toContain('Choose WAV reference')
     expect(host.querySelector('.pocket-reference-name')).toBeNull()
 
-    const testButton = host.querySelector('.pocket-test-button') as HTMLButtonElement
-    expect(testButton.disabled).toBe(true)
-    expect(host.textContent).toContain('The synthesis check becomes available when the model is ready.')
+    expect(host.textContent).toContain('Up to 12 s')
+    expect(host.querySelector('.pocket-test-button')).toBeNull()
+    expect(host.textContent?.match(/Shtorm RU v2 Fast/g)).toHaveLength(1)
+  })
+
+  it('keeps the calm readiness hint and the pending activation for a needs-reference model', async () => {
+    const russian = shtorm()
+    const english = kyutai()
+    const readyRussian = shtorm({
+      selection: { kind: 'reference_wav', path: 'C:\\Voices\\me.wav', file_name: 'me.wav' },
+      readiness: 'ready',
+      error_code: null,
+    })
+    let selectCalls = 0
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'list_pocket_models') return Promise.resolve([russian, english])
+      if (command === 'stop_preview') return Promise.resolve()
+      if (command === 'select_tts_provider_by_id') {
+        selectCalls += 1
+        return selectCalls === 1
+          ? Promise.reject({ code: 'tts_provider.selection_failed', message: 'not ready', retryable: false })
+          : Promise.resolve()
+      }
+      if (command === 'validate_pocket_reference') {
+        return Promise.resolve({
+          status: 'ready',
+          error_code: null,
+          file_name: 'me.wav',
+          duration_seconds: 5,
+          sample_rate: 24000,
+          channels: 1,
+        })
+      }
+      if (command === 'set_pocket_voice') return Promise.resolve(readyRussian)
+      return Promise.resolve()
+    })
+    openMock.mockResolvedValue('C:\\Voices\\me.wav')
+
+    const { host, activate } = await mountCard(english.id)
+    const initialRows = [...host.querySelectorAll<HTMLElement>('.local-model-row')]
+    expect(initialRows[0].classList.contains('local-model-row--focused')).toBe(false)
+    expect(host.querySelector('.pocket-field-label')?.textContent?.trim()).toBe('Ready voice')
+
+    modelRadios(host)[0].click()
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('select_tts_provider_by_id', { id: russian.id })
+    const rows = [...host.querySelectorAll<HTMLElement>('.local-model-row')]
+    expect(rows[0].classList.contains('local-model-row--focused')).toBe(true)
+    expect(rows[0].classList.contains('local-model-row--active')).toBe(false)
+    expect(rows[1].classList.contains('local-model-row--focused')).toBe(false)
+    expect(host.querySelector('.pocket-field-label')?.textContent?.trim())
+      .toBe('Voice reference — Shtorm RU v2 Fast')
+    expect(host.querySelector('.pocket-details .ui-hint')?.textContent)
+      .toContain('Choose a WAV reference to make this model ready.')
+    expect(host.querySelector('.local-model-message--error')).toBeNull()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    ;(host.querySelector('.pocket-choose-button') as HTMLButtonElement).click()
+    await flush()
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'select_tts_provider_by_id')).toHaveLength(2)
+    expect(activate).toHaveBeenCalledWith(russian.id)
+  })
+
+  it('still shows a red alert when a broken reference model cannot be activated', async () => {
+    const missing = shtorm({
+      selection: { kind: 'reference_wav', path: 'C:\\Voices\\gone.wav', file_name: 'gone.wav' },
+      readiness: 'reference_missing',
+      error_code: 'pocket.reference_missing',
+    })
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'list_pocket_models') return Promise.resolve([missing])
+      if (command === 'select_tts_provider_by_id') {
+        return Promise.reject({ code: 'tts_provider.selection_failed', message: 'missing', retryable: false })
+      }
+      if (command === 'stop_preview') return Promise.resolve()
+      return Promise.resolve()
+    })
+
+    const { host } = await mountCard()
+    modelRadios(host)[0].click()
+    await flush()
+
+    const alert = host.querySelector('.local-model-message--error[role="alert"]')
+    expect(alert).not.toBeNull()
+    expect(alert?.textContent)
+      .toContain('The saved reference file is gone. Choose the WAV again.')
   })
 
   it('keeps the previous reference when the WAV dialog is cancelled', async () => {
@@ -288,7 +404,6 @@ describe('TtsPocketCard', () => {
     })
     expect(host.textContent).toContain('The Pocket TTS reference file is missing. Choose the WAV again.')
     expect(host.querySelector('.pocket-reference-name')?.textContent).toContain('gone.wav')
-    expect((host.querySelector('.pocket-test-button') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('serializes model activation while a selection is pending', async () => {
@@ -324,7 +439,7 @@ describe('TtsPocketCard', () => {
     expect(activate.mock.calls).toEqual([[first.id], [second.id]])
     expect(modelRadios(host)[0].checked).toBe(false)
     expect(modelRadios(host)[1].checked).toBe(true)
-    expect(host.querySelector('.pocket-message--error')).toBeNull()
+    expect(host.querySelector('.local-model-message--error')).toBeNull()
   })
 
   it('ignores a late reference response after switching to another model', async () => {
@@ -368,77 +483,63 @@ describe('TtsPocketCard', () => {
     validate.resolve({ status: 'ready', error_code: null, file_name: 'me.wav', duration_seconds: 5, sample_rate: 44100, channels: 1 })
     await flush()
     await vi.waitFor(() => {
-      const rows = host.querySelectorAll('.pocket-model-row')
+      const rows = host.querySelectorAll('.local-model-row')
       if (!rows[0]?.textContent?.includes('Ready')) throw new Error('first row was not refreshed')
     })
 
     expect(host.textContent).toContain('Alba')
     expect(host.querySelector('.pocket-reference-name')).toBeNull()
-    expect(host.querySelector('.pocket-message')).toBeNull()
+    expect(host.querySelector('.local-model-message')).toBeNull()
   })
 
-  it('selects a ready non-active model before running the synthesis check', async () => {
+  it('shows the saved WAV duration and stops an active preview', async () => {
     const ready = shtorm({
-      selection: { kind: 'reference_wav', path: 'C:\\Voices\\me.wav', file_name: 'me.wav' },
+      selection: { kind: 'reference_wav', path: 'sample.wav', file_name: 'sample.wav' },
       readiness: 'ready',
       error_code: null,
+      reference_duration_seconds: 6.25,
     })
+    const preview = deferred<void>()
     invokeMock.mockImplementation((command: string) => {
       if (command === 'list_pocket_models') return Promise.resolve([ready])
-      if (command === 'select_tts_provider_by_id') return Promise.resolve()
-      if (command === 'stop_preview') return Promise.resolve()
-      if (command === 'submit_speech') return Promise.resolve({ job_id: 'job-1' })
+      if (command === 'preview_audio_file') return preview.promise
       return Promise.resolve()
     })
 
-    const { host, activate } = await mountCard()
-    expect(host.textContent).toContain('The model will be selected for the synthesis check.')
+    const { host } = await mountCard(ready.id)
+    const play = host.querySelector<HTMLButtonElement>('.pocket-listen-button')!
+    const stop = host.querySelector<HTMLButtonElement>('.pocket-stop-button')!
+    expect(host.querySelector('.pocket-reference-duration')?.textContent).toContain('6.25 s')
+    expect(stop.disabled).toBe(true)
 
-    const testButton = host.querySelector('.pocket-test-button') as HTMLButtonElement
-    expect(testButton.disabled).toBe(false)
-    testButton.click()
+    play.click()
     await flush()
+    expect(play.disabled).toBe(true)
+    expect(stop.disabled).toBe(false)
 
-    const selectCalls = invokeMock.mock.calls.filter(([command]) => command === 'select_tts_provider_by_id')
-    expect(selectCalls).toHaveLength(1)
-    expect(selectCalls[0][1]).toEqual({ id: ready.id })
-    expect(activate).toHaveBeenCalledWith(ready.id)
-    const speechCalls = invokeMock.mock.calls.filter(([command]) => command === 'submit_speech')
-    expect(speechCalls).toHaveLength(1)
-    expect(String(speechCalls[0][1]?.text)).toMatch(/[А-Яа-яЁё]/)
+    stop.click()
+    preview.resolve()
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('stop_preview')
+    expect(stop.disabled).toBe(true)
+    expect(play.disabled).toBe(false)
   })
 
-  it('shows Alba and runs a new English synthesis phrase for the active Kyutai model', async () => {
-    const model = kyutai()
-    installList([model])
+  it('explains the duration limit when a WAV is too long', async () => {
+    openMock.mockResolvedValue('long.wav')
     invokeMock.mockImplementation((command: string) => {
-      if (command === 'list_pocket_models') return Promise.resolve([model])
-      if (command === 'stop_preview') return Promise.resolve()
-      if (command === 'submit_speech') return Promise.resolve({ job_id: 'job-1' })
+      if (command === 'list_pocket_models') return Promise.resolve([shtorm()])
+      if (command === 'validate_pocket_reference') {
+        return Promise.resolve({ status: 'reference_invalid', error_code: 'pocket.reference_too_long' })
+      }
       return Promise.resolve()
     })
 
-    const { host } = await mountCard(model.id)
-    expect(host.textContent).toContain('Alba')
-    expect(host.textContent).toContain('Ready')
-    expect(host.querySelector('.pocket-choose-button')).toBeNull()
-
-    const testButton = host.querySelector('.pocket-test-button') as HTMLButtonElement
-    expect(testButton.disabled).toBe(false)
-
-    testButton.click()
+    const { host } = await mountCard()
+    host.querySelector<HTMLButtonElement>('.pocket-choose-button')!.click()
     await flush()
-    testButton.click()
-    await flush()
-
-    const speechCalls = invokeMock.mock.calls.filter(([command]) => command === 'submit_speech')
-    expect(speechCalls).toHaveLength(2)
-    const firstPhrase = String(speechCalls[0][1]?.text)
-    const secondPhrase = String(speechCalls[1][1]?.text)
-    expect(firstPhrase).toMatch(/[A-Za-z]/)
-    expect(secondPhrase).toMatch(/[A-Za-z]/)
-    expect(firstPhrase).not.toBe(secondPhrase)
-    expect(host.textContent).toContain('Synthesis check started:')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('The WAV must be no longer than 12 seconds.')
+    expect(invokeMock.mock.calls.some(([command]) => command === 'set_pocket_voice')).toBe(false)
   })
 
   it('restores the Shtorm reference when switching RU → EN → RU', async () => {

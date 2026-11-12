@@ -100,7 +100,6 @@ function handleSave() {
 
 .local-url-row .ui-label {
   min-width: 60px;
-  color: var(--color-text-secondary);
 }
 
 .local-url-input {

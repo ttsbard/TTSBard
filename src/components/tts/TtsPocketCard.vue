@@ -3,18 +3,16 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Loader2, Play, RefreshCw, Sparkles, Waves } from 'lucide-vue-next';
+import { Cpu, Loader2, Play, RefreshCw, Square } from 'lucide-vue-next';
 import ProviderCard from '../shared/ProviderCard.vue';
-import { t } from '../../i18n';
+import { locale, t } from '../../i18n';
 import { presentCommandError } from '../../ipc/commandError';
-import { submitSpeech } from '../../ipc/speech';
 import { createAsyncCleanupScope } from '../../utils/asyncCleanup';
 import { debugWarn } from '../../utils/debug';
+import './local-model-list.css';
 import {
-  canTestPocketModel,
   isPocketReferenceModel,
   nextPocketFocusId,
-  pickPocketTestPhrase,
   pocketLanguageLabel,
   pocketLanguageView,
   pocketSelectedReference,
@@ -56,7 +54,6 @@ interface Feedback {
   text: string;
 }
 
-const expanded = ref(false);
 const listenerScope = createAsyncCleanupScope();
 const models = ref<PocketModelDto[]>([]);
 const loading = ref(false);
@@ -68,14 +65,11 @@ const pendingActivationId = ref<string | null>(null);
 const feedback = ref<Feedback | null>(null);
 const voiceBusyFor = ref<string | null>(null);
 const previewingFor = ref<string | null>(null);
-const testingFor = ref<string | null>(null);
-const lastTestPhrase = ref<string | null>(null);
 
 let snapshotGeneration = 0;
 let activationGeneration = 0;
 let voiceGeneration = 0;
 let previewGeneration = 0;
-let testGeneration = 0;
 
 const isPocketActive = computed(() => props.activeModelId !== null);
 
@@ -94,13 +88,15 @@ const focusVoice = computed(() => {
   return model ? pocketSelectedVoice(model) : null;
 });
 
-const focusLanguage = computed(() => {
-  const model = focusModel.value;
-  if (!model) return null;
-  return {
-    view: pocketLanguageView(model.language),
-    label: pocketLanguageLabel(pocketLanguageView(model.language), t),
-  };
+const referenceDuration = computed(() => {
+  const seconds = focusModel.value?.reference_duration_seconds;
+  if (seconds == null) return null;
+  return new Intl.NumberFormat(locale.value, { maximumFractionDigits: 2 }).format(seconds);
+});
+
+const referenceFileParts = computed(() => {
+  const name = focusReference.value?.file_name ?? '';
+  return { stem: name.slice(0, -4), extension: name.slice(-4) };
 });
 
 const currentFeedback = computed<Feedback | null>(() => {
@@ -114,17 +110,19 @@ const currentHintKey = computed<string | null>(() => {
   return model ? pocketStatusHintKey(model.readiness) : null;
 });
 
+// When the details are showing a model that is not the active one, name it in
+// the field label so it is obvious which package the controls configure.
+const focusedModelName = computed<string | null>(() => {
+  const model = focusModel.value;
+  if (!model || models.value.length <= 1 || model.id === props.activeModelId) return null;
+  return model.display_name;
+});
+
 const isVoiceBusy = computed(() => !!focusModel.value && voiceBusyFor.value === focusModel.value.id);
 const isPreviewing = computed(() => !!focusModel.value && previewingFor.value === focusModel.value.id);
-const isTesting = computed(() => !!focusModel.value && testingFor.value === focusModel.value.id);
-const canTest = computed(() => canTestPocketModel(focusModel.value));
-const isFocusActive = computed(() => !!focusModel.value && focusModel.value.id === props.activeModelId);
 
 const activeVoiceId = computed(() => focusVoice.value?.voice_id ?? null);
 
-const referenceButtonLabel = computed(() =>
-  focusReference.value ? t('tts.pocket.replace') : t('tts.pocket.choose_wav'),
-);
 
 function languageCode(language: string): string {
   return pocketLanguageView(language).code;
@@ -226,7 +224,9 @@ async function activateModelById(
   try {
     await invoke('select_tts_provider_by_id', { id });
     if (token !== activationGeneration) return false;
-    selectModelAfterSuccess(id, options.keepSuccessMessage === true);
+    pendingActivationId.value = null;
+    selectedModelId.value = id;
+    emit('activate', id);
     return true;
   } catch (error) {
     if (token !== activationGeneration) return false;
@@ -234,31 +234,24 @@ async function activateModelById(
       ? props.activeModelId
       : null;
     pendingActivationId.value = id;
-    const hintKey = pocketStatusHintKey(model.readiness);
-    setFeedback(
-      id,
-      'error',
-      hintKey ? t(hintKey) : presentCommandError(error, t('tts.pocket.error.select_model')),
-    );
+    // A missing reference is the normal starting state of a reference package,
+    // not an activation error. Keep `pendingActivationId` so the model activates
+    // right after a valid WAV is chosen, but let the calm readiness hint render
+    // instead of a red error box.
+    if (model.readiness === 'needs_reference') {
+      clearFeedback(id);
+    } else {
+      const hintKey = pocketStatusHintKey(model.readiness);
+      setFeedback(
+        id,
+        'error',
+        hintKey ? t(hintKey) : presentCommandError(error, t('tts.pocket.error.select_model')),
+      );
+    }
     return false;
   } finally {
     if (token === activationGeneration) activatingId.value = null;
   }
-}
-
-function selectModelAfterSuccess(id: string, keepSuccessMessage: boolean) {
-  pendingActivationId.value = null;
-  selectedModelId.value = id;
-  emit('activate', id);
-  if (!keepSuccessMessage) {
-    setFeedback(id, 'success', t('tts.pocket.status.selected'));
-  }
-}
-
-function handleHeaderSelect() {
-  if (isPocketActive.value) return;
-  const target = focusModel.value ?? models.value[0];
-  if (target) void activateModelById(target.id);
 }
 
 function handleModelChange(model: PocketModelDto) {
@@ -296,6 +289,7 @@ async function chooseReference() {
 
   const path = Array.isArray(picked) ? picked[0] : picked;
   if (!path) return;
+  if (previewingFor.value === model.id) stopReferencePreview();
 
   await applyReference(model.id, path);
 }
@@ -315,7 +309,9 @@ async function applyReference(modelId: string, path: string): Promise<void> {
         'error',
         check.status === 'reference_missing'
           ? t('tts.pocket.error.reference_missing')
-          : t('tts.pocket.error.reference_invalid'),
+          : check.error_code === 'pocket.reference_too_long'
+            ? t('tts.pocket.error.reference_too_long')
+            : t('tts.pocket.error.reference_invalid'),
       );
       return;
     }
@@ -409,44 +405,6 @@ async function playReference() {
   }
 }
 
-async function testSynthesis() {
-  const model = focusModel.value;
-  if (!model || !canTest.value || testingFor.value !== null || activatingId.value !== null) return;
-
-  const token = ++testGeneration;
-  testingFor.value = model.id;
-  clearFeedback(model.id);
-
-  if (props.activeModelId !== model.id) {
-    const activated = await activateModelById(model.id, { keepSuccessMessage: true });
-    if (!activated || token !== testGeneration) {
-      if (token === testGeneration) testingFor.value = null;
-      return;
-    }
-  }
-
-  const phrase = pickPocketTestPhrase(model.language, lastTestPhrase.value);
-  lastTestPhrase.value = phrase;
-
-  try {
-    await submitSpeech(phrase);
-    if (token !== testGeneration) return;
-    setFeedback(model.id, 'success', t('tts.pocket.test_started', { phrase }));
-  } catch (error) {
-    if (token !== testGeneration) return;
-    setFeedback(model.id, 'error', presentCommandError(error, t('tts.pocket.error.test_synthesis')));
-    if (isPocketReadinessError(error)) void loadModels('list');
-  } finally {
-    if (token === testGeneration) testingFor.value = null;
-  }
-}
-
-function isPocketReadinessError(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('code' in error)) return false;
-  return ['pocket.reference_missing', 'pocket.reference_invalid', 'pocket.package_invalid']
-    .includes(String(error.code));
-}
-
 watch(
   () => props.activeModelId,
   (id) => {
@@ -462,10 +420,6 @@ watch(
   { immediate: true },
 );
 
-watch(expanded, (isOpen) => {
-  if (isOpen) void loadModels('list');
-});
-
 onMounted(() => {
   void loadModels('list');
   void listenerScope.track(listen('pocket-models-changed', () => {
@@ -475,40 +429,34 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   listenerScope.dispose();
-  previewGeneration += 1;
-  if (previewingFor.value !== null) {
-    previewingFor.value = null;
-    invoke('stop_preview').catch(() => {});
-  }
+  stopReferencePreview();
 });
 </script>
 
 <template>
   <ProviderCard
     :title="t('tts.pocket.title')"
-    :icon="Waves"
+    :icon="Cpu"
     :active="isPocketActive"
-    :expanded="expanded"
-    @select="handleHeaderSelect"
-    @toggle="expanded = !expanded"
+    :selectable="false"
+    :collapsible="false"
   >
-    <div class="card-content-inner" :aria-busy="loading">
-      <div class="pocket-toolbar">
-        <div class="card-subtitle">{{ t('tts.pocket.desc') }}</div>
-        <button
-          type="button"
-          class="ui-icon-button pocket-refresh-button"
-          :title="t('tts.pocket.refresh')"
-          :aria-label="t('tts.pocket.refresh')"
-          :disabled="loading"
-          @click="refreshModels"
-        >
-          <RefreshCw :size="18" :class="{ 'ui-spin': loading }" aria-hidden="true" />
-        </button>
-      </div>
+    <template #header-actions>
+      <button
+        type="button"
+        class="ui-icon-button pocket-refresh-button"
+        :title="t('tts.pocket.refresh')"
+        :aria-label="t('tts.pocket.refresh')"
+        :disabled="loading"
+        @click="refreshModels"
+      >
+        <RefreshCw :size="18" :class="{ 'ui-spin': loading }" aria-hidden="true" />
+      </button>
+    </template>
 
-      <div v-if="listError" class="pocket-message pocket-message--error" role="alert">
-        <span class="pocket-message-text">{{ listError }}</span>
+    <div class="card-content-inner" :aria-busy="loading">
+      <div v-if="listError" class="local-model-message local-model-message--error" role="alert">
+        <span class="local-model-message-text">{{ listError }}</span>
         <button type="button" class="ui-button ui-button--compact" @click="refreshModels">
           {{ t('tts.pocket.retry') }}
         </button>
@@ -522,16 +470,19 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-else>
-        <div class="pocket-model-list" role="radiogroup" :aria-label="t('tts.pocket.models')">
+        <div class="local-model-list" role="radiogroup" :aria-label="t('tts.pocket.models')">
           <label
             v-for="model in models"
             :key="model.id"
-            class="pocket-model-row"
-            :class="{ 'pocket-model-row--active': model.id === props.activeModelId }"
+            class="local-model-row"
+            :class="{
+              'local-model-row--active': model.id === props.activeModelId,
+              'local-model-row--focused': model.id === focusId && model.id !== props.activeModelId,
+            }"
             @click="handleModelRowClick(model)"
           >
             <input
-              class="ui-choice-input pocket-model-radio"
+              class="local-model-radio"
               type="radio"
               name="pocket-model"
               :value="model.id"
@@ -540,77 +491,82 @@ onBeforeUnmount(() => {
               :disabled="activatingId !== null"
               @change="handleModelChange(model)"
             />
-            <span class="pocket-model-name ui-choice-label">{{ model.display_name }}</span>
+            <span class="local-model-name ui-choice-label">{{ model.display_name }}</span>
             <span
               class="pocket-model-language"
               :title="languageTitle(model.language)"
             >{{ languageCode(model.language) }}</span>
             <span
-              class="pocket-model-status"
-              :class="`pocket-status--${pocketStatusKind(model.readiness)}`"
+              class="local-model-status"
+              :class="`local-model-status--${pocketStatusKind(model.readiness)}`"
               :title="statusHint(model.readiness) || undefined"
             >{{ statusLabel(model.readiness) }}</span>
           </label>
         </div>
 
         <div v-if="focusModel" class="pocket-details">
-          <div class="pocket-details-header">
-            <span class="ui-group-title pocket-details-title">{{ focusModel.display_name }}</span>
-            <span
-              class="pocket-model-language"
-              :title="focusLanguage?.label"
-            >{{ focusLanguage?.view.code }}</span>
-            <span
-              class="pocket-model-status"
-              :class="`pocket-status--${pocketStatusKind(focusModel.readiness)}`"
-            >{{ statusLabel(focusModel.readiness) }}</span>
-          </div>
-
           <template v-if="isPocketReferenceModel(focusModel)">
             <div class="pocket-field">
-              <span class="ui-label pocket-field-label">{{ t('tts.pocket.reference') }}</span>
+              <span class="ui-label pocket-field-label">{{ t('tts.pocket.reference') }}<template v-if="focusedModelName"> — {{ focusedModelName }}</template></span>
               <div v-if="focusReference" class="pocket-reference-row">
-                <span
-                  class="pocket-reference-name ui-label--secondary"
-                  :title="focusReference.path"
-                >{{ focusReference.file_name }}</span>
-                <button
-                  type="button"
-                  class="ui-button ui-button--compact pocket-replace-button"
-                  :disabled="isVoiceBusy"
-                  @click="chooseReference"
-                >
-                  <Loader2 v-if="isVoiceBusy" :size="16" class="ui-spin" aria-hidden="true" />
-                  {{ referenceButtonLabel }}
-                </button>
-                <button
-                  type="button"
-                  class="ui-button ui-button--compact ui-button--leading-icon pocket-listen-button"
-                  :disabled="isVoiceBusy || isPreviewing"
-                  @click="playReference"
-                >
-                  <Play :size="16" aria-hidden="true" />
-                  {{ isPreviewing ? t('tts.pocket.playing') : t('tts.pocket.listen') }}
-                </button>
+                <div class="pocket-reference-file">
+                  <span class="pocket-reference-name ui-label--secondary" :title="focusReference.file_name">
+                    <span class="pocket-reference-stem">{{ referenceFileParts.stem }}</span>{{ referenceFileParts.extension }}
+                  </span>
+                  <span v-if="referenceDuration" class="pocket-reference-duration">
+                    {{ t('tts.pocket.reference_duration', { seconds: referenceDuration }) }}
+                  </span>
+                </div>
+                <div class="pocket-reference-actions">
+                  <button
+                    type="button"
+                    class="ui-icon-button pocket-listen-button"
+                    :title="t('tts.pocket.listen')"
+                    :aria-label="t('tts.pocket.listen')"
+                    :disabled="isVoiceBusy || previewingFor !== null"
+                    @click="playReference"
+                  >
+                    <Play :size="18" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ui-icon-button pocket-stop-button"
+                    :title="t('tts.pocket.stop_reference')"
+                    :aria-label="t('tts.pocket.stop_reference')"
+                    :disabled="!isPreviewing"
+                    @click="stopReferencePreview"
+                  >
+                    <Square :size="18" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ui-button ui-button--compact pocket-replace-button"
+                    :disabled="isVoiceBusy"
+                    @click="chooseReference"
+                  >
+                    <Loader2 v-if="isVoiceBusy" :size="16" class="ui-spin" aria-hidden="true" />
+                    {{ t('tts.pocket.replace') }}
+                  </button>
+                </div>
               </div>
               <div v-else class="pocket-reference-row">
                 <button
                   type="button"
-                  class="ui-button ui-button--primary pocket-choose-button"
+                  class="ui-button ui-button--compact pocket-choose-button"
                   :disabled="isVoiceBusy"
                   @click="chooseReference"
                 >
                   <Loader2 v-if="isVoiceBusy" :size="16" class="ui-spin" aria-hidden="true" />
                   {{ t('tts.pocket.choose_wav') }}
                 </button>
+                <span class="pocket-reference-duration">{{ t('tts.pocket.reference_limit') }}</span>
               </div>
-              <p class="ui-hint">{{ t('tts.pocket.reference_hint') }}</p>
             </div>
           </template>
 
           <template v-else>
             <div class="pocket-field">
-              <span class="ui-label pocket-field-label">{{ t('tts.pocket.voice') }}</span>
+              <span class="ui-label pocket-field-label">{{ t('tts.pocket.voice') }}<template v-if="focusedModelName"> — {{ focusedModelName }}</template></span>
               <div v-if="focusModel.voices.length > 0" class="pocket-voice-list">
                 <label
                   v-for="voice in focusModel.voices"
@@ -620,7 +576,7 @@ onBeforeUnmount(() => {
                 >
                   <input
                     v-if="voice.available"
-                    class="ui-choice-input"
+                    class="local-model-radio"
                     type="radio"
                     :name="`pocket-voice-${focusModel.id}`"
                     :value="voice.id"
@@ -631,11 +587,11 @@ onBeforeUnmount(() => {
                   <span class="pocket-voice-name ui-choice-label">{{ voice.display_name }}</span>
                   <span
                     v-if="voice.available"
-                    class="pocket-model-status pocket-status--ready"
+                    class="local-model-status local-model-status--ready"
                   >{{ t('tts.pocket.status.ready') }}</span>
                   <span
                     v-else
-                    class="pocket-model-status pocket-status--error"
+                    class="local-model-status local-model-status--error"
                   >{{ t('tts.pocket.voice_unavailable') }}</span>
                 </label>
               </div>
@@ -651,31 +607,13 @@ onBeforeUnmount(() => {
 
           <div
             v-if="currentFeedback"
-            class="pocket-message"
-            :class="`pocket-message--${currentFeedback.kind}`"
+            class="local-model-message"
+            :class="`local-model-message--${currentFeedback.kind}`"
             :role="currentFeedback.kind === 'error' ? 'alert' : 'status'"
           >
-            <span class="pocket-message-text">{{ currentFeedback.text }}</span>
+            <span class="local-model-message-text">{{ currentFeedback.text }}</span>
           </div>
 
-          <div class="pocket-test-row">
-            <button
-              type="button"
-              class="ui-button ui-button--primary ui-button--leading-icon pocket-test-button"
-              :disabled="!canTest || isTesting || activatingId !== null"
-              @click="testSynthesis"
-            >
-              <Loader2 v-if="isTesting" :size="16" class="ui-spin" aria-hidden="true" />
-              <Sparkles v-else :size="16" aria-hidden="true" />
-              {{ t('tts.pocket.test_synthesis') }}
-            </button>
-            <p v-if="!isFocusActive && focusModel.readiness === 'ready'" class="ui-hint pocket-test-hint">
-              {{ t('tts.pocket.test_select_hint') }}
-            </p>
-            <p v-else-if="focusModel.readiness !== 'ready'" class="ui-hint pocket-test-hint">
-              {{ t('tts.pocket.test_not_ready_hint') }}
-            </p>
-          </div>
         </div>
       </template>
     </div>
@@ -688,71 +626,12 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pocket-toolbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.card-subtitle {
-  flex: 1 1 220px;
-  min-width: 0;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  color: var(--color-text-secondary);
-  line-height: var(--ui-line-height-multiline);
-}
-
 .pocket-empty {
   padding: 4px 0 2px;
 }
 
 .pocket-empty .ui-hint:first-child {
   margin-top: 0;
-}
-
-.pocket-model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--ui-radius);
-  background: var(--color-bg-field);
-  min-width: 0;
-}
-
-.pocket-model-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-  padding: 6px 4px;
-  border-radius: var(--ui-radius-menu-item);
-  cursor: pointer;
-}
-
-.pocket-model-row:hover {
-  background: var(--color-bg-field-hover);
-}
-
-.pocket-model-row--active {
-  background: var(--card-active-bg);
-}
-
-.pocket-model-radio {
-  flex-shrink: 0;
-  margin: 0;
-}
-
-.pocket-model-name {
-  flex: 1 1 150px;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .pocket-model-language {
@@ -766,46 +645,11 @@ onBeforeUnmount(() => {
   color: var(--color-text-secondary);
 }
 
-.pocket-model-status {
-  flex: 0 0 auto;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  line-height: var(--ui-line-height-control);
-  white-space: nowrap;
-}
-
-.pocket-status--ready {
-  color: var(--color-success);
-}
-
-.pocket-status--warning {
-  color: var(--color-warning);
-}
-
-.pocket-status--error {
-  color: var(--color-danger);
-}
-
 .pocket-details {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--color-border);
   min-width: 0;
-}
-
-.pocket-details-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-  min-width: 0;
-}
-
-.pocket-details-title {
-  flex: 1 1 150px;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .pocket-field {
@@ -819,7 +663,6 @@ onBeforeUnmount(() => {
 .pocket-field-label {
   display: block;
   margin-bottom: var(--ui-row-label-gap-stack);
-  color: var(--color-text-secondary);
 }
 
 .pocket-reference-row {
@@ -830,13 +673,40 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pocket-reference-name {
-  flex: 1 1 160px;
+.pocket-reference-file,
+.pocket-reference-name,
+.pocket-reference-actions {
+  display: flex;
+  align-items: center;
   min-width: 0;
+}
+
+.pocket-reference-file {
+  flex: 1 1 128px;
+  gap: var(--ui-field-group-gap);
+}
+
+.pocket-reference-name {
   font-size: var(--ui-text-size-control);
   font-weight: var(--ui-text-weight-control);
-  line-height: var(--ui-line-height-multiline);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+
+.pocket-reference-stem {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pocket-reference-duration {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: var(--ui-text-size-hint);
+}
+
+.pocket-reference-actions {
+  flex-wrap: wrap;
+  gap: var(--ui-field-group-gap);
 }
 
 .pocket-voice-list {
@@ -865,62 +735,9 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.pocket-message {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-  padding: 8px 10px;
-  border-radius: var(--ui-radius);
-  border: 1px solid transparent;
-  background: var(--color-bg-field);
-  color: var(--color-text-primary);
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  line-height: var(--ui-line-height-multiline);
-}
-
-.pocket-message-text {
-  flex: 1 1 180px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.pocket-message--error {
-  background: var(--danger-bg-weak);
-  border-color: var(--danger-border-strong);
-}
-
-.pocket-message--success {
-  background: var(--success-bg-weak);
-  border-color: var(--success-border-weak);
-}
-
-.pocket-test-row {
-  margin-top: var(--ui-row-gap);
-}
-
-.pocket-test-hint {
-  margin-top: 6px;
-}
-
 @media (max-width: 520px) {
-  .pocket-toolbar {
-    align-items: center;
-  }
-
-  .card-subtitle {
-    flex-basis: 100%;
-  }
-
-  .pocket-model-status {
+  .local-model-status {
     white-space: normal;
-  }
-
-  .pocket-reference-row > .ui-button,
-  .pocket-test-button {
-    flex: 1 1 100%;
   }
 }
 </style>

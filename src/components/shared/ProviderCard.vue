@@ -9,6 +9,8 @@ interface Props {
   active?: boolean;
   expanded?: boolean;
   disabled?: boolean;
+  collapsible?: boolean;
+  selectable?: boolean;
 }
 
 interface Emits {
@@ -20,6 +22,8 @@ const props = withDefaults(defineProps<Props>(), {
   active: false,
   expanded: false,
   disabled: false,
+  collapsible: true,
+  selectable: true,
 });
 
 const emit = defineEmits<Emits>();
@@ -27,10 +31,9 @@ const emit = defineEmits<Emits>();
 const expandIcon = computed(() => (props.expanded ? '▼' : '▶'));
 
 function handleTitleClick() {
-  if (!props.disabled) {
-    emit('select');
-    emit('toggle');
-  }
+  if (props.disabled) return;
+  if (props.selectable) emit('select');
+  if (props.collapsible) emit('toggle');
 }
 
 function handleExpandClick() {
@@ -47,9 +50,17 @@ function handleRadioChange(event: Event) {
 </script>
 
 <template>
-  <div class="provider-card" :class="{ active, disabled }">
+  <div
+    class="provider-card"
+    :class="{
+      active,
+      disabled,
+      'provider-card--static': !collapsible && !selectable,
+    }"
+  >
     <div class="card-header" @click="handleTitleClick">
       <input
+        v-if="selectable"
         type="radio"
         :checked="active"
         @change="handleRadioChange"
@@ -58,10 +69,23 @@ function handleRadioChange(event: Event) {
       />
       <component v-if="icon" :is="icon" :size="18" class="provider-icon" />
       <span class="card-title">{{ title }}</span>
-      <span class="expand-icon" @click.stop="handleExpandClick">{{ expandIcon }}</span>
+      <div class="header-tail">
+        <span
+          v-if="$slots['header-actions']"
+          class="header-actions"
+          @click.stop
+        >
+          <slot name="header-actions" />
+        </span>
+        <span
+          v-if="collapsible"
+          class="expand-icon"
+          @click.stop="handleExpandClick"
+        >{{ expandIcon }}</span>
+      </div>
     </div>
 
-    <div v-if="expanded" class="card-content">
+    <div v-if="!collapsible || expanded" class="card-content">
       <slot />
     </div>
   </div>
@@ -99,6 +123,14 @@ function handleRadioChange(event: Event) {
   background: var(--color-border-weak);
 }
 
+.provider-card--static .card-header {
+  cursor: default;
+}
+
+.provider-card--static:not(.disabled) .card-header:hover {
+  background: transparent;
+}
+
 .provider-icon {
   color: var(--color-accent);
   flex-shrink: 0;
@@ -110,11 +142,23 @@ function handleRadioChange(event: Event) {
   color: var(--color-text-primary);
 }
 
+.header-tail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+}
+
 .expand-icon {
   color: var(--color-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  margin-left: auto;
 }
 
 .card-content {

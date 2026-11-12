@@ -381,7 +381,6 @@ function handleProxyChange(event: Event) {
 
 .proxy-select-row .ui-label {
   min-width: fit-content;
-  color: var(--color-text-secondary);
 }
 
 .network-select {

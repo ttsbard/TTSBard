@@ -263,7 +263,7 @@ function handleSelectVoice(voiceId: string) {
       <!-- Saved Voices List -->
       <div class="saved-voices-section">
         <div class="voice-header">
-          <label class="ui-label ui-label--secondary">{{ t('tts.voices') }}</label>
+          <label class="ui-label">{{ t('tts.voices') }}</label>
           <div class="voice-header-buttons">
             <button
               @click="$emit('refresh-voice')"
