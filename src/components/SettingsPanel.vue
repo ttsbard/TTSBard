@@ -175,7 +175,11 @@ function handleMessage(message: string, severity: MessageSeverity = 'info') {
 <template>
   <div class="settings-panel">
     <!-- Error/Info Message Display -->
-    <div v-if="errorMessage" class="message-box" :class="messageSeverity">
+    <div
+      v-if="errorMessage"
+      class="message-box ui-notice ui-notice--panel"
+      :class="[messageSeverity, `ui-notice--${messageSeverity}`]"
+    >
       {{ errorMessage }}
     </div>
 
@@ -233,54 +237,6 @@ function handleMessage(message: string, severity: MessageSeverity = 'info') {
 .settings-panel {
   max-width: 900px;
   margin: 0 auto;
-}
-
-.message-box {
-  position: fixed;
-  top: 20px;
-  left: calc(50% + 100px);
-  transform: translateX(-50%);
-  padding: 0.4rem 0.75rem;
-  border-radius: 8px;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  z-index: 1000;
-  box-shadow: var(--dialog-shadow);
-  backdrop-filter: blur(10px);
-  animation: slideDownFade 0.3s ease-out;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  max-width: min(480px, calc(100vw - 32px));
-}
-
-.message-box.success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border-weak, rgba(74, 222, 128, 0.4));
-  color: var(--success-text);
-}
-
-.message-box.warning {
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
-  color: var(--warning-text);
-}
-
-.message-box.error {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  border-left: 4px solid var(--status-disconnected);
-  color: var(--danger-text);
-}
-
-@keyframes slideDownFade {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
 }
 
 /* ============================================================================

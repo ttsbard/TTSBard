@@ -124,7 +124,11 @@ function onCaptureTargetChange(event: Event) {
 
 <template>
   <div class="ocr-panel">
-    <div v-if="message" class="message-box" :class="messageType">
+    <div
+      v-if="message"
+      class="message-box ui-notice ui-notice--panel"
+      :class="messageType ? [messageType, `ui-notice--${messageType}`] : null"
+    >
       {{ message }}
     </div>
 
@@ -307,49 +311,6 @@ function onCaptureTargetChange(event: Event) {
 h2 {
   margin-top: 0;
   margin-bottom: 1rem;
-}
-
-.message-box {
-  position: fixed;
-  top: 20px;
-  left: calc(50% + 100px);
-  transform: translateX(-50%);
-  padding: 0.4rem 0.75rem;
-  border-radius: 8px;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  z-index: 1000;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(10px);
-  animation: slideDownFade 0.3s ease-out;
-  white-space: normal;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  max-width: calc(100vw - 32px);
-}
-
-.message-box.success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-shadow);
-  color: var(--success-text);
-}
-
-.message-box.error {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  border-left: 4px solid var(--danger-gradient-start);
-  color: var(--danger-text);
-}
-
-@keyframes slideDownFade {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
 }
 
 .settings-section {
