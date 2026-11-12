@@ -96,8 +96,8 @@ onUnmounted(() => { if (messageTimer) clearTimeout(messageTimer) })
 
 <template>
   <div class="vrchat-panel">
-    <div v-if="error" class="message-box ui-notice ui-notice--panel ui-notice--error error" role="alert">{{ error }}</div>
-    <div v-if="message" class="message-box ui-notice ui-notice--panel ui-notice--success success" role="status">{{ message }}</div>
+    <div v-if="error" class="message-box ui-status error" role="alert">{{ error }}</div>
+    <div v-if="message" class="message-box ui-status success" role="status">{{ message }}</div>
 
     <section class="settings-section ui-section">
       <div class="section-header server-header">
@@ -186,6 +186,45 @@ h2 {
 .ui-row { flex-wrap: wrap; }
 .ui-row:last-child { margin-bottom: 0; }
 .ui-row label { color: var(--color-text-secondary); }
+.message-box {
+  position: fixed;
+  top: 20px;
+  left: calc(50% + 100px);
+  transform: translateX(-50%);
+  max-width: 460px;
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  z-index: 1000;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  animation: slideDownFade 0.3s ease-out;
+  overflow-wrap: break-word;
+}
+@keyframes slideDownFade {
+  from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.error {
+  background: var(--danger-bg-weak, rgba(239, 68, 68, 0.1));
+  color: var(--danger-text-weak, #ef4444);
+  border: 1px solid var(--danger-border, rgba(239, 68, 68, 0.2));
+}
+.success {
+  background: var(--color-success-bg, rgba(34, 197, 94, 0.1));
+  color: var(--color-success-text, #22c55e);
+  border: 1px solid var(--color-success-border, rgba(34, 197, 94, 0.2));
+}
+.message-box.success {
+  background: var(--success-bg);
+  border: 1px solid var(--success-border, rgba(74, 222, 128, 0.4));
+  color: var(--success-text);
+}
+.message-box.error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-left: 4px solid var(--status-disconnected);
+  color: var(--danger-text);
+}
 .server-header, .server-status, .endpoint-inputs, .test-row {
   display: flex;
   align-items: center;

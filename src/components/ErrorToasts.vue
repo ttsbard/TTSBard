@@ -13,8 +13,18 @@ watch(errors, () => {
 }, { deep: true })
 
 function getErrorClass(level: ErrorLevel): string {
-  // The level values already match the shared ui-notice state modifiers.
-  return `error-toast ui-notice ui-notice--${level}`
+  switch (level) {
+    case ErrorLevel.ERROR:
+      return 'error-toast error'
+    case ErrorLevel.WARNING:
+      return 'error-toast warning'
+    case ErrorLevel.INFO:
+      return 'error-toast info'
+    case ErrorLevel.SUCCESS:
+      return 'error-toast success'
+    default:
+      return 'error-toast'
+  }
 }
 </script>
 
@@ -48,16 +58,17 @@ function getErrorClass(level: ErrorLevel): string {
   pointer-events: none;
 }
 
-/* The stack stays in its existing top-right corner; surface, semantic accent
-   and typography come from the shared ui-notice classes. */
 .error-toast {
   pointer-events: auto;
+  min-width: 300px;
+  max-width: 500px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
-  /* Safe centering keeps short messages centered, but when a long message
-     needs the shared max-height scrollport it aligns to the start instead of
-     clipping the top of the text above the unreachable scroll origin. */
-  align-items: safe center;
   gap: 12px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -65,6 +76,27 @@ function getErrorClass(level: ErrorLevel): string {
 
 .error-toast:hover {
   transform: translateX(-4px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.error-toast.error {
+  border-left: 4px solid var(--toast-error-border);
+  background: var(--toast-error-bg);
+}
+
+.error-toast.warning {
+  border-left: 4px solid var(--toast-warning-border);
+  background: var(--toast-warning-bg);
+}
+
+.error-toast.info {
+  border-left: 4px solid var(--toast-success-border);
+  background: var(--toast-success-bg);
+}
+
+.error-toast.success {
+  border-left: 4px solid var(--toast-success-border);
+  background: var(--toast-success-bg);
 }
 
 .toast-icon {
@@ -74,7 +106,10 @@ function getErrorClass(level: ErrorLevel): string {
 
 .toast-message {
   flex: 1;
-  min-width: 0;
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .toast-close {
@@ -90,10 +125,6 @@ function getErrorClass(level: ErrorLevel): string {
   height: 20px;
   opacity: 0.6;
   transition: opacity 0.2s;
-  /* The shared notice scrolls when long text reaches the viewport limit.
-     Keep the focus ring and the button itself inside the scrollport when
-     the browser scrolls it into view. */
-  scroll-margin: 4px;
 }
 
 .toast-close:hover {

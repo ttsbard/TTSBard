@@ -79,11 +79,7 @@ const statusText = computed(() => {
 <template>
   <div class="webview-panel">
     <!-- Error/Info Message Display -->
-    <div
-      v-if="errorMessage"
-      class="message-box ui-notice ui-notice--panel"
-      :class="[messageBoxClass, `ui-notice--${messageBoxClass}`]"
-    >
+    <div v-if="errorMessage" class="message-box ui-status" :class="messageBoxClass">
       {{ errorMessage }}
     </div>
 
@@ -292,6 +288,56 @@ h2 {
   color: var(--color-text-primary);
 }
 
+.message-box {
+  position: fixed;
+  top: 20px;
+  left: calc(50% + 100px);
+  transform: translateX(-50%);
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  z-index: 1000;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  animation: slideDownFade 0.3s ease-out;
+  white-space: nowrap;
+}
+
+.message-box.success {
+  background: var(--success-bg);
+  border: 1px solid var(--success-shadow);
+  color: var(--success-text);
+}
+
+.message-box.info {
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  color: var(--info-text);
+}
+
+.message-box.warning {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning-text);
+}
+
+.message-box.error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-left: 4px solid var(--danger-gradient-start);
+  color: var(--danger-text);
+}
+
+@keyframes slideDownFade {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
 /* Decorative card surface stays local; padding and rhythm come from ui-section. */
 .settings-section {
   background: var(--color-bg-field);
@@ -410,7 +456,8 @@ h2 {
   border-color: var(--danger-border);
 }
 
-:global([data-theme='light'] .webview-panel .status-indicator.error) {
+:global([data-theme='light'] .webview-panel .status-indicator.error),
+:global([data-theme='light'] .webview-panel .message-box.error) {
   color: var(--ui-action-danger-hover-text);
 }
 

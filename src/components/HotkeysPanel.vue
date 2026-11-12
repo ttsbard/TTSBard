@@ -473,11 +473,7 @@ onUnmounted(async () => {
 <template>
   <div class="hotkeys-panel">
     <!-- Error/Success/Warning Message Display -->
-    <div
-      v-if="errorMessage"
-      class="message-box ui-notice ui-notice--panel"
-      :class="[messageState, messageState ? `ui-notice--${messageState}` : null]"
-    >
+    <div v-if="errorMessage" class="message-box" :class="messageState">
       {{ errorMessage }}
     </div>
 
@@ -760,6 +756,39 @@ onUnmounted(async () => {
 .hotkeys-panel {
   max-width: 900px;
   margin: 0 auto;
+}
+
+.message-box {
+  position: fixed;
+  top: 20px;
+  left: calc(50% + 100px);
+  transform: translateX(-50%);
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  z-index: 1000;
+  box-shadow: var(--dialog-shadow);
+  backdrop-filter: blur(10px);
+  animation: slideDownFade 0.3s ease-out;
+}
+
+.message-box.error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.message-box.success {
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success-text);
+}
+
+.message-box.warning {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning-text-bright);
 }
 
 .setting-section {

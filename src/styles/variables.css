@@ -133,10 +133,15 @@
   --modal-overlay: rgba(var(--rgb-black), 0.7);
   --dialog-shadow: 0 4px 20px rgba(var(--rgb-black), 0.2);
 
-  /* ========== ERROR CONTAINER ========== */
-  /* Floating notices use the shared ui-notice surface. This legacy token is
-     still the text color of the app-level settings-load error container. */
+  /* ========== TOAST NOTIFICATIONS ========== */
+  --toast-bg: #1a1a1a;
+  --toast-border: #333;
   --toast-error-border: #ff4757;
+  --toast-error-bg: rgba(255, 71, 87, 0.8);
+  --toast-warning-border: #ffa502;
+  --toast-warning-bg: rgba(var(--rgb-warning-alt), 0.8);
+  --toast-success-border: #2ed573;
+  --toast-success-bg: rgba(46, 213, 115, 0.8);
 
   /* ========== SIDEBAR SPECIFIC ========== */
   --sidebar-bg-top: rgba(var(--rgb-bg-elevated), 0.98);
