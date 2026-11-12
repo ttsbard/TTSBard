@@ -34,6 +34,35 @@ jobs:
         shell: pwsh
         run: ./scripts/check-third-party-notices.ps1
 
+  check-model-catalog:
+    name: Check model catalog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate model catalog schema and unit tests
+        run: |
+          python3 scripts/validate-model-catalog.py
+          python3 -m unittest discover -s scripts/tests -p "test_*.py" -v
+      - name: Verify catalog URLs when catalog changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          run_url_check=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            run_url_check=true
+          elif ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null ||
+              ! git diff --quiet "$BASE_SHA" HEAD -- catalog/model-catalog.json scripts/validate-model-catalog.py; then
+            run_url_check=true
+          fi
+          if [[ "$run_url_check" == "true" ]]; then
+            python3 scripts/validate-model-catalog.py --check-urls
+          else
+            echo "Skipping live URL check (catalog/model-catalog.json unchanged)."
+          fi
+
   check-fmt:
     name: Check Rust formatting
     runs-on: ubuntu-latest

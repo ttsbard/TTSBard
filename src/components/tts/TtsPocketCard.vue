@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Loader2, Play, RefreshCw, Sparkles, Waves } from 'lucide-vue-next';
 import ProviderCard from '../shared/ProviderCard.vue';
 import { t } from '../../i18n';
 import { presentCommandError } from '../../ipc/commandError';
 import { submitSpeech } from '../../ipc/speech';
+import { createAsyncCleanupScope } from '../../utils/asyncCleanup';
+import { debugWarn } from '../../utils/debug';
 import {
   canTestPocketModel,
   isPocketReferenceModel,
@@ -54,6 +57,7 @@ interface Feedback {
 }
 
 const expanded = ref(false);
+const listenerScope = createAsyncCleanupScope();
 const models = ref<PocketModelDto[]>([]);
 const loading = ref(false);
 const listError = ref<string | null>(null);
@@ -464,9 +468,13 @@ watch(expanded, (isOpen) => {
 
 onMounted(() => {
   void loadModels('list');
+  void listenerScope.track(listen('pocket-models-changed', () => {
+    if (!listenerScope.disposed) void loadModels('list');
+  })).catch(error => debugWarn('[TtsPocketCard] Failed to subscribe to model changes:', error));
 });
 
 onBeforeUnmount(() => {
+  listenerScope.dispose();
   previewGeneration += 1;
   if (previewingFor.value !== null) {
     previewingFor.value = null;

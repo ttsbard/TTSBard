@@ -12,6 +12,7 @@ mod hotkeys;
 mod input_server;
 pub mod ipc;
 mod localization;
+mod model_downloads;
 mod ocr;
 mod paths;
 pub mod playback;
@@ -431,6 +432,7 @@ pub fn run() {
         .manage(tabs_state)
         .manage(speech_queue)
         .manage(system_font_catalog)
+        .manage(model_downloads::ModelDownloadsState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             speak_text_raw_export,
@@ -488,6 +490,12 @@ pub fn run() {
             load_homograph_accentor_model,
             start_homograph_accentor_startup_load,
             preview_contextual_ruaccent,
+            // Local model management commands
+            model_downloads::model_downloads_status,
+            model_downloads::model_downloads_install,
+            model_downloads::model_downloads_cancel,
+            model_downloads::model_downloads_refresh_catalog,
+            model_downloads::model_downloads_open_folder,
             // History commands
             commands::history::get_history_suggestions,
             commands::history::record_history,

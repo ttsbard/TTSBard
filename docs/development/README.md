@@ -94,6 +94,23 @@ pinned revisions (LibreOffice, piper-rs, eSpeak NG), явный license mapping
 родительский каталог `resources`. Проверка не обращается к сети и не валидирует
 полный dependency inventory — только перечисленные прямые assets.
 
+### Каталог локальных моделей
+
+Схема, контрольные суммы inline-файлов и пути в
+[`catalog/model-catalog.json`](../../catalog/model-catalog.json) проверяются
+скриптом без сетевых зависимостей:
+
+```powershell
+python scripts/validate-model-catalog.py
+python -m unittest discover -s scripts/tests -p "test_*.py" -v
+# С проверкой доступности всех внешних URL (HTTP 200):
+python scripts/validate-model-catalog.py --check-urls
+```
+
+Offline-проверка и unit-тесты запускаются в GitHub Actions на каждом прогоне CI,
+а `--check-urls` — дополнительно при изменении `catalog/model-catalog.json` или
+самого валидатора.
+
 ## Сборка приложения на Windows
 
 ```powershell

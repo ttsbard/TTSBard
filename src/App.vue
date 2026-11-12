@@ -40,6 +40,7 @@ import {
 } from './composables/speechQueueFailureNotifications'
 import { convertOcrOneShotFailure } from './composables/ocrFailureNotifications'
 import { useOcrRuntimeNotifications } from './composables/useOcrRuntimeNotifications'
+import type { ModelCategory } from './composables/useModelDownloads'
 import { TWITCH_DELIVERY_FAILED_EVENT, twitchDeliveryFailureLocaleKey } from './ipc/twitchDelivery'
 import {
   convertUpnpForwardStatus,
@@ -53,6 +54,7 @@ type Panel = 'input' | 'tts' | 'audio' | 'preprocessor' | 'webview' | 'twitch' |
 const currentPanel = ref<Panel>('input')
 
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
+const settingsPanelRef = ref<{ openModels: (category: ModelCategory) => void } | null>(null)
 
 const { showWarning, showError } = useErrorHandler()
 
@@ -143,6 +145,12 @@ function setPanel(panel: Panel) {
   if (panel === 'input') {
     nextTick(() => inputPanelRef.value?.focusEditor())
   }
+}
+
+async function openOcrModelManagement() {
+  currentPanel.value = 'settings'
+  await nextTick()
+  settingsPanelRef.value?.openModels('ocr')
 }
 
 // Custom titlebar window controls
@@ -630,8 +638,16 @@ onUnmounted(() => {
           <InputServerPanel v-show="currentPanel === 'input-server'" />
           <VTubeStudioPanel v-show="currentPanel === 'vtube-studio'" />
           <VRChatPanel v-show="currentPanel === 'vrchat'" />
-          <OcrPanel v-show="currentPanel === 'ocr'" :active="currentPanel === 'ocr'" />
-          <SettingsPanel v-show="currentPanel === 'settings'" />
+          <OcrPanel
+            v-show="currentPanel === 'ocr'"
+            :active="currentPanel === 'ocr'"
+            @open-models="openOcrModelManagement"
+          />
+          <SettingsPanel
+            ref="settingsPanelRef"
+            v-show="currentPanel === 'settings'"
+            :active="currentPanel === 'settings'"
+          />
           <HotkeysPanel v-show="currentPanel === 'hotkeys'" :active="currentPanel === 'hotkeys'" />
           <InterceptPanel v-show="currentPanel === 'intercept'" :active="currentPanel === 'intercept'" />
         </main>

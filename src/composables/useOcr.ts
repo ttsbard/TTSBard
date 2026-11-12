@@ -397,7 +397,15 @@ export function useOcr(active?: () => boolean) {
   }
 
   const stopActivationWatch = active ? watch(active, (isActive) => {
-    if (isActive && !disposed) void refreshMonitors()
+    if (isActive && !disposed) {
+      void refreshMonitors()
+      // A model may have been installed from the Models settings tab while this
+      // panel was hidden. Re-read the on-disk packs and persisted selection so
+      // the active model selector stays current without disturbing saved state.
+      void refreshPacks()
+      void refreshSettings()
+      void refreshStatus()
+    }
   }) : undefined
 
   async function saveSettings(): Promise<void> {

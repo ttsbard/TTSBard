@@ -45,6 +45,8 @@ related_tasks: []
 
 ## Активные направления
 
+- [ROADMAP-136 — Локальные модели RUAccent, OCR и Pocket TTS](./active/136-local-model-management.md) — `in_progress`, вкладка настроек, каталог скачивания и адаптивная раскладка вкладок.
+
 - [ROADMAP-135 — Локальный Pocket TTS с выбором модели](./active/135-pocket-tts.md) — `in_progress`, Shtorm RU и Kyutai EN в отдельной карточке TTS.
 
 - [ROADMAP-134 — Отключаемое преобразование чисел в слова](./active/134-number-conversion-toggle.md) — `in_progress`: отдельная галочка после шрифтов редактора, включена по умолчанию.

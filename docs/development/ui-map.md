@@ -39,6 +39,7 @@
 | `interface` | `src/components/settings/SettingsInterface.vue` | Тема и внешний вид окон |
 | `editor` | `src/components/settings/SettingsEditor.vue` | `EditorFontSettings.vue` в том же каталоге; карточка преобразования чисел сразу после шрифтов |
 | `network` | `src/components/settings/SettingsNetwork.vue` | Сетевые формы |
+| `models` | `src/components/settings/SettingsModels.vue` | Каталог RUAccent, OCR и Pocket TTS, установка и повторная установка, переход с панели OCR; `SettingsRuAccent.vue` для выбора и загрузки модели ударений |
 | `ai` | `src/components/SettingsAiPanel.vue` | Настройки AI |
 
 ## Общие поверхности и отдельные окна

@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { AlertTriangle, Info, RefreshCw } from 'lucide-vue-next'
+import { AlertTriangle, Info, RefreshCw, Download, SlidersHorizontal } from 'lucide-vue-next'
 import { useOcr } from '../composables/useOcr'
 import type { MonitorInfoDto } from '../composables/useOcr'
 import { t } from '../i18n'
 
 const props = defineProps<{ active?: boolean }>()
+
+const emit = defineEmits<{
+  (e: 'open-models'): void
+}>()
 
 const {
   settings,
@@ -99,6 +103,10 @@ function onModelChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value
   settings.value.model_id = value === '' ? null : value
   void saveSettings()
+}
+
+function openModelManagement() {
+  emit('open-models')
 }
 
 function onCaptureTargetChange(event: Event) {
@@ -199,6 +207,26 @@ function onCaptureTargetChange(event: Event) {
           {{ t('ocr.model_missing_hint', { model: savedModelId ?? '' }) }}
           <code>%APPDATA%\ttsbard\models\ocr</code>
         </p>
+        <div class="model-management">
+          <button
+            v-if="noPacks"
+            type="button"
+            class="ui-button ui-button--compact ui-button--leading-icon"
+            @click="openModelManagement"
+          >
+            <Download :size="16" />
+            <span>{{ t('ocr.download_model') }}</span>
+          </button>
+          <button
+            v-else
+            type="button"
+            class="model-manage-link"
+            @click="openModelManagement"
+          >
+            <SlidersHorizontal :size="15" />
+            <span>{{ t('ocr.manage_models') }}</span>
+          </button>
+        </div>
       </div>
 
       <div class="model-field capture-target-field">
@@ -442,6 +470,41 @@ h2 {
   min-width: 0;
   overflow-wrap: break-word;
   margin-bottom: 0;
+}
+
+.model-management {
+  display: flex;
+  flex: 0 0 100%;
+  align-items: center;
+  min-width: 0;
+}
+
+.model-manage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-label);
+  line-height: var(--ui-line-height-control);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.model-manage-link:hover {
+  color: var(--color-accent-hover, var(--color-accent));
+}
+
+.model-manage-link:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .refresh-button {

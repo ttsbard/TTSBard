@@ -13,6 +13,11 @@ synthesis, leaving the editor unchanged.
 
 ## Download and prepare a model
 
+Open **Settings → Models** (if the catalog is not downloaded yet, click **Download catalog from repository**), find **RUAccent Tiny** under **Stress placement (RUAccent)**, and select **Download**. When the package shows **On disk**,
+continue to the stress placement settings further down the same tab.
+
+### Install manually
+
 The author distributes weights at
 [ruaccent/accentuator](https://huggingface.co/ruaccent/accentuator).
 Under **Settings → General → Folders**, open **Program data (audio cache and models)** and create
@@ -78,7 +83,7 @@ uses a built-in native runtime.
 
 ## Enable automatic processing
 
-1. Open **Settings → Editor → Stress placement**.
+1. Open **Settings → Models → Stress placement**.
 2. Select an installed RUAccent model.
 3. Click the load button beside the list and wait for **Ready**.
 4. Enable **Place stresses automatically** to process each message and resolve

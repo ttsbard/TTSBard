@@ -18,6 +18,12 @@ declares Russian and English: `ch_PP-OCRv5_det_mobile` finds text regions and
 
 ## Get the files
 
+Open **Settings → Models** (if the catalog is not downloaded yet, click **Download catalog from repository**) and under **OCR**, select **Download** next to **eSlav PP-OCRv5 Mobile**. You can also reach this section from the OCR panel
+using **Download a model** or **Manage models**. When the package shows
+**On disk**, return to OCR and select it in the model picker.
+
+### Install manually
+
 1. Under **Settings → General → Folders**, open **Program data (audio cache and models)** and create
    `models\ocr\eslav-ppocrv5-mobile`. This opens your current data folder,
    including any custom location.

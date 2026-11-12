@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick } from 'vue'
 import type { PocketModelDto } from './pocketTts'
 
-const { invokeMock, openMock } = vi.hoisted(() => ({
+const { invokeMock, openMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openMock: vi.fn(),
+  listenMock: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
+vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openMock }))
 
 import TtsPocketCard from './TtsPocketCard.vue'
@@ -114,6 +116,7 @@ describe('TtsPocketCard', () => {
   beforeEach(() => {
     invokeMock.mockReset()
     openMock.mockReset()
+    listenMock.mockReset().mockResolvedValue(vi.fn())
   })
 
   afterEach(() => {
@@ -132,6 +135,20 @@ describe('TtsPocketCard', () => {
     expect(refresh).not.toBeNull()
     expect(refresh.getAttribute('title')).toBeTruthy()
     expect(refresh.getAttribute('aria-label')).toBeTruthy()
+  })
+
+  it('reloads the Pocket registry when a model has been installed', async () => {
+    let models: PocketModelDto[] = []
+    installList(() => models)
+    const { host } = await mountCard()
+    expect(modelRadios(host)).toHaveLength(0)
+
+    const [, onModelsChanged] = listenMock.mock.calls.find(([event]) => event === 'pocket-models-changed')!
+    models = [shtorm()]
+    onModelsChanged()
+    await flush()
+
+    expect(modelRadios(host)).toHaveLength(1)
   })
 
   it('lists a discovered model with its language and needs-reference state', async () => {

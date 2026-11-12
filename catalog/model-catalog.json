@@ -1,0 +1,757 @@
+{
+  "schema_version": 1,
+  "published_at": "2026-11-12",
+  "packages": [
+    {
+      "id": "ruaccent-tiny",
+      "category": "ruaccent",
+      "name": "RUAccent Tiny",
+      "version": "1.0",
+      "source_url": "https://huggingface.co/ruaccent/accentuator",
+      "license": "MIT",
+      "available": true,
+      "files": [
+        {
+          "path": "ruaccent/dictionary/accents.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
+          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
+          "size_bytes": 20954156
+        },
+        {
+          "path": "ruaccent/dictionary/omographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/omographs.json.gz",
+          "sha256": "04a9e81c68d65f65ba493fe0110f99e79087548c2beeec3032e2b66e28706f36",
+          "size_bytes": 219047
+        },
+        {
+          "path": "ruaccent/dictionary/yo_words.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_words.json.gz",
+          "sha256": "a19fa89a964a0691d9fe4ee384783e3934904891843d8f59a1c480d67947a82a",
+          "size_bytes": 548914
+        },
+        {
+          "path": "ruaccent/dictionary/yo_homographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_homographs.json.gz",
+          "sha256": "c4ee777bbbab87f9eac838f370ad92974e079d02b21903e480c54b5f0c8c60d1",
+          "size_bytes": 5747
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/model.onnx",
+          "sha256": "4e393144e45626f6f1062a0784ef06f921b97321a8e7b87ac2a09a892286500a",
+          "size_bytes": 803402
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/config.json",
+          "sha256": "e377f159a8fc8673e211f100d4a237d5fe3dceb3b6789a5a738bf50bda23be49",
+          "size_bytes": 841
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/vocab.txt",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/vocab.txt",
+          "sha256": "242882b2f27800e49a6babf46867dabf6dc9b6535b600776a68815fe4d4f4382",
+          "size_bytes": 140
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
+          "size_bytes": 116473561
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/config.json",
+          "sha256": "aa0638edf56254f123e593e96f034c2b5e68303ac207b29f64f0878dc4c22631",
+          "size_bytes": 822
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/tokenizer.json",
+          "sha256": "ce51cde5df60ecb167abec4c90db11360482150628f7a91f3e316df6d6ff6f6f",
+          "size_bytes": 2413536
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
+          "size_bytes": 14332169
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/config.json",
+          "sha256": "adf7fd2c67be1498071f447ec4a23dbe84904c49f95d1d3e6c7d9df269b9a2e9",
+          "size_bytes": 625
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "sha256": "f2bf174f2fe62ff11c28d56555f9c0cf16b24e162ef53bcf42ff85ebcf6ebfa8",
+          "size_bytes": 126952
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny/model.onnx",
+          "sha256": "9d70a7d09ad2ba178ac0f79b890dc89d166bde52aa99f3c312c7ccdbb3337edd",
+          "size_bytes": 10527951
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny/tokenizer.json",
+          "sha256": "d39943ce113bf88db2556a096c7929080b8c6afedfeefa7e3c3c736ac1eb0090",
+          "size_bytes": 882532
+        }
+      ],
+      "recommended": true
+    },
+    {
+      "id": "ruaccent-tiny2",
+      "category": "ruaccent",
+      "name": "RUAccent Tiny 2",
+      "version": "1.0",
+      "source_url": "https://huggingface.co/ruaccent/accentuator",
+      "license": "MIT",
+      "available": true,
+      "files": [
+        {
+          "path": "ruaccent/dictionary/accents.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
+          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
+          "size_bytes": 20954156
+        },
+        {
+          "path": "ruaccent/dictionary/omographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/omographs.json.gz",
+          "sha256": "04a9e81c68d65f65ba493fe0110f99e79087548c2beeec3032e2b66e28706f36",
+          "size_bytes": 219047
+        },
+        {
+          "path": "ruaccent/dictionary/yo_words.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_words.json.gz",
+          "sha256": "a19fa89a964a0691d9fe4ee384783e3934904891843d8f59a1c480d67947a82a",
+          "size_bytes": 548914
+        },
+        {
+          "path": "ruaccent/dictionary/yo_homographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_homographs.json.gz",
+          "sha256": "c4ee777bbbab87f9eac838f370ad92974e079d02b21903e480c54b5f0c8c60d1",
+          "size_bytes": 5747
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/model.onnx",
+          "sha256": "4e393144e45626f6f1062a0784ef06f921b97321a8e7b87ac2a09a892286500a",
+          "size_bytes": 803402
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/config.json",
+          "sha256": "e377f159a8fc8673e211f100d4a237d5fe3dceb3b6789a5a738bf50bda23be49",
+          "size_bytes": 841
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/vocab.txt",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/vocab.txt",
+          "sha256": "242882b2f27800e49a6babf46867dabf6dc9b6535b600776a68815fe4d4f4382",
+          "size_bytes": 140
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
+          "size_bytes": 116473561
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/config.json",
+          "sha256": "aa0638edf56254f123e593e96f034c2b5e68303ac207b29f64f0878dc4c22631",
+          "size_bytes": 822
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/tokenizer.json",
+          "sha256": "ce51cde5df60ecb167abec4c90db11360482150628f7a91f3e316df6d6ff6f6f",
+          "size_bytes": 2413536
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
+          "size_bytes": 14332169
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/config.json",
+          "sha256": "adf7fd2c67be1498071f447ec4a23dbe84904c49f95d1d3e6c7d9df269b9a2e9",
+          "size_bytes": 625
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "sha256": "f2bf174f2fe62ff11c28d56555f9c0cf16b24e162ef53bcf42ff85ebcf6ebfa8",
+          "size_bytes": 126952
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny2/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny2/model.onnx",
+          "sha256": "c28840ab333be5870451a57b28839d3896e3332b791e8be29e75eb1c13338882",
+          "size_bytes": 10528004
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny2/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny2/tokenizer.json",
+          "sha256": "d39943ce113bf88db2556a096c7929080b8c6afedfeefa7e3c3c736ac1eb0090",
+          "size_bytes": 882532
+        }
+      ]
+    },
+    {
+      "id": "ruaccent-tiny2.1",
+      "category": "ruaccent",
+      "name": "RUAccent Tiny 2.1",
+      "version": "1.0",
+      "source_url": "https://huggingface.co/ruaccent/accentuator",
+      "license": "MIT",
+      "available": true,
+      "files": [
+        {
+          "path": "ruaccent/dictionary/accents.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
+          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
+          "size_bytes": 20954156
+        },
+        {
+          "path": "ruaccent/dictionary/omographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/omographs.json.gz",
+          "sha256": "04a9e81c68d65f65ba493fe0110f99e79087548c2beeec3032e2b66e28706f36",
+          "size_bytes": 219047
+        },
+        {
+          "path": "ruaccent/dictionary/yo_words.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_words.json.gz",
+          "sha256": "a19fa89a964a0691d9fe4ee384783e3934904891843d8f59a1c480d67947a82a",
+          "size_bytes": 548914
+        },
+        {
+          "path": "ruaccent/dictionary/yo_homographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_homographs.json.gz",
+          "sha256": "c4ee777bbbab87f9eac838f370ad92974e079d02b21903e480c54b5f0c8c60d1",
+          "size_bytes": 5747
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/model.onnx",
+          "sha256": "4e393144e45626f6f1062a0784ef06f921b97321a8e7b87ac2a09a892286500a",
+          "size_bytes": 803402
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/config.json",
+          "sha256": "e377f159a8fc8673e211f100d4a237d5fe3dceb3b6789a5a738bf50bda23be49",
+          "size_bytes": 841
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/vocab.txt",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/vocab.txt",
+          "sha256": "242882b2f27800e49a6babf46867dabf6dc9b6535b600776a68815fe4d4f4382",
+          "size_bytes": 140
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
+          "size_bytes": 116473561
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/config.json",
+          "sha256": "aa0638edf56254f123e593e96f034c2b5e68303ac207b29f64f0878dc4c22631",
+          "size_bytes": 822
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/tokenizer.json",
+          "sha256": "ce51cde5df60ecb167abec4c90db11360482150628f7a91f3e316df6d6ff6f6f",
+          "size_bytes": 2413536
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
+          "size_bytes": 14332169
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/config.json",
+          "sha256": "adf7fd2c67be1498071f447ec4a23dbe84904c49f95d1d3e6c7d9df269b9a2e9",
+          "size_bytes": 625
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "sha256": "f2bf174f2fe62ff11c28d56555f9c0cf16b24e162ef53bcf42ff85ebcf6ebfa8",
+          "size_bytes": 126952
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny2.1/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny2.1/model.onnx",
+          "sha256": "2f60ac3391b6ac2500792dc9125414c95767b6b3c49adb8472b7ab6574fe84e8",
+          "size_bytes": 41532080
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/tiny2.1/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/tiny2.1/tokenizer.json",
+          "sha256": "d39943ce113bf88db2556a096c7929080b8c6afedfeefa7e3c3c736ac1eb0090",
+          "size_bytes": 882532
+        }
+      ]
+    },
+    {
+      "id": "ruaccent-small-poetry",
+      "category": "ruaccent",
+      "name": "RUAccent Small Poetry",
+      "version": "1.0",
+      "source_url": "https://huggingface.co/ruaccent/accentuator",
+      "license": "MIT",
+      "available": true,
+      "files": [
+        {
+          "path": "ruaccent/dictionary/accents.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/accents.json.gz",
+          "sha256": "aa460ebba90de00fbbf3d41d121961f605b98667e45efb7920f127473b15515e",
+          "size_bytes": 20954156
+        },
+        {
+          "path": "ruaccent/dictionary/omographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/omographs.json.gz",
+          "sha256": "04a9e81c68d65f65ba493fe0110f99e79087548c2beeec3032e2b66e28706f36",
+          "size_bytes": 219047
+        },
+        {
+          "path": "ruaccent/dictionary/yo_words.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_words.json.gz",
+          "sha256": "a19fa89a964a0691d9fe4ee384783e3934904891843d8f59a1c480d67947a82a",
+          "size_bytes": 548914
+        },
+        {
+          "path": "ruaccent/dictionary/yo_homographs.json.gz",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/dictionary/yo_homographs.json.gz",
+          "sha256": "c4ee777bbbab87f9eac838f370ad92974e079d02b21903e480c54b5f0c8c60d1",
+          "size_bytes": 5747
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/model.onnx",
+          "sha256": "4e393144e45626f6f1062a0784ef06f921b97321a8e7b87ac2a09a892286500a",
+          "size_bytes": 803402
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/config.json",
+          "sha256": "e377f159a8fc8673e211f100d4a237d5fe3dceb3b6789a5a738bf50bda23be49",
+          "size_bytes": 841
+        },
+        {
+          "path": "ruaccent/nn/nn_accent/vocab.txt",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_accent/vocab.txt",
+          "sha256": "242882b2f27800e49a6babf46867dabf6dc9b6535b600776a68815fe4d4f4382",
+          "size_bytes": 140
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/model.onnx",
+          "sha256": "3d547500637b4ddfec8880ed6d1405fd50ee9d3f0131ef8a2a69dcf961dbefeb",
+          "size_bytes": 116473561
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/config.json",
+          "sha256": "aa0638edf56254f123e593e96f034c2b5e68303ac207b29f64f0878dc4c22631",
+          "size_bytes": 822
+        },
+        {
+          "path": "ruaccent/nn/nn_stress_usage_predictor/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_stress_usage_predictor/tokenizer.json",
+          "sha256": "ce51cde5df60ecb167abec4c90db11360482150628f7a91f3e316df6d6ff6f6f",
+          "size_bytes": 2413536
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/model.onnx",
+          "sha256": "42cc85bf0c4b319dfe3d89fa17b162a92fd5e1c651a657cb3d5f44978d4e70ac",
+          "size_bytes": 14332169
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/config.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/config.json",
+          "sha256": "adf7fd2c67be1498071f447ec4a23dbe84904c49f95d1d3e6c7d9df269b9a2e9",
+          "size_bytes": 625
+        },
+        {
+          "path": "ruaccent/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_yo_homograph_resolver/tokenizer.json",
+          "sha256": "f2bf174f2fe62ff11c28d56555f9c0cf16b24e162ef53bcf42ff85ebcf6ebfa8",
+          "size_bytes": 126952
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/small_poetry/model.onnx",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/small_poetry/model.onnx",
+          "sha256": "fcea1b8d8c164276d2e593d53261ca3c21d6fc9fed4f04abb8f69e2b95ba842d",
+          "size_bytes": 41532079
+        },
+        {
+          "path": "ruaccent/nn/nn_omograph/small_poetry/tokenizer.json",
+          "url": "https://huggingface.co/ruaccent/accentuator/resolve/b78ae5ea1e62beaf138bed1865cd8c3b0b5ca855/nn/nn_omograph/small_poetry/tokenizer.json",
+          "sha256": "b412ba7a15dd36313e360f3264c3e80cedf94807aeffccda559b2ec1134f8499",
+          "size_bytes": 882630
+        }
+      ]
+    },
+    {
+      "id": "eslav-ppocrv5-mobile",
+      "category": "ocr",
+      "name": "eSlav PP-OCRv5 Mobile (RU / EN)",
+      "version": "5.0",
+      "source_url": "https://www.modelscope.cn/models/RapidAI/RapidOCR",
+      "license": "Apache-2.0",
+      "available": true,
+      "files": [
+        {
+          "path": "ocr/eslav-ppocrv5-mobile/manifest.json",
+          "content": "{\n  \"id\": \"eslav-ppocrv5-mobile\",\n  \"display_name\": \"eSlav PP-OCRv5 Mobile\",\n  \"languages\": [\"ru\", \"en\"],\n  \"family\": \"pp_ocr_v5\",\n  \"det_file\": \"det.onnx\",\n  \"rec_file\": \"rec.onnx\",\n  \"dict_file\": \"dict.txt\"\n}\n",
+          "sha256": "2c3ea37e69d816e39a0d752f5c8b435e9e3b1de34cc29c5c1d429f20ed84632a",
+          "size_bytes": 211
+        },
+        {
+          "path": "ocr/eslav-ppocrv5-mobile/det.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/7d0781614ca1a83d5ad9603f713acb2e74855d72/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "size_bytes": 4819576
+        },
+        {
+          "path": "ocr/eslav-ppocrv5-mobile/rec.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/7d0781614ca1a83d5ad9603f713acb2e74855d72/onnx/PP-OCRv5/rec/eslav_PP-OCRv5_rec_mobile.onnx",
+          "sha256": "08705d6721849b1347d26187f15a5e362c431963a2a62bfff4feac578c489aab",
+          "size_bytes": 7911802
+        },
+        {
+          "path": "ocr/eslav-ppocrv5-mobile/dict.txt",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/7d0781614ca1a83d5ad9603f713acb2e74855d72/paddle/PP-OCRv5/rec/eslav_PP-OCRv5_rec_mobile/ppocrv5_eslav_dict.txt",
+          "sha256": "3e95f1581557162870cacdba5af91a4c6be2890710d395b0c3c7578e7ee5e6eb",
+          "size_bytes": 1663
+        }
+      ],
+      "recommended": true
+    },
+    {
+      "id": "cyrillic-ppocrv5-mobile",
+      "category": "ocr",
+      "name": "Cyrillic PP-OCRv5 Mobile (RU / EN + Cyrillic)",
+      "version": "5.0",
+      "source_url": "https://www.modelscope.cn/models/RapidAI/RapidOCR",
+      "license": "Apache-2.0",
+      "available": true,
+      "files": [
+        {
+          "path": "ocr/cyrillic-ppocrv5-mobile/manifest.json",
+          "content": "{\n  \"id\": \"cyrillic-ppocrv5-mobile\",\n  \"display_name\": \"Cyrillic PP-OCRv5 Mobile (RU / EN + Cyrillic)\",\n  \"languages\": [\n    \"ru\",\n    \"uk\",\n    \"be\",\n    \"bg\",\n    \"sr\",\n    \"en\"\n  ],\n  \"family\": \"pp_ocr_v5\",\n  \"det_file\": \"det.onnx\",\n  \"rec_file\": \"rec.onnx\",\n  \"dict_file\": \"dict.txt\"\n}",
+          "sha256": "917006e466fa6c1aab4ed31a37702ef56713e3f659364b9b51d84bf7c5ba6259",
+          "size_bytes": 289
+        },
+        {
+          "path": "ocr/cyrillic-ppocrv5-mobile/det.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "size_bytes": 4819576
+        },
+        {
+          "path": "ocr/cyrillic-ppocrv5-mobile/rec.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
+          "sha256": "90f761b4bfcce0c8c561c0cb5c887b0971d3ec01c32164bdf7374a35b0982711",
+          "size_bytes": 8074092
+        },
+        {
+          "path": "ocr/cyrillic-ppocrv5-mobile/dict.txt",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/paddle/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile/ppocrv5_cyrillic_dict.txt",
+          "sha256": "db40aa52ceb112055be80c694afdf655d5d2c4f7873704524cc16a447ca913ba",
+          "size_bytes": 2781
+        }
+      ]
+    },
+    {
+      "id": "en-ppocrv5-mobile",
+      "category": "ocr",
+      "name": "English PP-OCRv5 Mobile (EN only)",
+      "version": "5.0",
+      "source_url": "https://www.modelscope.cn/models/RapidAI/RapidOCR",
+      "license": "Apache-2.0",
+      "available": true,
+      "files": [
+        {
+          "path": "ocr/en-ppocrv5-mobile/manifest.json",
+          "content": "{\n  \"id\": \"en-ppocrv5-mobile\",\n  \"display_name\": \"English PP-OCRv5 Mobile (EN only)\",\n  \"languages\": [\n    \"en\"\n  ],\n  \"family\": \"pp_ocr_v5\",\n  \"det_file\": \"det.onnx\",\n  \"rec_file\": \"rec.onnx\",\n  \"dict_file\": \"dict.txt\"\n}",
+          "sha256": "8ac45be6c21f0e7baa83594ca567df426d9dece03cff4bc8b83db01764bccbf6",
+          "size_bytes": 221
+        },
+        {
+          "path": "ocr/en-ppocrv5-mobile/det.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "size_bytes": 4819576
+        },
+        {
+          "path": "ocr/en-ppocrv5-mobile/rec.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile.onnx",
+          "sha256": "c3461add59bb4323ecba96a492ab75e06dda42467c9e3d0c18db5d1d21924be8",
+          "size_bytes": 7872351
+        },
+        {
+          "path": "ocr/en-ppocrv5-mobile/dict.txt",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/paddle/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile/ppocrv5_en_dict.txt",
+          "sha256": "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6",
+          "size_bytes": 1416
+        }
+      ]
+    },
+    {
+      "id": "ch-ppocrv5-mobile",
+      "category": "ocr",
+      "name": "CJK PP-OCRv5 Mobile (ZH / JA / EN)",
+      "version": "5.0",
+      "source_url": "https://www.modelscope.cn/models/RapidAI/RapidOCR",
+      "license": "Apache-2.0",
+      "available": true,
+      "files": [
+        {
+          "path": "ocr/ch-ppocrv5-mobile/manifest.json",
+          "content": "{\n  \"id\": \"ch-ppocrv5-mobile\",\n  \"display_name\": \"CJK PP-OCRv5 Mobile (ZH / JA / EN)\",\n  \"languages\": [\n    \"zh\",\n    \"ja\",\n    \"en\"\n  ],\n  \"family\": \"pp_ocr_v5\",\n  \"det_file\": \"det.onnx\",\n  \"rec_file\": \"rec.onnx\",\n  \"dict_file\": \"dict.txt\"\n}",
+          "sha256": "46f712d0c9bd376a471bb101f9fec8b0ec61dfb5c637167e30b9561936da5d13",
+          "size_bytes": 242
+        },
+        {
+          "path": "ocr/ch-ppocrv5-mobile/det.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "size_bytes": 4819576
+        },
+        {
+          "path": "ocr/ch-ppocrv5-mobile/rec.onnx",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+          "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5",
+          "size_bytes": 16631306
+        },
+        {
+          "path": "ocr/ch-ppocrv5-mobile/dict.txt",
+          "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
+          "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+          "size_bytes": 74012
+        }
+      ]
+    },
+    {
+      "id": "shtorm-ru-v2-fast",
+      "category": "pocket",
+      "name": "Shtorm RU v2 Fast",
+      "version": "2",
+      "source_url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx",
+      "license": "CC-BY-4.0",
+      "available": true,
+      "files": [
+        {
+          "path": "pocket/shtorm-ru-v2-fast/config.yaml",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/config.yaml",
+          "sha256": "8d26baf68d79e5ca37a2cb9aa12418634b67dea478faddd4da501a9781396cd9",
+          "size_bytes": 1149
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/pocket.json",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/pocket.json",
+          "sha256": "e629a4aac7974d71dece296a801514bf4207a1f52dbbcd582410f7d4449508c1",
+          "size_bytes": 169
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/flow_lm_flow_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/flow_lm_flow_int8.onnx",
+          "sha256": "160fa8b06064e5da14c1eb3bca8dd6544acab9a3220cf96423fd9fdcc0b92f7d",
+          "size_bytes": 9935594
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/flow_lm_main_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/flow_lm_main_int8.onnx",
+          "sha256": "e5347a5420efc65f662debf9805b0f58d21bdf9db8898ce07723788b004afa71",
+          "size_bytes": 75865936
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/mimi_decoder_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/mimi_decoder_int8.onnx",
+          "sha256": "70ac5c1d3cbe76de4c37a0eef45b85745e77ba220b108039c5cba640132f8e68",
+          "size_bytes": 22629895
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/mimi_encoder.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/mimi_encoder.onnx",
+          "sha256": "56a0a350401ba806cf78d3985e2ae58f92db682ef7874c6673dc00f3bcba3b6b",
+          "size_bytes": 39269324
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/text_conditioner.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-fast-onnx/resolve/c38ccf2f793637a8c3d2be1f4c7ab836ab981b88/text_conditioner.onnx",
+          "sha256": "f53821292014f4dddd7b973d8631a160547d16b379136a5cc1c4a89005b90dad",
+          "size_bytes": 16388310
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/model_fast.safetensors",
+          "url": "https://huggingface.co/ArtShtorm/Shtorm-PocketTTS-RU/resolve/33f6c328d62c4da5c1227bbe081e89b574a6183a/model_fast.safetensors",
+          "sha256": "de8ad576d3d549372a34b40df03d6e6b8f668e857dac32f61934e9c5c1da8d52",
+          "size_bytes": 438033312
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-fast/tokenizer.model",
+          "url": "https://huggingface.co/ArtShtorm/Shtorm-PocketTTS-RU/resolve/33f6c328d62c4da5c1227bbe081e89b574a6183a/tokenizer.model",
+          "sha256": "95d0b8e61951408c7744e09fb5b87ff8e318612b0c8168cc593ea0a812f34f81",
+          "size_bytes": 316834
+        }
+      ]
+    },
+    {
+      "id": "shtorm-ru-v2-slow",
+      "category": "pocket",
+      "name": "Shtorm RU v2 Slow",
+      "version": "2",
+      "source_url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx",
+      "license": "CC-BY-4.0",
+      "available": true,
+      "files": [
+        {
+          "path": "pocket/shtorm-ru-v2-slow/config.yaml",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/config.yaml",
+          "sha256": "100a249a765a80cc9ac407921aaab9b289e0434677f823fdcab8f25031b8fd53",
+          "size_bytes": 1149
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/pocket.json",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/pocket.json",
+          "sha256": "b02fb59ead7053464289e52db9411bd76cbaf2a910669b08ec1c0b0f95d5b4f6",
+          "size_bytes": 132
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/flow_lm_flow_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/flow_lm_flow_int8.onnx",
+          "sha256": "160fa8b06064e5da14c1eb3bca8dd6544acab9a3220cf96423fd9fdcc0b92f7d",
+          "size_bytes": 9935594
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/flow_lm_main_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/flow_lm_main_int8.onnx",
+          "sha256": "24bdb2a0670fe3f1173da430d70c5c4e8fca0235af946ece5a205dbcbf2dbbf3",
+          "size_bytes": 75865936
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/mimi_decoder_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/mimi_decoder_int8.onnx",
+          "sha256": "70ac5c1d3cbe76de4c37a0eef45b85745e77ba220b108039c5cba640132f8e68",
+          "size_bytes": 22629895
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/mimi_encoder.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/mimi_encoder.onnx",
+          "sha256": "c3cfea47b7b346f1008e4de8c565dd94df9558bb276d267b6915cf0bafcf1dbe",
+          "size_bytes": 39269324
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/text_conditioner.onnx",
+          "url": "https://huggingface.co/TTSBard/shtorm-ru-v2-slow-onnx/resolve/e860dd99343c25b880e1cc552abdb244bc5e877a/text_conditioner.onnx",
+          "sha256": "150fff6af0a37c3f251c9dfd89e7eec51dfef10f40c74a03036790dc2a9baf5f",
+          "size_bytes": 16388310
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/model_slow.safetensors",
+          "url": "https://huggingface.co/ArtShtorm/Shtorm-PocketTTS-RU/resolve/33f6c328d62c4da5c1227bbe081e89b574a6183a/model_slow.safetensors",
+          "sha256": "22dca559214b5acc220caa4e25179927465ecee310b41aa730481d6c9467359f",
+          "size_bytes": 438033312
+        },
+        {
+          "path": "pocket/shtorm-ru-v2-slow/tokenizer.model",
+          "url": "https://huggingface.co/ArtShtorm/Shtorm-PocketTTS-RU/resolve/33f6c328d62c4da5c1227bbe081e89b574a6183a/tokenizer.model",
+          "sha256": "95d0b8e61951408c7744e09fb5b87ff8e318612b0c8168cc593ea0a812f34f81",
+          "size_bytes": 316834
+        }
+      ]
+    },
+    {
+      "id": "kyutai-en-clone",
+      "category": "pocket",
+      "name": "Kyutai English",
+      "version": "1.0.0",
+      "source_url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx",
+      "license": "CC-BY-4.0",
+      "available": true,
+      "files": [
+        {
+          "path": "pocket/kyutai-en-clone/config.yaml",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/config.yaml",
+          "sha256": "d6b9bc5820c0ad02aa6b629d15b754b3f0ce54b06139ee5c4dcf2067dee8d1d5",
+          "size_bytes": 1375
+        },
+        {
+          "path": "pocket/kyutai-en-clone/pocket.json",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/pocket.json",
+          "sha256": "2f8dc7af9bb65d38c3e8d81eeb8ae463fd86fc8e5d25be5de99fddeccd42a39e",
+          "size_bytes": 129
+        },
+        {
+          "path": "pocket/kyutai-en-clone/flow_lm_flow_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/flow_lm_flow_int8.onnx",
+          "sha256": "a86f58284d7885f325ebb238d40782be9716dc1e1149dc2469f113dac9f033f5",
+          "size_bytes": 9935594
+        },
+        {
+          "path": "pocket/kyutai-en-clone/flow_lm_main_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/flow_lm_main_int8.onnx",
+          "sha256": "2a14cf05cac01461aa596229a05bda4378b135004048ef1ec1db728b4d1ab958",
+          "size_bytes": 75865936
+        },
+        {
+          "path": "pocket/kyutai-en-clone/mimi_decoder_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/mimi_decoder_int8.onnx",
+          "sha256": "5cd57aa7a3f1439b9b63da03cd39f3cfb0b2a48acf0e1b1628a2f256ec419b67",
+          "size_bytes": 22629895
+        },
+        {
+          "path": "pocket/kyutai-en-clone/mimi_encoder.onnx",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/mimi_encoder.onnx",
+          "sha256": "27a8ae66061b389bab09f18083005c2e4d5be6f4eaa34c8db8988f52fd6acc55",
+          "size_bytes": 39269324
+        },
+        {
+          "path": "pocket/kyutai-en-clone/text_conditioner.onnx",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/text_conditioner.onnx",
+          "sha256": "3573df3fe6d0b1e72588ed5b021ab11514e67a4432c20a2bea783170260f5020",
+          "size_bytes": 16388310
+        },
+        {
+          "path": "pocket/kyutai-en-clone/model.safetensors",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/model.safetensors",
+          "sha256": "bc96b82436c5ec00d3118ef3b01bc3358423e1766ecae3dca0aeea84789e7d74",
+          "size_bytes": 219029196
+        },
+        {
+          "path": "pocket/kyutai-en-clone/tokenizer.json",
+          "url": "https://huggingface.co/TTSBard/kyutai-en-clone-onnx/resolve/e5ac525cb177278ddcc9f3581365b566c2815886/tokenizer.json",
+          "sha256": "f498428e1eafee50492f7be13dc9bfafcfc12e508cd0eb1b01c92ecd5d8c6687",
+          "size_bytes": 245020
+        }
+      ]
+    },
+    {
+      "id": "xvibe-ru-v0.1.0",
+      "category": "pocket",
+      "name": "xVibePocketTTS v0.1.0",
+      "version": "0.1.0",
+      "source_url": "https://huggingface.co/genvoice/xVibePocketTTS",
+      "available": false,
+      "unavailable_reason": "Upstream https://huggingface.co/genvoice/xVibePocketTTS does not specify an explicit license for its fine-tuned weights (it mentions only base Kyutai CC-BY-4.0 and code MIT; a clarification issue is open) and publishes no public ONNX runtime package.",
+      "files": []
+    }
+  ]
+}
