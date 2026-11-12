@@ -90,10 +90,12 @@ jobs:
         shell: pwsh
         env:
           TAURI_CONFIG: '{"bundle":{"resources":null}}'
-        run: >-
+        run: |
+          # ort-sys copies DLLs into these directories during its build script.
+          New-Item -ItemType Directory -Force -Path src-tauri/target/debug/examples, src-tauri/target/debug/deps | Out-Null
           & .\scripts\cargo.ps1 @('clippy', '--manifest-path',
-          'src-tauri/Cargo.toml', '--locked', '--all-targets', '--all-features',
-          '--', '-D', 'warnings')
+            'src-tauri/Cargo.toml', '--locked', '--all-targets', '--all-features',
+            '--', '-D', 'warnings')
 
   check-types:
     name: Check TypeScript types
@@ -135,7 +137,8 @@ jobs:
       - name: Prepare Piper test data
         shell: pwsh
         run: |
-          .\scripts\cargo.ps1 build --manifest-path src-tauri/Cargo.toml --package espeak-rs-sys --locked
+          .\scripts\cargo.ps1 build --manifest-path src-tauri/Cargo.toml --package espeak-rs --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $espeakData = Get-ChildItem `
             'src-tauri\target\debug\build\espeak-rs-sys-*\out\share\espeak-ng-data' `
             -Directory -ErrorAction SilentlyContinue |
@@ -156,7 +159,9 @@ jobs:
         shell: pwsh
         env:
           TAURI_CONFIG: '{"bundle":{"resources":null}}'
-        run: .\scripts\cargo.ps1 test --manifest-path src-tauri/Cargo.toml --locked --verbose
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/target/debug/examples, src-tauri/target/debug/deps | Out-Null
+          .\scripts\cargo.ps1 test --manifest-path src-tauri/Cargo.toml --locked --verbose
 
   bundle-smoke:
     name: Tauri bundle smoke

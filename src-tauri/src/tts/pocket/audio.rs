@@ -127,10 +127,9 @@ pub fn normalize_reference_wav_to_file(
             })?;
         }
     }
-    let bytes = crate::audio::effects::encode_wav(&normalized, REFERENCE_SAMPLE_RATE, 1)
-        .map_err(|error| {
-            PocketError::Runtime(format!("cannot encode the normalized reference: {error}"))
-        })?;
+    let bytes = crate::audio::effects::encode_wav(&normalized, REFERENCE_SAMPLE_RATE, 1).map_err(
+        |error| PocketError::Runtime(format!("cannot encode the normalized reference: {error}")),
+    )?;
     crate::config::replace_file_atomically(dest, &bytes).map_err(|error| {
         PocketError::Runtime(format!("cannot write the normalized reference: {error}"))
     })?;
@@ -610,8 +609,7 @@ mod tests {
         let amplitude = 0.015f64 * std::f64::consts::SQRT_2;
         let samples: Vec<f32> = (0..sample_rate)
             .map(|index| {
-                let phase =
-                    2.0 * std::f64::consts::PI * 200.0 * index as f64 / sample_rate as f64;
+                let phase = 2.0 * std::f64::consts::PI * 200.0 * index as f64 / sample_rate as f64;
                 (phase.sin() * amplitude) as f32
             })
             .collect();

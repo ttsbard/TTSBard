@@ -1122,7 +1122,10 @@ mod tests {
         let mut samples = sine(0.04, 24_000, 180.0);
         let gain = compensate_output_gain(&mut samples);
 
-        assert!(gain > 1.0, "quiet output must be boosted, got gain {gain:.4}");
+        assert!(
+            gain > 1.0,
+            "quiet output must be boosted, got gain {gain:.4}"
+        );
         assert!(
             gain <= MAX_OUTPUT_GAIN,
             "gain {gain:.4} exceeds the {MAX_OUTPUT_GAIN} cap"
@@ -1144,7 +1147,10 @@ mod tests {
         let mut samples = sine(0.4, 24_000, 180.0);
         let before = samples.clone();
         let gain = compensate_output_gain(&mut samples);
-        assert!(gain <= 1.0, "loud output must not be boosted, got {gain:.4}");
+        assert!(
+            gain <= 1.0,
+            "loud output must not be boosted, got {gain:.4}"
+        );
         let peak = samples
             .iter()
             .map(|sample| sample.abs())

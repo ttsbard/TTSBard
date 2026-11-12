@@ -368,9 +368,10 @@ function Find-CompiledOutput {
 }
 
 function Test-ValidEspeakData($path) {
-    $voicesOk = Test-Path (Join-Path $path 'voices')
-    $dictOk   = Test-Path (Join-Path $path 'en_dict')
-    return ($voicesOk -and $dictOk)
+    return ($path -and
+        (Test-Path (Join-Path $path 'voices') -PathType Container) -and
+        (Test-Path (Join-Path $path 'lang') -PathType Container) -and
+        (Test-Path (Join-Path $path 'en_dict') -PathType Leaf))
 }
 
 function Invoke-BootstrapAndCompile {
@@ -391,13 +392,13 @@ function Invoke-BootstrapAndCompile {
         # Recent Cargo versions can download crate archives without unpacking
         # them into registry/src. Building the crate both unpacks it and
         # produces the complete resource directory we ultimately need.
-        Write-WarnLine "Cargo registry source was not unpacked by cargo fetch; compiling espeak-rs-sys directly."
-        $cargoArgs = @('build', '-p', 'espeak-rs-sys')
+        Write-WarnLine "Cargo registry source unavailable; building espeak-rs with dictionaries."
+        $cargoArgs = @('build', '-p', 'espeak-rs')
         if ($Mode -eq 'release') { $cargoArgs += '--release' }
         Push-Location (Join-Path $repoRoot 'src-tauri')
         try {
             & 'cargo' $cargoArgs
-            if ($LASTEXITCODE -ne 0) { Write-Err "cargo build -p espeak-rs-sys failed"; exit 1 }
+            if ($LASTEXITCODE -ne 0) { Write-Err "cargo build -p espeak-rs failed"; exit 1 }
         } finally { Pop-Location }
 
         $compiled = Find-CompiledOutput
@@ -423,16 +424,16 @@ function Invoke-BootstrapAndCompile {
     }
     Write-Ok "bootstrap espeak-ng-data with voices/ from registry"
 
-    # Step 2 — compile espeak-rs-sys to generate en_dict
-    Write-Step "Compiling espeak-rs-sys to generate dictionaries..."
-    $cargoArgs = @('build', '-p', 'espeak-rs-sys')
+    # Step 2 — espeak-rs enables dictionary compilation in espeak-rs-sys.
+    Write-Step "Building espeak-rs to generate dictionaries..."
+    $cargoArgs = @('build', '-p', 'espeak-rs')
     if ($Mode -eq 'release') { $cargoArgs += '--release' }
     Push-Location (Join-Path $repoRoot 'src-tauri')
     try {
         & 'cargo' $cargoArgs
-        if ($LASTEXITCODE -ne 0) { Write-Err "cargo build -p espeak-rs-sys failed"; exit 1 }
+        if ($LASTEXITCODE -ne 0) { Write-Err "cargo build -p espeak-rs failed"; exit 1 }
     } finally { Pop-Location }
-    Write-Ok "espeak-rs-sys compiled"
+    Write-Ok "espeak-rs compiled"
 
     # Step 3 — find compiled output, replace bootstrap, validate voices/ + en_dict
     Write-Step "Installing compiled espeak-ng-data with generated dictionaries..."
@@ -447,11 +448,7 @@ function Invoke-BootstrapAndCompile {
     Copy-Item -Recurse -Force $compiled $espeakDstDir
 
     if (-not (Test-ValidEspeakData $espeakDstDir)) {
-        $voicesOk = Test-Path (Join-Path $espeakDstDir 'voices')
-        $dictOk   = Test-Path (Join-Path $espeakDstDir 'en_dict')
-        Write-Err "Compiled espeak-ng-data missing required subdirectories."
-        Write-Err "  voices exists: $voicesOk"
-        Write-Err "  en_dict exists: $dictOk"
+        Write-Err "Compiled espeak-ng-data must contain voices/, lang/, and en_dict."
         exit 1
     }
     $fileCount = (Get-ChildItem -Recurse -File -Path $espeakDstDir | Measure-Object).Count
@@ -472,7 +469,7 @@ if ($currentCompiled -and (Test-ValidEspeakData $currentCompiled)) {
     Write-Ok "copied compiled espeak-ng-data ($fileCount files) with en_dict"
 } else {
     if ($currentCompiled) {
-        Write-WarnLine "compiled output exists but is incomplete (missing voices/ or en_dict)"
+        Write-WarnLine "compiled output is incomplete (expected voices/, lang/, and en_dict)"
     } else {
         Write-WarnLine "no compiled espeak-ng-data for '$Mode' profile"
     }
@@ -524,6 +521,9 @@ function Remove-StaleExternalDict([string]$ProfileResourcesDir, [string]$BuildTa
 }
 
 $targetProfile = if ($Mode -eq 'debug') { 'debug' } else { 'release' }
+$profileDir = Join-Path $targetDir $targetProfile
+# ort-sys copies DLLs into these directories during its build script.
+New-Item -ItemType Directory -Force -Path (Join-Path $profileDir 'examples'), (Join-Path $profileDir 'deps') | Out-Null
 $profileResourcesDir = [System.IO.Path]::GetFullPath((Join-Path $targetDir "$targetProfile\resources"))
 Remove-StaleExternalDict $profileResourcesDir $targetDir
 
