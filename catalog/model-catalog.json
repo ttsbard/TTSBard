@@ -748,10 +748,65 @@
       "category": "pocket",
       "name": "xVibePocketTTS v0.1.0",
       "version": "0.1.0",
-      "source_url": "https://huggingface.co/genvoice/xVibePocketTTS",
-      "available": false,
-      "unavailable_reason": "Upstream https://huggingface.co/genvoice/xVibePocketTTS does not specify an explicit license for its fine-tuned weights (it mentions only base Kyutai CC-BY-4.0 and code MIT; a clarification issue is open) and publishes no public ONNX runtime package.",
-      "files": []
+      "source_url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx",
+      "license": "Other (Evaluation only)",
+      "available": true,
+      "files": [
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/config.yaml",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/config.yaml",
+          "sha256": "4f9581e26d47a304a2d326aa1b03df6e3af018db7bef7c2c3e261b2c1bee01d2",
+          "size_bytes": 1118
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/pocket.json",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/pocket.json",
+          "sha256": "a12614ffcbd061f1c82964f80a3539cd192f3fc29ce0b7ecc4c843ab9f60dcb0",
+          "size_bytes": 163
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/flow_lm_flow_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/flow_lm_flow_int8.onnx",
+          "sha256": "9ea1a34fdc8f8c4f4aa5f59f10bdfa9b7b108ed8fdd192060d0998193cdf7aa7",
+          "size_bytes": 9935594
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/flow_lm_main_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/flow_lm_main_int8.onnx",
+          "sha256": "ae76e164da87f10998f81bdf495e6693f9f776faa39138110b03a3d880601b19",
+          "size_bytes": 75865936
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/mimi_decoder_int8.onnx",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/mimi_decoder_int8.onnx",
+          "sha256": "137d8974a7977223dd351dbcbaaed49f57d0593de990f60b17f10047774e5e82",
+          "size_bytes": 22629895
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/mimi_encoder.onnx",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/mimi_encoder.onnx",
+          "sha256": "4d6bbfb4579bd6bf824c6fa43d9c4ba572a00348cf3367e54b0ab53ae716a00c",
+          "size_bytes": 39269324
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/text_conditioner.onnx",
+          "url": "https://huggingface.co/TTSBard/xvibe-ru-v0.1.0-onnx/resolve/3c63cd186c97d9eee24540fd40d1e18a44fac601/text_conditioner.onnx",
+          "sha256": "99c9e69a797e7b8671b4a48dff9dc32e90810aac74ecbd5cdad1d82d6d6fa199",
+          "size_bytes": 20484310
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/model.safetensors",
+          "url": "https://huggingface.co/genvoice/xVibePocketTTS/resolve/ac4f9f11eb4a110964c75a1e6f4104005455ac18/model/model.safetensors",
+          "sha256": "4f216a0d18b716b219a0a348d4f3584e4a1451ba6432ace329b7b53c3b6d9b5a",
+          "size_bytes": 442129312
+        },
+        {
+          "path": "pocket/xvibe-ru-v0.1.0/tokenizer.model",
+          "url": "https://huggingface.co/genvoice/xVibePocketTTS/resolve/ac4f9f11eb4a110964c75a1e6f4104005455ac18/model/tokenizer.model",
+          "sha256": "ad635e17cbfe7d59a016f4e14abbd62e72c09c1c409781bc3b34350dabacba60",
+          "size_bytes": 332132
+        }
+      ]
     }
   ]
 }
