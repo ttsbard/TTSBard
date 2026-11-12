@@ -701,6 +701,188 @@ describe('useIncomingTexts', () => {
     expect(busyIds.value.has('failed-job')).toBe(false)
   })
 
+  it('cancels failed and queued external jobs and drops them from the active list', async () => {
+    let queue: JobDto[] = [
+      makeJob({ job_id: 'failed-job', status: 'failed', source: 'server' }),
+      makeJob({ job_id: 'queued-job', status: 'queued', source: 'server' }),
+    ]
+    const { externalJobs, busyIds, cancelExternalJob } = await setupAndMount(
+      async (cmd: string) => {
+        if (cmd === 'list_incoming_texts') return []
+        if (cmd === 'get_speech_queue_state') return makeDto(queue)
+        if (cmd === 'get_incoming_settings') return { auto_play: true }
+        return undefined
+      },
+    )
+
+    expect(externalJobs.value.map((j) => j.job_id)).toEqual(['failed-job', 'queued-job'])
+
+    mocks.mockInvoke.mockClear()
+    mocks.mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'cancel_speech_job') return undefined
+      if (cmd === 'get_speech_queue_state') return makeDto(queue)
+      return undefined
+    })
+
+    queue = queue.slice(1)
+    await cancelExternalJob('failed-job')
+
+    expect(mocks.mockInvoke).toHaveBeenCalledWith('cancel_speech_job', { jobId: 'failed-job' })
+    expect(externalJobs.value.map((j) => j.job_id)).toEqual(['queued-job'])
+    expect(busyIds.value.has('failed-job')).toBe(false)
+
+    queue = []
+    await cancelExternalJob('queued-job')
+
+    expect(mocks.mockInvoke).toHaveBeenCalledWith('cancel_speech_job', { jobId: 'queued-job' })
+    expect(externalJobs.value).toEqual([])
+    expect(busyIds.value.has('queued-job')).toBe(false)
+  })
+
+  it('cancelExternalJob surfaces a user-visible error and releases busy state on IPC failure', async () => {
+    const { busyIds, cancelExternalJob } = await setupAndMount(async (cmd: string) => {
+      if (cmd === 'list_incoming_texts') return []
+      if (cmd === 'get_speech_queue_state') {
+        return makeDto([makeJob({ job_id: 'failed-job', status: 'failed', source: 'server' })])
+      }
+      if (cmd === 'get_incoming_settings') return { auto_play: true }
+      return undefined
+    })
+
+    let rejectCancel!: (e: unknown) => void
+    mocks.mockInvoke.mockClear()
+    mocks.mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'cancel_speech_job') {
+        return new Promise((_resolve, reject) => { rejectCancel = reject })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    const pending = cancelExternalJob('failed-job')
+    await Promise.resolve()
+    expect(busyIds.value.has('failed-job')).toBe(true)
+
+    rejectCancel(new Error('backend down'))
+    await pending
+
+    expect(mocks.mockShowError).toHaveBeenCalledWith('Не удалось отклонить текст')
+    expect(busyIds.value.has('failed-job')).toBe(false)
+  })
+
+  it('editExternalJob returns the original text of a failed job and drops it from the list', async () => {
+    let queue: JobDto[] = [
+      makeJob({ job_id: 'failed-job', status: 'failed', original_text: 'hello from server' }),
+    ]
+    const { externalJobs, busyIds, editInFlight, editExternalJob } = await setupAndMount(
+      async (cmd: string) => {
+        if (cmd === 'list_incoming_texts') return []
+        if (cmd === 'get_speech_queue_state') return makeDto(queue)
+        if (cmd === 'get_incoming_settings') return { auto_play: true }
+        return undefined
+      },
+    )
+
+    mocks.mockInvoke.mockClear()
+    mocks.mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'cancel_speech_job') {
+        queue = []
+        return undefined
+      }
+      if (cmd === 'get_speech_queue_state') return makeDto(queue)
+      return undefined
+    })
+
+    const text = await editExternalJob('failed-job')
+
+    expect(text).toBe('hello from server')
+    expect(mocks.mockInvoke).toHaveBeenCalledWith('cancel_speech_job', { jobId: 'failed-job' })
+    expect(externalJobs.value).toEqual([])
+    expect(editInFlight.value).toBe(false)
+    expect(busyIds.value.has('failed-job')).toBe(false)
+  })
+
+  it('editExternalJob refuses non-failed and unknown jobs without cancelling them', async () => {
+    const { busyIds, editInFlight, editExternalJob } = await setupAndMount(async (cmd: string) => {
+      if (cmd === 'list_incoming_texts') return []
+      if (cmd === 'get_speech_queue_state') {
+        return makeDto([
+          makeJob({ job_id: 'queued-job', status: 'queued', source: 'server' }),
+          makeJob({ job_id: 'generating-job', status: 'generating', source: 'ocr' }),
+          makeJob({ job_id: 'failed-job', status: 'failed', source: 'server' }),
+        ])
+      }
+      if (cmd === 'get_incoming_settings') return { auto_play: true }
+      return undefined
+    })
+
+    mocks.mockInvoke.mockClear()
+    mocks.mockInvoke.mockImplementation(async () => undefined)
+
+    for (const id of ['queued-job', 'generating-job', 'missing-job']) {
+      expect(await editExternalJob(id)).toBeNull()
+      expect(editInFlight.value).toBe(false)
+      expect(busyIds.value.has(id)).toBe(false)
+    }
+
+    expect(mocks.mockInvoke.mock.calls.some(([cmd]) => cmd === 'cancel_speech_job')).toBe(false)
+  })
+
+  it('editExternalJob refuses a second take while one is already in flight', async () => {
+    const { editInFlight, editExternalJob } = await setupAndMount(async (cmd: string) => {
+      if (cmd === 'list_incoming_texts') return []
+      if (cmd === 'get_speech_queue_state') {
+        return makeDto([
+          makeJob({ job_id: 'job-a', status: 'failed', original_text: 'first text' }),
+          makeJob({ job_id: 'job-b', status: 'failed', original_text: 'second text' }),
+        ])
+      }
+      if (cmd === 'get_incoming_settings') return { auto_play: true }
+      return undefined
+    })
+
+    let resolveCancel!: (value: unknown) => void
+    mocks.mockInvoke.mockClear()
+    mocks.mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'cancel_speech_job') {
+        return new Promise((resolve) => { resolveCancel = resolve })
+      }
+      if (cmd === 'get_speech_queue_state') return Promise.resolve(makeDto([]))
+      return Promise.resolve(undefined)
+    })
+
+    const first = editExternalJob('job-a')
+    await Promise.resolve()
+    expect(editInFlight.value).toBe(true)
+
+    expect(await editExternalJob('job-b')).toBeNull()
+
+    const cancelCalls = mocks.mockInvoke.mock.calls.filter(([cmd]) => cmd === 'cancel_speech_job')
+    expect(cancelCalls).toHaveLength(1)
+    expect(cancelCalls[0]).toEqual(['cancel_speech_job', { jobId: 'job-a' }])
+
+    resolveCancel(undefined)
+    expect(await first).toBe('first text')
+    expect(editInFlight.value).toBe(false)
+  })
+
+  it('editExternalJob returns null and reports the take error when the cancel fails', async () => {
+    const { busyIds, editInFlight, editExternalJob } = await setupAndMount(async (cmd: string) => {
+      if (cmd === 'list_incoming_texts') return []
+      if (cmd === 'get_speech_queue_state') {
+        return makeDto([makeJob({ job_id: 'failed-job', status: 'failed', source: 'server' })])
+      }
+      if (cmd === 'get_incoming_settings') return { auto_play: true }
+      return undefined
+    })
+
+    mocks.mockInvoke.mockRejectedValueOnce(new Error('backend down'))
+
+    expect(await editExternalJob('failed-job')).toBeNull()
+    expect(mocks.mockShowError).toHaveBeenCalledWith('Не удалось взять текст для редактирования')
+    expect(editInFlight.value).toBe(false)
+    expect(busyIds.value.has('failed-job')).toBe(false)
+  })
+
   it('unregisters all listeners on unmount', async () => {
     await setupAndMount()
 

@@ -62,7 +62,8 @@ const {
   approve: approveIncoming,
   edit: editIncoming,
   discard: discardIncoming,
-  skipExternalJob,
+  cancelExternalJob,
+  editExternalJob,
   setAutoPlay: setIncomingAutoPlay,
   setRoute: setIncomingRoute,
 } = useIncomingTexts()
@@ -116,6 +117,16 @@ async function onEditIncoming(id: string) {
   // start a second take while one is in flight.
   if (incomingEditInFlight.value) return
   const textToEdit = await editIncoming(id)
+  if (textToEdit === null) return
+  openIncomingEdit(textToEdit)
+  showIncomingTab.value = false
+  await nextTick()
+  focusEditor()
+}
+
+async function onEditExternal(jobId: string) {
+  if (incomingEditInFlight.value) return
+  const textToEdit = await editExternalJob(jobId)
   if (textToEdit === null) return
   openIncomingEdit(textToEdit)
   showIncomingTab.value = false
@@ -977,7 +988,8 @@ defineExpose({ focusEditor })
           @approve="approveIncoming"
           @discard="discardIncoming"
           @edit="onEditIncoming"
-          @skip="skipExternalJob"
+          @edit-external="onEditExternal"
+          @cancel-external="cancelExternalJob"
           @toggle-auto-play="setIncomingAutoPlay"
           @route-change="setIncomingRoute"
         />

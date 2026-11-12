@@ -352,6 +352,52 @@ export function useIncomingTexts() {
     }
   }
 
+  /** Cancels any active external job (queued/generating/ready/failed). */
+  async function cancelExternalJob(id: string): Promise<void> {
+    if (isBusy(id)) return
+    markBusy(id)
+    try {
+      await invoke('cancel_speech_job', { jobId: id })
+      if (disposed) return
+      await refreshExternalJobs()
+    } catch (e) {
+      if (disposed) return
+      debugError('[IncomingTexts] Failed to cancel external job:', e)
+      showError(t('editor.incoming.error.discard'))
+    } finally {
+      markIdle(id)
+    }
+  }
+
+  /**
+   * Takes a failed external job back for editing and returns its original text.
+   * The cancel removes the job's inbox entry before returning the text, so at
+   * most one such take may be in flight at a time.
+   */
+  async function editExternalJob(id: string): Promise<string | null> {
+    if (isBusy(id)) return null
+    if (editInFlight.value) return null
+    const job = externalJobs.value.find((j) => j.job_id === id)
+    if (!job || job.status !== 'failed') return null
+    editInFlight.value = true
+    markBusy(id)
+    try {
+      await invoke('cancel_speech_job', { jobId: id })
+      if (disposed) return null
+      await refreshExternalJobs()
+      if (disposed) return null
+      return job.original_text
+    } catch (e) {
+      if (disposed) return null
+      debugError('[IncomingTexts] Failed to edit external job:', e)
+      showError(t('editor.incoming.error.take_edit'))
+      return null
+    } finally {
+      editInFlight.value = false
+      markIdle(id)
+    }
+  }
+
   onMounted(async () => {
     await listenerScope.track(
       listen<unknown>(INCOMING_CHANGED_EVENT, (event) => {
@@ -402,6 +448,8 @@ export function useIncomingTexts() {
     edit,
     discard,
     skipExternalJob,
+    cancelExternalJob,
+    editExternalJob,
     setAutoPlay,
     setRoute,
     refreshPendingItems,

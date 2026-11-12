@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Check, Pencil, X, SkipForward } from 'lucide-vue-next'
+import { Check, Pencil, X } from 'lucide-vue-next'
 import { statusLabel, type JobDto } from '../../../src-playback/speechQueue'
 import type { IncomingTextItem } from '../../composables/useIncomingTexts'
 import type { IncomingRoute } from './incomingRoute'
@@ -35,10 +35,26 @@ const emit = defineEmits<{
   edit: [id: string]
   'toggle-auto-play': [value: boolean]
   'route-change': [route: IncomingRoute]
-  skip: [job_id: string]
+  'edit-external': [job_id: string]
+  'cancel-external': [job_id: string]
 }>()
 
 const hasItems = computed(() => props.pendingItems.length + props.externalJobs.length > 0)
+
+/** Only failed external jobs carry text worth taking back into the editor. */
+function canEditExternal(job: JobDto): boolean {
+  return job.status === 'failed'
+}
+
+/** Every non-playing active job can be removed from Incoming. */
+function canCancelExternal(job: JobDto): boolean {
+  return (
+    job.status === 'failed' ||
+    job.status === 'queued' ||
+    job.status === 'generating' ||
+    job.status === 'ready'
+  )
+}
 
 function onAutoPlayChange(event: Event) {
   emit('toggle-auto-play', (event.target as HTMLInputElement).checked)
@@ -120,16 +136,31 @@ function onAutoPlayChange(event: Event) {
       >
         <div class="incoming-text">{{ job.original_text }}</div>
         <span class="incoming-status">{{ statusLabel(job.status) }}</span>
-        <button
-          v-if="job.status === 'failed'"
-          class="incoming-btn skip"
-          :disabled="busyIds.has(job.job_id)"
-          :title="t('editor.incoming.skip')"
-          :aria-label="t('editor.incoming.skip')"
-          @click="emit('skip', job.job_id)"
+        <div
+          v-if="canEditExternal(job) || canCancelExternal(job)"
+          class="incoming-actions"
         >
-          <SkipForward :size="14" />
-        </button>
+          <button
+            v-if="canEditExternal(job)"
+            class="incoming-btn edit"
+            :disabled="editDisabled || busyIds.has(job.job_id)"
+            :title="t('editor.incoming.edit')"
+            :aria-label="t('editor.incoming.edit')"
+            @click="emit('edit-external', job.job_id)"
+          >
+            <Pencil :size="14" />
+          </button>
+          <button
+            v-if="canCancelExternal(job)"
+            class="incoming-btn discard"
+            :disabled="busyIds.has(job.job_id)"
+            :title="t('editor.incoming.discard')"
+            :aria-label="t('editor.incoming.discard')"
+            @click="emit('cancel-external', job.job_id)"
+          >
+            <X :size="14" />
+          </button>
+        </div>
       </div>
     </div>
   </div>
