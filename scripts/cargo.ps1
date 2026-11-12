@@ -51,5 +51,12 @@ if ($rustBinDir) {
 
 $null = Initialize-LibClangPath
 
+# Cargo writes progress and lock messages to stderr. Under Windows PowerShell 5.1
+# a caller redirecting them (`2>&1`) turns each line into an ErrorRecord, and the
+# 'Stop' preference above would abort the wrapper with NativeCommandError even
+# when Cargo succeeds. Keep initialization strict, then let stderr flow through
+# and preserve the real exit code.
+$ErrorActionPreference = 'Continue'
+
 & cargo @args
 exit $LASTEXITCODE

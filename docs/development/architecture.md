@@ -50,6 +50,7 @@ flowchart LR
 | Интеграции | `webview/`, `twitch/`, `telegram/`, `vtube_studio/` | Внешние протоколы и lifecycle подключений |
 | Внешний текст | `input_server/`, `commands/input_server.rs` | Loopback listener, общий intake, очередь ожидающих реплик |
 | OCR | `ocr/`, `commands/ocr.rs` | Пакеты моделей, runtime, захват, распознавание и передача в intake |
+| Локальные модели | `model_downloads.rs`, `catalog/model-catalog.json` | Каталог пакетов, загрузка и установка моделей, проверка хешей |
 
 ## Frontend ↔ backend
 
