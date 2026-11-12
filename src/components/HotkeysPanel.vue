@@ -72,6 +72,14 @@ const INCOMING_HOTKEY_ROWS: HotkeyRow[] = [
   { name: 'edit_next_incoming' },
 ]
 
+// These editor actions ship switched off. Their visible hints explain the
+// actual effect of the combination, which the short row label cannot carry.
+const HINTED_EDITOR_HOTKEYS: readonly EditorHotkeyName[] = [
+  'cycle_route',
+  'toggle_typing',
+  'cycle_quick_mode',
+]
+
 const recordingFor = ref<HotkeyName | EditorHotkeyName | null>(null)
 const pendingToggle = ref<HotkeyName | EditorHotkeyName | null>(null)
 const keyOccupied = ref(false)
@@ -102,6 +110,16 @@ function formattedHotkey(name: HotkeyName | EditorHotkeyName): string {
 
 function hotkeyName(name: HotkeyName | EditorHotkeyName): string {
   return t(`hotkeys.name.${name}`)
+}
+
+function hotkeyHint(name: HotkeyName | EditorHotkeyName): string {
+  return HINTED_EDITOR_HOTKEYS.includes(name as EditorHotkeyName)
+    ? t(`hotkeys.hint.${name}`)
+    : ''
+}
+
+function hotkeyHintId(name: HotkeyName | EditorHotkeyName): string {
+  return `hotkey-hint-${name}`
 }
 
 function toggleTitle(name: HotkeyName | EditorHotkeyName): string {
@@ -612,12 +630,20 @@ onUnmounted(async () => {
             :checked="isHotkeyEnabled(getBinding(row.name))"
             :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
             :aria-label="toggleTitle(row.name)"
+            :aria-describedby="hotkeyHint(row.name) ? hotkeyHintId(row.name) : undefined"
             @change="toggleHotkeyEnabled(row.name, $event)"
           />
           <span class="toggle-slider" />
         </label>
-        <div class="hotkey-label ui-label">
+        <div class="hotkey-label ui-label" :class="{ 'hotkey-label--with-hint': hotkeyHint(row.name) }">
           <span>{{ hotkeyName(row.name) }}</span>
+          <span
+            v-if="hotkeyHint(row.name)"
+            :id="hotkeyHintId(row.name)"
+            class="hotkey-hint ui-hint"
+          >
+            {{ hotkeyHint(row.name) }}
+          </span>
         </div>
         <div class="hotkey-actions">
           <span
@@ -815,6 +841,23 @@ onUnmounted(async () => {
   gap: 0.6rem;
   min-width: 140px;
   color: var(--color-text-primary);
+}
+
+/* Editor rows with a contextual hint stack the name and the secondary text.
+   The switch, the shortcut value and the action buttons keep their places.
+   A modest flex basis lets the hint wrap instead of reserving its full
+   max-content width, so the grouped actions stay on the same line at the
+   panel's default width and only wrap at the existing narrow breakpoint. */
+.hotkey-label--with-hint {
+  flex: 1 1 18rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  min-width: 0;
+}
+
+.hotkey-hint {
+  max-width: 34rem;
 }
 
 .hotkey-actions {

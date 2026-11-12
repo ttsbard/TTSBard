@@ -110,9 +110,9 @@ impl EditorHotkeySettings {
             "previous_spelling_error" => "предыдущей ошибки",
             "next_tab" => "следующей вкладки",
             "previous_tab" => "предыдущей вкладки",
-            "cycle_route" => "смены маршрута",
-            "toggle_typing" => "переключения передачи набора текста",
-            "cycle_quick_mode" => "смены режима быстрого редактора",
+            "cycle_route" => "переключения маршрута отправки",
+            "toggle_typing" => "переключения передачи состояния набора",
+            "cycle_quick_mode" => "переключения режима быстрого редактора",
             "toggle_history" => "показа/скрытия истории",
             "accent_homographs" => "расстановки ударений",
             "approve_next_incoming" => "подтверждения отправки входящего",
@@ -472,30 +472,40 @@ impl Hotkey {
         }
     }
 
-    /// Create a hotkey with Ctrl+R (cycle route default)
+    /// Create the default Ctrl+R route-cycle binding.
+    ///
+    /// The combination stays assigned for discovery and reset, but the action
+    /// ships switched off: changing the send route is easy to trigger by
+    /// accident, so it must be enabled deliberately.
     pub fn default_cycle_route() -> Self {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "R".to_string(),
-            enabled: true,
+            enabled: false,
         }
     }
 
-    /// Create a hotkey with Ctrl+T (toggle typing default)
+    /// Create the default Ctrl+T typing-status binding.
+    ///
+    /// The combination stays assigned for discovery and reset, but the action
+    /// ships switched off: sharing typing state is opt-in.
     pub fn default_toggle_typing() -> Self {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "T".to_string(),
-            enabled: true,
+            enabled: false,
         }
     }
 
-    /// Create a hotkey with Ctrl+W (cycle quick editor mode default)
+    /// Create the default Ctrl+W quick-editor-mode binding.
+    ///
+    /// The combination stays assigned for discovery and reset, but the action
+    /// ships switched off: changing the window/focus behaviour is opt-in.
     pub fn default_cycle_quick_mode() -> Self {
         Self {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "W".to_string(),
-            enabled: true,
+            enabled: false,
         }
     }
 
@@ -788,6 +798,7 @@ mod tests {
         assert_eq!(hk.modifiers.len(), 1);
         assert_eq!(hk.modifiers[0], HotkeyModifier::Ctrl);
         assert_eq!(hk.format_display(), "Ctrl+R");
+        assert!(!hk.enabled, "Ctrl+R must ship switched off");
     }
 
     #[test]
@@ -797,6 +808,7 @@ mod tests {
         assert_eq!(hk.modifiers.len(), 1);
         assert_eq!(hk.modifiers[0], HotkeyModifier::Ctrl);
         assert_eq!(hk.format_display(), "Ctrl+T");
+        assert!(!hk.enabled, "Ctrl+T must ship switched off");
     }
 
     #[test]
@@ -806,6 +818,7 @@ mod tests {
         assert_eq!(hk.modifiers.len(), 1);
         assert_eq!(hk.modifiers[0], HotkeyModifier::Ctrl);
         assert_eq!(hk.format_display(), "Ctrl+W");
+        assert!(!hk.enabled, "Ctrl+W must ship switched off");
     }
 
     #[test]
@@ -880,6 +893,12 @@ mod tests {
         assert_eq!(s.accent_homographs.key, "U");
         assert_eq!(s.approve_next_incoming.key, "K");
         assert_eq!(s.edit_next_incoming.key, "I");
+        // These three defaults keep their combination but ship switched off.
+        assert!(!s.cycle_route.enabled);
+        assert!(!s.toggle_typing.enabled);
+        assert!(!s.cycle_quick_mode.enabled);
+        assert!(s.toggle_history.enabled);
+        assert!(s.accent_homographs.enabled);
     }
 
     #[test]
@@ -1175,7 +1194,9 @@ mod tests {
 
     // ==================== Per-hotkey enabled switch ====================
 
-    /// Old settings.json without `enabled` must load every hotkey as enabled.
+    /// Old settings.json without `enabled` must load every present hotkey
+    /// object as enabled, including editor bindings that now ship disabled by
+    /// default. Missing editor fields still follow the new product defaults.
     #[test]
     fn legacy_hotkeys_without_enabled_default_to_true() {
         let old_json = r#"{
@@ -1189,9 +1210,44 @@ mod tests {
         assert!(settings.main_window.enabled);
         assert!(settings.sound_panel.enabled);
         assert!(settings.editor.edit_word.enabled);
-        // Every fully-defaulted editor field is enabled too.
-        assert!(settings.editor.iter().all(|(_, binding)| binding.enabled));
+        // Fields absent from the old editor object use the current defaults,
+        // three of which are assigned but switched off.
+        assert!(!settings.editor.cycle_route.enabled);
+        assert!(!settings.editor.toggle_typing.enabled);
+        assert!(!settings.editor.cycle_quick_mode.enabled);
         assert!(settings.ocr_capture.enabled);
+    }
+
+    /// A pre-`enabled` settings.json that already stores the Ctrl+R, Ctrl+T or
+    /// Ctrl+W binding objects must keep them active: the switch only becomes
+    /// opt-in for fields that are absent from the legacy payload.
+    #[test]
+    fn legacy_editor_binding_objects_without_enabled_stay_enabled() {
+        let old_json = r#"{
+            "editor": {
+                "cycle_route": { "modifiers": ["ctrl"], "key": "R" },
+                "toggle_typing": { "modifiers": ["ctrl"], "key": "T" },
+                "cycle_quick_mode": { "modifiers": ["ctrl"], "key": "W" }
+            }
+        }"#;
+        let settings: HotkeySettings = serde_json::from_str(old_json).unwrap();
+        assert!(settings.editor.cycle_route.enabled);
+        assert!(settings.editor.toggle_typing.enabled);
+        assert!(settings.editor.cycle_quick_mode.enabled);
+        assert_eq!(settings.editor.cycle_route.format_display(), "Ctrl+R");
+        assert_eq!(settings.editor.toggle_typing.format_display(), "Ctrl+T");
+        assert_eq!(settings.editor.cycle_quick_mode.format_display(), "Ctrl+W");
+    }
+
+    /// The fresh defaults keep the combinations assigned while switched off.
+    #[test]
+    fn editor_hotkey_defaults_keep_combinations_but_ship_switched_off() {
+        let settings = EditorHotkeySettings::default();
+        for id in ["cycle_route", "toggle_typing", "cycle_quick_mode"] {
+            let binding = settings.get_by_id(id).expect("default binding");
+            assert!(!binding.key.is_empty(), "{id} must keep its combination");
+            assert!(!binding.enabled, "{id} must ship switched off");
+        }
     }
 
     #[test]

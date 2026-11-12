@@ -391,6 +391,64 @@ describe('HotkeysPanel per-hotkey enable switch', () => {
     })
   })
 
+  it('labels the default-off editor actions with action verbs and contextual hints', async () => {
+    const { getRow } = await mountHotkeysPanel()
+    const rows = [
+      ['cycle_route', 'Cycle the send route', 'Everywhere → No Twitch'],
+      ['toggle_typing', 'Toggle typing status sharing', 'WebView, VTube Studio and VRChat'],
+      ['cycle_quick_mode', 'Cycle quick editor mode', 'the window hides after sending'],
+    ] as const
+
+    for (const [name, label, hintFragment] of rows) {
+      const row = getRow(name)!
+      expect(row.querySelector('.hotkey-label')?.textContent).toContain(label)
+
+      const hint = row.querySelector('.hotkey-hint') as HTMLElement | null
+      expect(hint?.classList.contains('ui-hint')).toBe(true)
+      expect(hint?.textContent).toContain(hintFragment)
+      expect(row.querySelector(`input[data-hotkey="${name}"]`)?.getAttribute('aria-describedby'))
+        .toBe(`hotkey-hint-${name}`)
+    }
+  })
+
+  it('renders backend default-off editor actions as switched off with actions disabled', async () => {
+    const { getToggle, getRow, settingsRef } = await mountHotkeysPanel()
+    const editor = (settingsRef.value as AppSettingsDto).hotkeys!.editor
+    const defaultOff = ['cycle_route', 'toggle_typing', 'cycle_quick_mode'] as const
+
+    for (const name of defaultOff) {
+      editor[name] = { ...editor[name], enabled: false }
+    }
+    await flushAsync()
+
+    for (const name of defaultOff) {
+      expect(getToggle(name)!.checked).toBe(false)
+      const row = getRow(name)!
+      expect(row.querySelector('.hotkey-value')?.classList.contains('disabled')).toBe(true)
+      expect((row.querySelector('.record-btn') as HTMLButtonElement).disabled).toBe(true)
+      expect((row.querySelector('.reset-btn') as HTMLButtonElement).disabled).toBe(true)
+    }
+  })
+
+  it('persists enabling a default-off editor action without changing its combination', async () => {
+    const { getToggle, settingsRef, mockedInvoke } = await mountHotkeysPanel()
+    const editor = (settingsRef.value as AppSettingsDto).hotkeys!.editor
+    editor.cycle_route = { ...editor.cycle_route, enabled: false }
+    await flushAsync()
+
+    const toggle = getToggle('cycle_route')!
+    expect(toggle.checked).toBe(false)
+
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    expect(mockedInvoke).toHaveBeenCalledWith('set_editor_hotkey_enabled', {
+      actionId: 'cycle_route',
+      enabled: true,
+    })
+  })
+
   it('shows a warning when disabling ocr_capture while OCR is enabled', async () => {
     const { getToggle, getErrorMessage, settingsRef } = await mountHotkeysPanel()
     settingsRef.value = {
