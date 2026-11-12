@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
+import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-vue-next'
 import { useErrorHandler, ErrorLevel } from '../composables/useErrorHandler'
 import { t } from '../i18n'
 
@@ -13,17 +14,21 @@ watch(errors, () => {
 }, { deep: true })
 
 function getErrorClass(level: ErrorLevel): string {
+  // ErrorLevel values already match the shared ui-notice state modifiers.
+  return `error-toast ui-notice ui-notice--${level}`
+}
+
+function getLevelIcon(level: ErrorLevel) {
   switch (level) {
     case ErrorLevel.ERROR:
-      return 'error-toast error'
+      return CircleAlert
     case ErrorLevel.WARNING:
-      return 'error-toast warning'
-    case ErrorLevel.INFO:
-      return 'error-toast info'
+      return TriangleAlert
     case ErrorLevel.SUCCESS:
-      return 'error-toast success'
+      return CircleCheck
+    case ErrorLevel.INFO:
     default:
-      return 'error-toast'
+      return Info
   }
 }
 </script>
@@ -38,6 +43,7 @@ function getErrorClass(level: ErrorLevel): string {
           :class="getErrorClass(error.level)"
           @click="removeError(error.id)"
         >
+          <component :is="getLevelIcon(error.level)" class="toast-icon" :size="16" aria-hidden="true" />
           <span class="toast-message">{{ error.message }}</span>
           <button class="toast-close" :title="t('toast.close')" :aria-label="t('toast.close')" @click.stop="removeError(error.id)">×</button>
         </div>
@@ -47,69 +53,49 @@ function getErrorClass(level: ErrorLevel): string {
 </template>
 
 <style scoped>
+/* A definite width lets the shared max-width: min(480px, 100%) resolve
+   against the viewport instead of a shrink-to-fit container, so a narrow
+   window never clips the stack; the items stay anchored to the right edge. */
 .error-toasts-container {
   position: fixed;
   top: 20px;
   right: 20px;
+  left: 20px;
   z-index: 9999;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 10px;
   pointer-events: none;
 }
 
+/* The stack keeps its top-right placement; surface, compact form and the
+   four state color pairs come from the shared ui-notice classes. The shared
+   ui-notice-in keyframes animate the same transform/opacity that the
+   TransitionGroup enter/leave classes own, so the local animation is disabled:
+   otherwise the enter would play the shared slide from the top instead of the
+   stack's slide from the right. */
 .error-toast {
   pointer-events: auto;
-  min-width: 300px;
-  max-width: 500px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  background: var(--toast-bg);
-  border: 1px solid var(--toast-border);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
   gap: 12px;
   cursor: pointer;
   transition: all 0.2s ease;
+  animation: none;
 }
 
 .error-toast:hover {
   transform: translateX(-4px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-}
-
-.error-toast.error {
-  border-left: 4px solid var(--toast-error-border);
-  background: var(--toast-error-bg);
-}
-
-.error-toast.warning {
-  border-left: 4px solid var(--toast-warning-border);
-  background: var(--toast-warning-bg);
-}
-
-.error-toast.info {
-  border-left: 4px solid var(--toast-success-border);
-  background: var(--toast-success-bg);
-}
-
-.error-toast.success {
-  border-left: 4px solid var(--toast-success-border);
-  background: var(--toast-success-bg);
 }
 
 .toast-icon {
-  font-size: 18px;
   flex-shrink: 0;
 }
 
 .toast-message {
   flex: 1;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  line-height: 1.4;
-  word-break: break-word;
+  min-width: 0;
 }
 
 .toast-close {
@@ -131,8 +117,11 @@ function getErrorClass(level: ErrorLevel): string {
   opacity: 1;
 }
 
+/* The state fills are light, so the accent-colored ring has too little
+   contrast on top of them; the inherited dark text color stays visible. */
 .toast-close:focus-visible {
-  outline: 2px solid var(--color-accent);
+  opacity: 1;
+  outline: 2px solid currentColor;
   outline-offset: 1px;
 }
 

@@ -989,6 +989,7 @@
     "hotkeys.reset_title": "Reset to default",
     "hotkeys.reset_success": "Reset to the default value",
     "hotkeys.error_prefix": "Error: {detail}",
+    "hotkeys.ocr_capture_disabled": "The “{name}” keyboard shortcut is disabled. OCR itself stays enabled.",
     "intercept.title": "Key interception",
     "intercept.description": "While interception is enabled, assigned keys perform the chosen action in TTSBard. The system and other programs do not receive their key presses.",
     "intercept.hint": "You can assign NumPad, F1–F24, Page Up, End, Page Down, Home and Insert.",

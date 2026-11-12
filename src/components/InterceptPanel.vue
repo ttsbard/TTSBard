@@ -278,8 +278,16 @@ onUnmounted(() => {
 
 <template>
   <div class="intercept-panel">
-    <div v-if="errorMessage" class="message-box" :class="messageState">
-      {{ errorMessage }}
+    <!-- Compact severity notice: shared ui-notice form in a zero-height layer
+         at the top centre of this panel's own area. The legacy message-box and
+         bare severity classes are kept only as compatibility hooks. -->
+    <div v-if="errorMessage" class="ui-notice-area">
+      <div
+        class="message-box ui-notice"
+        :class="[messageState, messageState && `ui-notice--${messageState}`]"
+      >
+        {{ errorMessage }}
+      </div>
     </div>
 
     <div class="setting-section ui-section">
@@ -413,39 +421,6 @@ onUnmounted(() => {
 .intercept-panel {
   max-width: 900px;
   margin: 0 auto;
-}
-
-.message-box {
-  position: fixed;
-  top: 20px;
-  left: calc(50% + 100px);
-  transform: translateX(-50%);
-  padding: 0.4rem 0.75rem;
-  border-radius: 8px;
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  z-index: 1000;
-  box-shadow: var(--dialog-shadow);
-  backdrop-filter: blur(10px);
-  animation: slideDownFade 0.3s ease-out;
-}
-
-.message-box.error {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  color: var(--danger-text);
-}
-
-.message-box.success {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  color: var(--success-text);
-}
-
-.message-box.warning {
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
-  color: var(--warning-text-bright);
 }
 
 .setting-section {

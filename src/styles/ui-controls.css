@@ -9,6 +9,8 @@
 /* Ownership and exceptions: docs/development/ui-css-ownership.md.
    Approved: circular TTS provider button; audio presets/subtabs and toggles.
    Composite joins and danger/stop colors use explicit shared modifiers.
+   Notices share the compact .ui-notice form and the opaque state pairs from
+   ui-tokens.css; panel owners keep their timers and event wiring.
    Preserve owner layout, composite field joins, monospace values and legacy
    opt-in branches. Compact surfaces have pending sizing decisions.
    This index does not apply those exceptions globally. */
@@ -75,6 +77,77 @@
   font-weight: var(--ui-text-weight-hint);
   line-height: var(--ui-line-height-control);
   color: var(--color-text-secondary);
+}
+
+/* ========== Notifications ========== */
+
+/* Align with the panel horizontally and anchor to the top of the window. */
+.ui-notice-area {
+  position: fixed;
+  top: 36px;
+  left: 200px;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 0 8px;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .ui-notice-area {
+    left: 0;
+  }
+}
+
+/* Shared compact form for panel and global notices: 8 px radius,
+   0.4rem / 0.75rem padding, 0.85rem / 400 text that wraps inside the
+   available width. No colour stripe and no translucent backdrop: the state
+   fill is opaque, so the same pair reads on any surface. */
+.ui-notice {
+  max-width: min(480px, 100%);
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: var(--ui-radius);
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: var(--ui-line-height-multiline);
+  color: var(--color-text-primary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: var(--dialog-shadow);
+  box-sizing: border-box;
+  animation: ui-notice-in 0.3s ease-out;
+}
+
+.ui-notice--success {
+  background: var(--ui-notice-bg-success);
+  color: var(--ui-notice-text-success);
+}
+
+.ui-notice--warning {
+  background: var(--ui-notice-bg-warning);
+  color: var(--ui-notice-text-warning);
+}
+
+.ui-notice--error {
+  background: var(--ui-notice-bg-error);
+  color: var(--ui-notice-text-error);
+}
+
+.ui-notice--info {
+  background: var(--ui-notice-bg-info);
+  color: var(--ui-notice-text-info);
+}
+
+@keyframes ui-notice-in {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-notice { animation: none; }
 }
 
 /* ========== Layout ========== */

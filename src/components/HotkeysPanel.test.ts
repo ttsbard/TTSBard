@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, ref } from 'vue'
 import HotkeysPanel from './HotkeysPanel.vue'
 import { invoke } from '@tauri-apps/api/core'
+import { t } from '../i18n'
 import { APP_SETTINGS_KEY, type AppSettingsDto } from '../types/settings'
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -464,7 +465,13 @@ describe('HotkeysPanel per-hotkey enable switch', () => {
 
     const message = getErrorMessage()
     expect(message?.classList.contains('warning')).toBe(true)
-    expect(message?.textContent).toContain('OCR')
+    expect(message?.classList.contains('ui-notice--warning')).toBe(true)
+    // Only the shortcut is released: the notice must not claim that OCR itself
+    // became unavailable.
+    expect(message?.textContent).toContain(
+      t('hotkeys.ocr_capture_disabled', { name: t('hotkeys.name.ocr_capture') }),
+    )
+    expect(message?.textContent).not.toContain(t('ocr.failure.runtime_unavailable'))
   })
 
   it('reverts the switch and shows the conflict when the backend rejects enabling', async () => {

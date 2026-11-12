@@ -989,6 +989,7 @@
     "hotkeys.reset_title": "Сбросить к умолчанию",
     "hotkeys.reset_success": "Сброшено к значению по умолчанию",
     "hotkeys.error_prefix": "Ошибка: {detail}",
+    "hotkeys.ocr_capture_disabled": "Сочетание клавиш «{name}» отключено. Сам OCR остаётся включённым.",
     "intercept.title": "Перехват клавиш",
     "intercept.description": "При включённом перехвате назначенные клавиши выполняют выбранное действие в TTSBard. Система и другие программы не получают их нажатия.",
     "intercept.hint": "Можно назначать NumPad, F1–F24, Page Up, End, Page Down, Home и Insert.",

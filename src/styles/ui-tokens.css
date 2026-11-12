@@ -2,9 +2,10 @@
 
    Geometry, typography and spacing scale from ROADMAP-121 and
    docs/development/ui-guidelines.md. Text sizes are in rem (relative to the
-   html base), geometry and spacing in px. Colors are intentionally NOT
-   defined here: they come from the existing theme tokens in variables.css,
-   so no second palette is introduced.
+   html base), geometry and spacing in px. Colors otherwise come from the
+   existing theme tokens in variables.css, so no second palette is introduced.
+   The only local colors are the opaque notice state fills below: they stay
+   identical in both themes so a single contrast pair always holds.
 
    User-controlled --ui-font-family / --ui-font-size (html base) and the
    --font-sans / --font-mono stacks are deliberately left untouched. */
@@ -81,4 +82,21 @@
 
   --ui-field-group-gap: 8px;
   --ui-settings-group-gap: 16px;
+
+  /* ========== Notice state colors ========== */
+
+  /* Shared by panel and global notices (docs/development/ui-guidelines.md,
+     "Всплывающие уведомления"). The fills are opaque and use the base palette
+     values of variables.css: the light theme re-maps --rgb-success, --rgb-danger
+     and --rgb-info for UI accents, and those variants would drop the pair below
+     the 4.5:1 contrast of 0.85rem text. Warning is the agreed orange in both
+     themes. Text colors reuse the existing semantic message tokens. */
+  --ui-notice-bg-success: #4ade80;
+  --ui-notice-text-success: var(--success-text);
+  --ui-notice-bg-warning: #ff9800;
+  --ui-notice-text-warning: var(--warning-text);
+  --ui-notice-bg-error: #ff6f69;
+  --ui-notice-text-error: var(--danger-text);
+  --ui-notice-bg-info: #70d6ff;
+  --ui-notice-text-info: var(--info-text);
 }
