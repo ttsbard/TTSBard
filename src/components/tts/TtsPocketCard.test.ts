@@ -542,6 +542,64 @@ describe('TtsPocketCard', () => {
     expect(invokeMock.mock.calls.some(([command]) => command === 'set_pocket_voice')).toBe(false)
   })
 
+  it('normalizes the selected reference and updates the card', async () => {
+    const ready = shtorm({
+      selection: { kind: 'reference_wav', path: 'C:\\Voices\\me.wav', file_name: 'me.wav' },
+      readiness: 'ready',
+      error_code: null,
+    })
+    const normalized = shtorm({
+      selection: {
+        kind: 'reference_wav',
+        path: 'C:\\AppData\\ttsbard\\pocket-references\\shtorm.wav',
+        file_name: 'shtorm.wav',
+      },
+      readiness: 'ready',
+      error_code: null,
+    })
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'list_pocket_models') return Promise.resolve([ready])
+      if (command === 'normalize_pocket_reference') return Promise.resolve(normalized)
+      return Promise.resolve()
+    })
+
+    const { host } = await mountCard(ready.id)
+    const button = host.querySelector<HTMLButtonElement>('.pocket-normalize-button')!
+    expect(button).not.toBeNull()
+    expect(button.textContent).toContain('Normalize')
+    expect(button.disabled).toBe(false)
+
+    button.click()
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('normalize_pocket_reference', { modelId: ready.id })
+    expect(host.querySelector('.pocket-reference-name')?.textContent).toContain('shtorm.wav')
+    expect(host.textContent).toContain('Reference prepared: 24 kHz, mono, normalized level.')
+  })
+
+  it('reports a failed reference normalization and keeps the previous file', async () => {
+    const ready = shtorm({
+      selection: { kind: 'reference_wav', path: 'C:\\Voices\\me.wav', file_name: 'me.wav' },
+      readiness: 'ready',
+      error_code: null,
+    })
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'list_pocket_models') return Promise.resolve([ready])
+      if (command === 'normalize_pocket_reference') {
+        return Promise.reject(new Error('normalize failed'))
+      }
+      return Promise.resolve()
+    })
+
+    const { host } = await mountCard(ready.id)
+    ;(host.querySelector('.pocket-normalize-button') as HTMLButtonElement).click()
+    await flush()
+
+    expect(host.querySelector('[role="alert"]')?.textContent)
+      .toContain('Could not prepare the WAV reference')
+    expect(host.querySelector('.pocket-reference-name')?.textContent).toContain('me.wav')
+  })
+
   it('restores the Shtorm reference when switching RU → EN → RU', async () => {
     const russian = shtorm({
       selection: { kind: 'reference_wav', path: 'C:\\Voices\\me.wav', file_name: 'me.wav' },

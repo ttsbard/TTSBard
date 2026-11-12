@@ -31,6 +31,18 @@ use super::tokenizer::{
 use super::{PocketError, PocketVoiceSelection};
 
 const CPU_THREADS: usize = 4;
+/// Target output level after the soft gain compensation (ROADMAP-137).
+///
+/// A reference normalized to `RMS ~0.048` makes the model quieter, so the
+/// synthesized PCM is lifted towards this level to stay comparable with the
+/// other engines.
+const TARGET_OUTPUT_RMS: f32 = 0.12;
+/// Peak ceiling of the output limiter.
+const OUTPUT_PEAK_LIMIT: f32 = 0.95;
+/// Never boost more than this, so near-silent garbage is not amplified.
+const MAX_OUTPUT_GAIN: f32 = 4.0;
+/// Ignore tiny corrections: they are inaudible and only add distortion risk.
+const OUTPUT_GAIN_DEADBAND: f32 = 0.05;
 
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
@@ -230,6 +242,7 @@ impl PocketRuntime {
                 "generation produced silence".to_string(),
             ));
         }
+        compensate_output_gain(&mut all_samples);
         stats.duration_seconds = all_samples.len() as f32 / self.sample_rate() as f32;
         let wav = crate::audio::effects::encode_wav(&all_samples, self.sample_rate(), 1)
             .map_err(PocketError::Generation)?;
@@ -1042,5 +1055,102 @@ fn apply_fade_in(samples: &mut [f32], sample_rate: u32) {
     let fade = (sample_rate as usize / 200).max(1).min(samples.len());
     for (index, sample) in samples[..fade].iter_mut().enumerate() {
         *sample *= index as f32 / fade as f32;
+    }
+}
+
+/// Softly compensate the synthesized level towards [`TARGET_OUTPUT_RMS`].
+///
+/// A reference normalized to `RMS ~0.048` makes the model noticeably quieter,
+/// so quiet output is boosted up to [`MAX_OUTPUT_GAIN`] while the
+/// [`OUTPUT_PEAK_LIMIT`] keeps the result below full scale. Corrections inside
+/// [`OUTPUT_GAIN_DEADBAND`] are skipped. Returns the applied gain (`1.0` when
+/// the buffer was left untouched).
+fn compensate_output_gain(samples: &mut [f32]) -> f32 {
+    if samples.is_empty() {
+        return 1.0;
+    }
+    let rms = (samples
+        .iter()
+        .map(|sample| (*sample as f64) * (*sample as f64))
+        .sum::<f64>()
+        / samples.len() as f64)
+        .sqrt() as f32;
+    if !rms.is_finite() || rms <= 0.0 {
+        return 1.0;
+    }
+    let peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0f32, f32::max);
+    let gain = (TARGET_OUTPUT_RMS / rms)
+        .min(OUTPUT_PEAK_LIMIT / peak.max(1e-6))
+        .min(MAX_OUTPUT_GAIN);
+    if !gain.is_finite() || (gain - 1.0).abs() <= OUTPUT_GAIN_DEADBAND {
+        return 1.0;
+    }
+    for sample in samples.iter_mut() {
+        *sample *= gain;
+    }
+    gain
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine(rms: f32, sample_rate: u32, hz: f64) -> Vec<f32> {
+        let amplitude = rms as f64 * std::f64::consts::SQRT_2;
+        (0..sample_rate)
+            .map(|index| {
+                let phase = 2.0 * std::f64::consts::PI * hz * index as f64 / sample_rate as f64;
+                (phase.sin() * amplitude) as f32
+            })
+            .collect()
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples
+            .iter()
+            .map(|sample| (*sample as f64) * (*sample as f64))
+            .sum::<f64>()
+            / samples.len().max(1) as f64)
+            .sqrt() as f32
+    }
+
+    #[test]
+    fn output_gain_boosts_quiet_speech_without_clipping() {
+        let mut samples = sine(0.04, 24_000, 180.0);
+        let gain = compensate_output_gain(&mut samples);
+
+        assert!(gain > 1.0, "quiet output must be boosted, got gain {gain:.4}");
+        assert!(
+            gain <= MAX_OUTPUT_GAIN,
+            "gain {gain:.4} exceeds the {MAX_OUTPUT_GAIN} cap"
+        );
+        let peak = samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak <= 0.95, "compensated peak {peak:.4} clips");
+        let level = rms(&samples);
+        assert!(
+            (level - TARGET_OUTPUT_RMS).abs() < 0.01,
+            "compensated RMS {level:.4} is not near {TARGET_OUTPUT_RMS}"
+        );
+    }
+
+    #[test]
+    fn output_gain_leaves_already_loud_speech_nearly_untouched() {
+        let mut samples = sine(0.4, 24_000, 180.0);
+        let before = samples.clone();
+        let gain = compensate_output_gain(&mut samples);
+        assert!(gain <= 1.0, "loud output must not be boosted, got {gain:.4}");
+        let peak = samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak <= 0.95, "compensated peak {peak:.4} clips");
+        // The correction is either inaudible (deadband) or a real attenuation.
+        assert!(gain < 1.0 || samples == before);
     }
 }

@@ -49,6 +49,8 @@ related_tasks: []
 
 ## Завершённые направления
 
+- [ROADMAP-137 — Нормализация референса Pocket TTS и компенсация громкости](./completed/137-pocket-reference-normalization.md) — кнопка подготовки референса (`24 кГц`, моно, `RMS ~0.048`) в каталог приложения и компенсация выходной громкости.
+
 - [ROADMAP-136 — Локальные модели RUAccent, OCR и Pocket TTS](./completed/136-local-model-management.md) — каталог из репозитория, установка и обновление пакетов.
 
 - [ROADMAP-135 — Локальный Pocket TTS с выбором модели](./completed/135-pocket-tts.md) — локальный синтез на CPU, выбор модели и голоса.

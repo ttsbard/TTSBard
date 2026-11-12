@@ -96,6 +96,25 @@ The voice and configuration must match; a configuration from another voice will
 not work. After installation Piper itself needs no network. RUAccent is separate
 text processing with its own [model package](ruaccent.md).
 
+## Pocket TTS
+
+Pocket TTS runs locally on CPU without external servers or API keys.
+
+1. Install a Pocket TTS model package (such as **Shtorm RU v2 Fast** or **Kyutai English**)
+   under **Settings → Models**.
+2. Open the **TTS** panel, expand the **Pocket TTS** card, and select the model.
+3. For voice-cloning models (reference WAV mode):
+   - Click **"Choose WAV"** and pick a short voice clip (up to 12 seconds; 5–8 seconds
+     of clear speech with a complete sentence is recommended).
+   - If the cloned voice sounds too low in pitch or muffled due to an overly loud
+     recording, click **"Prepare"** next to the selected reference. The app will
+     generate an optimized copy normalized for the model (target speech RMS ~0.048,
+     24 kHz mono) in the application data folder and switch to it automatically without
+     modifying your original file.
+   - Use the **"Listen"** button to preview the active reference audio.
+4. For models with bundled voices (such as Kyutai English with Alba), select the
+   desired voice from the list.
+
 ## Check your setup
 
 New jobs use the selected provider. Accepted jobs retain their provider and voice.

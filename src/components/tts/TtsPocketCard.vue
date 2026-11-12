@@ -340,6 +340,37 @@ async function applyReference(modelId: string, path: string): Promise<void> {
   }
 }
 
+async function normalizeReference(): Promise<void> {
+  const model = focusModel.value;
+  if (!model || voiceBusyFor.value !== null) return;
+
+  const modelId = model.id;
+  const token = ++voiceGeneration;
+  voiceBusyFor.value = modelId;
+  clearFeedback(modelId);
+
+  try {
+    const updated = await invoke<PocketModelDto>('normalize_pocket_reference', { modelId });
+    if (!updated || updated.id !== modelId) {
+      throw new Error('Pocket reference normalization response does not match the requested model');
+    }
+    models.value = replacePocketModel(models.value, updated);
+
+    if (token !== voiceGeneration) return;
+    setFeedback(modelId, 'success', t('tts.pocket.normalized'));
+
+    if (focusModel.value?.id === modelId && pendingActivationId.value === modelId) {
+      pendingActivationId.value = null;
+      await activateModelById(modelId, { keepSuccessMessage: true });
+    }
+  } catch (error) {
+    if (token !== voiceGeneration) return;
+    setFeedback(modelId, 'error', presentCommandError(error, t('tts.pocket.error.normalize')));
+  } finally {
+    if (token === voiceGeneration) voiceBusyFor.value = null;
+  }
+}
+
 async function selectReadyVoice(voice: PocketVoiceDto) {
   const model = focusModel.value;
   if (!model || !voice.available || voiceBusyFor.value !== null) return;
@@ -546,6 +577,16 @@ onBeforeUnmount(() => {
                   >
                     <Loader2 v-if="isVoiceBusy" :size="16" class="ui-spin" aria-hidden="true" />
                     {{ t('tts.pocket.replace') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ui-button ui-button--compact pocket-normalize-button"
+                    :title="t('tts.pocket.normalize_tooltip')"
+                    :disabled="isVoiceBusy"
+                    @click="normalizeReference"
+                  >
+                    <Loader2 v-if="isVoiceBusy" :size="16" class="ui-spin" aria-hidden="true" />
+                    {{ t('tts.pocket.normalize') }}
                   </button>
                 </div>
               </div>

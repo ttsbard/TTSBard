@@ -9,6 +9,7 @@ use crate::stress::runtime::RuAccentRuntimeSlot;
 use crate::system_fonts::SystemFontCatalog;
 use crate::tts::pocket::{
     with_voice_store, PocketError, PocketModelDto, PocketTts, PocketVoiceInput,
+    PocketVoiceSelection,
 };
 use crate::tts::TtsProvider;
 use tauri::{AppHandle, Emitter, EventTarget, Listener, Manager, State};
@@ -1038,6 +1039,109 @@ pub async fn set_pocket_voice(
     })?;
     emit_settings_changed(&app_handle);
     Ok(dto)
+}
+
+/// Normalize the selected WAV reference into the application config directory.
+///
+/// The user file is never modified: a mono 24 kHz copy with the active speech
+/// at `RMS ~0.048` is written to `pocket-references/<package_id>.wav` and the
+/// model selection is switched to that copy, so every future synthesis uses the
+/// pitch-safe reference level. The blocking decode/encode runs off the async
+/// runtime; persistence and registry update then follow the `set_pocket_voice`
+/// transaction order (voice store lock, then registry).
+#[tauri::command]
+pub async fn normalize_pocket_reference(
+    model_id: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PocketModelDto, CommandError> {
+    use crate::tts::pocket::audio::normalize_reference_wav_to_file;
+
+    let (source_path, package_id) = {
+        let provider = pocket_provider(state.inner(), &model_id)?;
+        match provider.selection() {
+            Some(PocketVoiceSelection::ReferenceWav(path)) => {
+                (path.clone(), provider.descriptor().package_id.clone())
+            }
+            _ => {
+                return Err(CommandError::new(
+                    crate::ipc::pocket::error_code::REFERENCE_REQUIRED,
+                    PocketError::ReferenceRequired.message(),
+                    false,
+                ))
+            }
+        }
+    };
+
+    let destination = crate::paths::config_root()
+        .map_err(|_| {
+            CommandError::new(
+                crate::ipc::pocket::error_code::PERSISTENCE_FAILED,
+                "Не удалось определить каталог конфигурации приложения".to_string(),
+                false,
+            )
+        })?
+        .join("pocket-references")
+        .join(format!("{}.wav", sanitize_package_stem(&package_id)));
+
+    let write_target = destination.clone();
+    tokio::task::spawn_blocking(move || {
+        normalize_reference_wav_to_file(&source_path, &write_target)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::new(
+            crate::ipc::pocket::error_code::RUNTIME_FAILED,
+            format!("Не удалось подготовить референс Pocket TTS: {error}"),
+            false,
+        )
+    })?
+    .map_err(pocket_error)?;
+
+    let selection = PocketVoiceSelection::ReferenceWav(destination);
+    let dto = with_voice_store(|store| -> Result<PocketModelDto, CommandError> {
+        let provider = pocket_provider(state.inner(), &model_id)?;
+        store.set(&package_id, &selection).map_err(|error| {
+            CommandError::new(
+                crate::ipc::pocket::error_code::PERSISTENCE_FAILED,
+                error.message(),
+                false,
+            )
+        })?;
+        let updated = provider.with_voice(Some(selection.clone()));
+        {
+            let mut registry = state.tts_registry.lock();
+            let display_name = provider.descriptor().display_name.clone();
+            registry.add_or_replace(crate::tts::registry::TtsProviderEntry {
+                id: model_id.clone(),
+                display_name,
+                provider: TtsProvider::Pocket(updated.clone()),
+            });
+        }
+        Ok(updated.dto())
+    })?;
+    emit_settings_changed(&app_handle);
+    Ok(dto)
+}
+
+/// File-system-safe stem for a normalized reference file name.
+fn sanitize_package_stem(package_id: &str) -> String {
+    let sanitized: String = package_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "reference".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// DTO for a discovered local RUAccent pack without filesystem paths.

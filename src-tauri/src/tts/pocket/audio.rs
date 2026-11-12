@@ -17,6 +17,17 @@ const MIN_REFERENCE_SECONDS: f32 = 0.05;
 const MAX_REFERENCE_SECONDS: u32 = 12;
 /// Silence threshold for rejecting an empty recording.
 const MIN_REFERENCE_RMS: f32 = 0.0005;
+/// Target RMS of the active speech after reference normalization (ROADMAP-137).
+///
+/// Mimi and FlowLM are not amplitude invariant: the reference level that keeps
+/// the original F0 on both female and male voices is about `0.048`.
+const TARGET_REFERENCE_RMS: f32 = 0.048;
+/// A normalized reference must never clip; keep the peak below full scale.
+const REFERENCE_PEAK_LIMIT: f32 = 0.98;
+/// Analysis frame for the active-speech level: 20 ms at the 24 kHz target.
+const REFERENCE_ANALYSIS_FRAME: usize = 480;
+/// Sample rate every prepared Pocket TTS reference is stored at.
+const REFERENCE_SAMPLE_RATE: u32 = 24_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReferenceAudioInfo {
@@ -86,6 +97,118 @@ pub fn prepare_reference_wav(
         }
     }
     Ok(resampled)
+}
+
+/// Prepare a normalized copy of a user reference for Pocket TTS.
+///
+/// The source file is never modified: it is decoded, mixed to mono, resampled
+/// to 24 kHz, scaled so the active speech sits at [`TARGET_REFERENCE_RMS`], and
+/// written to `dest` (atomically, creating the parent directory). The returned
+/// info describes the written file, so callers can persist the new path.
+pub fn normalize_reference_wav_to_file(
+    source: &Path,
+    dest: &Path,
+) -> Result<ReferenceAudioInfo, PocketError> {
+    let audio = decode_reference(source)?;
+    let mono = to_mono(&audio.samples, audio.channels);
+    let resampled = resample(&mono, audio.sample_rate, REFERENCE_SAMPLE_RATE);
+    if resampled.is_empty() {
+        return Err(PocketError::ReferenceInvalid(
+            "reference is too short after resampling".to_string(),
+        ));
+    }
+    let normalized = normalize_reference_level(&resampled);
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                PocketError::Runtime(format!(
+                    "cannot create the normalized reference directory: {error}"
+                ))
+            })?;
+        }
+    }
+    let bytes = crate::audio::effects::encode_wav(&normalized, REFERENCE_SAMPLE_RATE, 1)
+        .map_err(|error| {
+            PocketError::Runtime(format!("cannot encode the normalized reference: {error}"))
+        })?;
+    crate::config::replace_file_atomically(dest, &bytes).map_err(|error| {
+        PocketError::Runtime(format!("cannot write the normalized reference: {error}"))
+    })?;
+    validate_reference_wav(dest)
+}
+
+/// Scale `samples` so the active speech RMS equals [`TARGET_REFERENCE_RMS`].
+///
+/// Frames within 20 dB of the overall level (`>= 0.1 * overall RMS`) count as
+/// active speech; a fully silent or unanalyzable signal falls back to the
+/// overall RMS. The gain is capped at `0.98 / peak` so the result never clips.
+fn normalize_reference_level(samples: &[f32]) -> Vec<f32> {
+    let overall = reference_rms(samples);
+    if !overall.is_finite() || overall <= 0.0 {
+        return samples.to_vec();
+    }
+    let active = active_speech_rms(samples, overall).unwrap_or(overall);
+    if !active.is_finite() || active <= 0.0 {
+        return samples.to_vec();
+    }
+    let peak = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0f32, f32::max);
+    if peak <= 0.0 {
+        return samples.to_vec();
+    }
+    let gain = (TARGET_REFERENCE_RMS / active).min(REFERENCE_PEAK_LIMIT / peak);
+    if !gain.is_finite() || gain <= 0.0 {
+        return samples.to_vec();
+    }
+    samples
+        .iter()
+        .map(|sample| (sample * gain).clamp(-REFERENCE_PEAK_LIMIT, REFERENCE_PEAK_LIMIT))
+        .collect()
+}
+
+/// RMS over whole 20 ms frames whose level is at least a tenth of `overall`.
+fn active_speech_rms(samples: &[f32], overall: f32) -> Option<f32> {
+    if samples.len() < REFERENCE_ANALYSIS_FRAME {
+        return None;
+    }
+    let threshold = 0.1 * overall;
+    if !threshold.is_finite() || threshold <= 0.0 {
+        return None;
+    }
+    let threshold = threshold as f64;
+    let mut energy = 0.0f64;
+    let mut frames = 0usize;
+    for frame in samples.chunks_exact(REFERENCE_ANALYSIS_FRAME) {
+        let frame_energy = frame
+            .iter()
+            .map(|sample| (*sample as f64) * (*sample as f64))
+            .sum::<f64>()
+            / frame.len() as f64;
+        if frame_energy.sqrt() >= threshold {
+            energy += frame_energy;
+            frames += 1;
+        }
+    }
+    if frames == 0 {
+        None
+    } else {
+        Some((energy / frames as f64).sqrt() as f32)
+    }
+}
+
+/// Root-mean-square level of a block of samples.
+fn reference_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples
+        .iter()
+        .map(|sample| (*sample as f64) * (*sample as f64))
+        .sum::<f64>()
+        / samples.len() as f64)
+        .sqrt() as f32
 }
 
 fn decode_reference(path: &Path) -> Result<crate::audio::effects::AudioPcm, PocketError> {
@@ -297,6 +420,18 @@ mod tests {
         path
     }
 
+    /// A unique path under the system temp directory for one test artifact.
+    fn temp_artifact(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "ttsbard-pocket-audio-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn missing_reference_is_distinct_from_invalid() {
         let missing = std::env::temp_dir().join("ttsbard-pocket-does-not-exist.wav");
@@ -425,5 +560,83 @@ mod tests {
         assert!(!prepared.is_empty());
         assert_eq!(prepared.len() % 1920, 0);
         std::fs::remove_file(path).ok();
+    }
+
+    /// A loud 44.1 kHz stereo reference (RMS ~0.20) must be stored as mono
+    /// 24 kHz with the active level near the 0.048 target.
+    #[test]
+    fn normalizes_loud_stereo_reference_to_target_rms() {
+        let source_rate = 44_100u32;
+        let amplitude = 0.20f64 * std::f64::consts::SQRT_2;
+        let mut stereo = Vec::with_capacity(source_rate as usize * 2);
+        for index in 0..source_rate {
+            let phase = 2.0 * std::f64::consts::PI * 220.0 * index as f64 / source_rate as f64;
+            let value = (phase.sin() * amplitude) as f32;
+            stereo.push(value);
+            stereo.push(value);
+        }
+        assert!((rms(&stereo) - 0.20).abs() < 0.01);
+
+        let source = temp_wav("normalize-loud-source", &stereo, source_rate, 2);
+        let destination_dir = temp_artifact("normalize-loud-dir");
+        let dest = destination_dir.join("nested").join("reference.wav");
+
+        let info = normalize_reference_wav_to_file(&source, &dest).unwrap();
+        assert_eq!(info.sample_rate, 24_000);
+        assert_eq!(info.channels, 1);
+
+        let written = crate::audio::effects::decode_audio(&std::fs::read(&dest).unwrap()).unwrap();
+        let level = rms(&written.samples);
+        assert!(
+            (0.040..=0.056).contains(&level),
+            "normalized RMS {level:.4} is outside 0.040..0.056"
+        );
+        let peak = written
+            .samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak <= 0.98, "normalized peak {peak:.4} clips");
+
+        std::fs::remove_file(source).ok();
+        std::fs::remove_dir_all(destination_dir).ok();
+    }
+
+    /// A quiet reference (RMS ~0.015) must be scaled up to the target level
+    /// without clipping.
+    #[test]
+    fn normalizes_quiet_reference_without_clipping() {
+        let sample_rate = 24_000u32;
+        let amplitude = 0.015f64 * std::f64::consts::SQRT_2;
+        let samples: Vec<f32> = (0..sample_rate)
+            .map(|index| {
+                let phase =
+                    2.0 * std::f64::consts::PI * 200.0 * index as f64 / sample_rate as f64;
+                (phase.sin() * amplitude) as f32
+            })
+            .collect();
+        assert!((rms(&samples) - 0.015).abs() < 0.001);
+
+        let source = temp_wav("normalize-quiet-source", &samples, sample_rate, 1);
+        let destination_dir = temp_artifact("normalize-quiet-dir");
+        let dest = destination_dir.join("reference.wav");
+
+        normalize_reference_wav_to_file(&source, &dest).unwrap();
+
+        let written = crate::audio::effects::decode_audio(&std::fs::read(&dest).unwrap()).unwrap();
+        let peak = written
+            .samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0f32, f32::max);
+        let level = rms(&written.samples);
+        assert!(peak <= 0.98, "normalized peak {peak:.4} clips");
+        assert!(
+            (0.040..=0.056).contains(&level),
+            "quiet reference was not scaled to the target: RMS {level:.4}"
+        );
+
+        std::fs::remove_file(source).ok();
+        std::fs::remove_dir_all(destination_dir).ok();
     }
 }
