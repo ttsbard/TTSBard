@@ -557,21 +557,19 @@ pub async fn save_audio_effects(
     settings_manager: State<'_, SettingsManager>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut settings = settings_manager
-        .load()
-        .map_err(|e| format!("Не удалось загрузить настройки: {}", e))?;
-
-    settings.audio_effects.enabled = enabled;
-    settings.audio_effects.pitch = pitch.clamp(-100, 100);
-    settings.audio_effects.speed = speed.clamp(-100, 100);
-    settings.audio_effects.volume = volume.clamp(0, 200);
-    settings.audio_effects.enhance_enabled = enhance_enabled;
-    settings.audio_effects.enhance_atten_db = enhance_atten_db.clamp(5.0, 30.0);
-    settings.audio_effects.formant_preserved = formant_preserved;
-    settings.audio_effects.boundary_cleanup_enabled = boundary_cleanup_enabled;
+    let effects = crate::config::AudioEffectsSettings {
+        enabled,
+        pitch,
+        speed,
+        volume,
+        enhance_enabled,
+        enhance_atten_db,
+        formant_preserved,
+        boundary_cleanup_enabled,
+    };
 
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.save(&settings)
+        manager.set_audio_effects_section(effects)
     })
     .await
     .map_err(|e| format!("Не удалось сохранить настройки: {}", e))?;

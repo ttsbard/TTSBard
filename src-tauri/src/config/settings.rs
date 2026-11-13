@@ -2299,6 +2299,26 @@ impl SettingsManager {
         })
     }
 
+    /// Atomically persist one concrete provider selection: the stable provider
+    /// ID and, for built-in providers, the matching legacy provider type.
+    ///
+    /// The durable snapshot is re-read under the shared writer lock, so a
+    /// selection transaction never writes back a stale cache clone over
+    /// unrelated settings updated by another writer.
+    pub fn set_tts_provider_selection(
+        &self,
+        provider_id: String,
+        provider_type: Option<TtsProviderType>,
+    ) -> Result<()> {
+        self.update_settings_atomically(move |settings| {
+            settings.tts.provider_id = Some(provider_id);
+            if let Some(provider_type) = provider_type {
+                settings.tts.provider = provider_type;
+            }
+            Ok(())
+        })
+    }
+
     /// Set OpenAI API key
     pub fn set_openai_api_key(&self, api_key: Option<String>) -> Result<()> {
         self.update_field("/tts/openai/api_key", &api_key)
@@ -2859,6 +2879,54 @@ impl SettingsManager {
         self.update_field("/tts/telegram/synthesis_response_timeout_ms", &normalized)
     }
 
+    /// Atomically persist the currently selected Telegram voice code.
+    ///
+    /// Read-modify-persist runs under the shared writer lock with persist before
+    /// cache publication, so a voice selection never rewrites unrelated settings.
+    pub fn set_telegram_current_voice_id(&self, voice_id: String) -> Result<()> {
+        self.update_settings_atomically(move |settings| {
+            settings.tts.telegram.current_voice_id = voice_id;
+            Ok(())
+        })
+    }
+
+    /// Atomically append a saved Telegram voice code.
+    ///
+    /// A duplicate ID is rejected before the write, keeping the durable file and
+    /// the cache on their previous state, exactly like the command-layer check
+    /// this replaces.
+    pub fn add_telegram_voice_code(&self, voice: crate::telegram::types::VoiceCode) -> Result<()> {
+        self.update_settings_atomically(move |settings| {
+            if settings
+                .tts
+                .telegram
+                .voices
+                .iter()
+                .any(|saved| saved.id == voice.id)
+            {
+                return Err(anyhow::anyhow!("Voice with this ID already exists"));
+            }
+            settings.tts.telegram.voices.push(voice);
+            Ok(())
+        })
+    }
+
+    /// Atomically remove a saved Telegram voice code. When the removed voice was
+    /// the selected one, the selection is cleared in the same transaction.
+    pub fn remove_telegram_voice_code(&self, voice_id: &str) -> Result<()> {
+        self.update_settings_atomically(|settings| {
+            settings
+                .tts
+                .telegram
+                .voices
+                .retain(|saved| saved.id != voice_id);
+            if settings.tts.telegram.current_voice_id == voice_id {
+                settings.tts.telegram.current_voice_id.clear();
+            }
+            Ok(())
+        })
+    }
+
     // ========== MTProxy Settings ==========
 
     /// Set MTProxy settings
@@ -3278,6 +3346,25 @@ impl SettingsManager {
     /// Set audio effects formant preservation (Signalsmith formant correction)
     pub fn set_audio_effects_formant_preserved(&self, preserved: bool) -> Result<()> {
         self.update_field("/audio_effects/formant_preserved", &preserved)
+    }
+
+    /// Atomically replace the complete audio-effects section.
+    ///
+    /// Applies the same clamping as the per-field setters, then performs one
+    /// read-modify-persist transaction under the shared writer lock. The cache
+    /// is refreshed only after the durable write succeeds, so an effects save
+    /// cannot drop settings updated concurrently by another writer.
+    pub fn set_audio_effects_section(&self, effects: AudioEffectsSettings) -> Result<()> {
+        let mut effects = effects;
+        effects.pitch = effects.pitch.clamp(-100, 100);
+        effects.speed = effects.speed.clamp(-100, 100);
+        effects.volume = effects.volume.clamp(0, 200);
+        effects.enhance_atten_db = effects.enhance_atten_db.clamp(5.0, 30.0);
+
+        self.update_settings_atomically(move |settings| {
+            settings.audio_effects = effects;
+            Ok(())
+        })
     }
 
     // ========== DSP Settings ==========
@@ -8305,6 +8392,256 @@ mod tests {
         assert!(error.to_string().contains("Invalid hotkey name"), "{error}");
         let after = std::fs::read_to_string(dir.join("settings.json")).unwrap();
         assert_eq!(after, before, "a rejected update must not write settings");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Command section transactions ====================
+
+    /// Regression: the audio-effects and Telegram command paths used a
+    /// `mgr.load()` + `mgr.save(&settings)` pair. A manager whose cache predated
+    /// another writer's commit wrote that stale clone back and dropped the newer
+    /// section. Each section transaction must read the durable snapshot under the
+    /// shared writer lock instead, in both update orders, without relying on
+    /// thread timing.
+    #[test]
+    fn section_transactions_read_durable_snapshot_instead_of_stale_cache() {
+        let (manager_a, dir) = atomic_settings_tmp_manager("section-stale-cache");
+        // `manager_b` caches the pre-update defaults at construction time.
+        let manager_b = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        let effects = AudioEffectsSettings {
+            enabled: true,
+            pitch: 40,
+            speed: -12,
+            volume: 160,
+            enhance_enabled: true,
+            enhance_atten_db: 21.0,
+            formant_preserved: false,
+            boundary_cleanup_enabled: false,
+        };
+        manager_a
+            .set_audio_effects_section(effects.clone())
+            .unwrap();
+
+        // Saving the Telegram selection through a stale cache used to write the
+        // previous effects section back over the newer durable one.
+        manager_b
+            .set_telegram_current_voice_id("rene".to_string())
+            .unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert_eq!(
+            disk.audio_effects, effects,
+            "a stale cache must not roll back the effects section"
+        );
+        assert_eq!(disk.tts.telegram.current_voice_id, "rene");
+        assert_eq!(
+            manager_b.load().unwrap(),
+            disk,
+            "the transaction publishes the merged snapshot"
+        );
+
+        // Reverse direction: `manager_a` never observed the voice selection,
+        // yet its provider transaction must keep it.
+        manager_a
+            .set_tts_provider_selection("silero".to_string(), Some(TtsProviderType::Silero))
+            .unwrap();
+        let disk = read_disk_settings(&dir);
+        assert_eq!(disk.tts.telegram.current_voice_id, "rene");
+        assert_eq!(disk.tts.provider_id.as_deref(), Some("silero"));
+        assert_eq!(disk.tts.provider, TtsProviderType::Silero);
+        assert_eq!(disk.audio_effects, effects);
+
+        // ...and an effects save through manager_b's now-stale cache keeps the
+        // Telegram and provider state written after its last transaction.
+        let newer = AudioEffectsSettings {
+            volume: 70,
+            ..AudioEffectsSettings::default()
+        };
+        manager_b.set_audio_effects_section(newer.clone()).unwrap();
+        let disk = read_disk_settings(&dir);
+        assert_eq!(disk.audio_effects, newer);
+        assert_eq!(disk.tts.provider_id.as_deref(), Some("silero"));
+        assert_eq!(disk.tts.telegram.current_voice_id, "rene");
+        assert_eq!(manager_b.load().unwrap(), disk);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Overlapping writers on disjoint sections must all land: the effects,
+    /// Telegram voice and provider transactions share one writer lock, so no
+    /// interleaving can drop one of the updates or leave the caches disagreeing
+    /// with the durable file they just wrote.
+    #[test]
+    fn concurrently_overlapping_section_updates_all_survive() {
+        let (manager_a, dir) = atomic_settings_tmp_manager("section-overlap");
+        let manager_b = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let manager_c = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let barrier_a = barrier.clone();
+        let barrier_b = barrier.clone();
+        let barrier_c = barrier.clone();
+
+        let handle_a = std::thread::spawn(move || {
+            barrier_a.wait();
+            let effects = AudioEffectsSettings {
+                enabled: true,
+                pitch: 25,
+                ..AudioEffectsSettings::default()
+            };
+            manager_a.set_audio_effects_section(effects)
+        });
+        let handle_b = std::thread::spawn(move || {
+            barrier_b.wait();
+            manager_b
+                .add_telegram_voice_code(crate::telegram::types::VoiceCode {
+                    id: "rene".to_string(),
+                    description: Some("Rene".to_string()),
+                })
+                .and_then(|()| manager_b.set_telegram_current_voice_id("rene".to_string()))
+        });
+        let handle_c = std::thread::spawn(move || {
+            barrier_c.wait();
+            manager_c
+                .set_tts_provider_selection("silero".to_string(), Some(TtsProviderType::Silero))
+        });
+
+        barrier.wait();
+        handle_a.join().unwrap().unwrap();
+        handle_b.join().unwrap().unwrap();
+        handle_c.join().unwrap().unwrap();
+
+        let disk = read_disk_settings(&dir);
+        let effects = &disk.audio_effects;
+        assert!(effects.enabled, "effects update must survive");
+        assert_eq!(effects.pitch, 25);
+        assert_eq!(disk.tts.telegram.voices.len(), 1);
+        assert_eq!(disk.tts.telegram.current_voice_id, "rene");
+        assert_eq!(disk.tts.provider_id.as_deref(), Some("silero"));
+        assert_eq!(disk.tts.provider, TtsProviderType::Silero);
+
+        // The last writer publishes its own merged snapshot; a fresh manager
+        // re-reads exactly the same durable state.
+        let reloaded = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        assert_eq!(reloaded.load().unwrap(), disk);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed durable write must leave both the on-disk file and the cache on
+    /// the previously committed section: no partial effects/Telegram update.
+    #[test]
+    fn section_write_failure_preserves_disk_and_cache() {
+        let (manager, dir) = atomic_settings_tmp_manager("section-write-failure");
+        let initial = AudioEffectsSettings {
+            volume: 130,
+            ..AudioEffectsSettings::default()
+        };
+        manager.set_audio_effects_section(initial.clone()).unwrap();
+
+        let settings_path = dir.join("settings.json");
+        let before = std::fs::read_to_string(&settings_path).unwrap();
+
+        // A manager whose config dir does not exist cannot replace the file.
+        let failing = SettingsManager {
+            config_dir: dir.join("missing-subdir"),
+            cache: manager.cache_arc(),
+            elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+        };
+
+        let mut changed = initial.clone();
+        changed.enabled = true;
+        changed.volume = 5;
+        let error = failing.set_audio_effects_section(changed).unwrap_err();
+        assert!(
+            error.to_string().contains("Failed to write settings file"),
+            "{error}"
+        );
+        let voice_error = failing
+            .add_telegram_voice_code(crate::telegram::types::VoiceCode {
+                id: "rene".to_string(),
+                description: None,
+            })
+            .unwrap_err();
+        assert!(
+            voice_error
+                .to_string()
+                .contains("Failed to write settings file"),
+            "{voice_error}"
+        );
+
+        assert_eq!(
+            manager.load().unwrap().audio_effects,
+            initial,
+            "cache must keep the committed effects section"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).unwrap(),
+            before,
+            "disk must keep the committed settings file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The moved validation must behave exactly as before: effects clamping is
+    /// applied, a duplicate saved voice is rejected without a write, and
+    /// removing the selected voice clears the selection atomically.
+    #[test]
+    fn section_transactions_keep_existing_validation() {
+        let (manager, dir) = atomic_settings_tmp_manager("section-validation");
+
+        manager
+            .set_audio_effects_section(AudioEffectsSettings {
+                enabled: true,
+                pitch: 999,
+                speed: -999,
+                volume: 500,
+                enhance_enabled: true,
+                enhance_atten_db: 99.0,
+                formant_preserved: false,
+                boundary_cleanup_enabled: false,
+            })
+            .unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert_eq!(disk.audio_effects.pitch, 100);
+        assert_eq!(disk.audio_effects.speed, -100);
+        assert_eq!(disk.audio_effects.volume, 200);
+        assert_eq!(disk.audio_effects.enhance_atten_db, 30.0);
+        assert!(!disk.audio_effects.boundary_cleanup_enabled);
+
+        let voice = crate::telegram::types::VoiceCode {
+            id: "rene".to_string(),
+            description: Some("Rene".to_string()),
+        };
+        manager.add_telegram_voice_code(voice.clone()).unwrap();
+        manager
+            .set_telegram_current_voice_id("rene".to_string())
+            .unwrap();
+
+        let before = read_disk_settings(&dir);
+        let error = manager.add_telegram_voice_code(voice).unwrap_err();
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(
+            read_disk_settings(&dir),
+            before,
+            "a rejected duplicate must not write"
+        );
+
+        manager.remove_telegram_voice_code("rene").unwrap();
+        let disk = read_disk_settings(&dir);
+        assert!(disk.tts.telegram.voices.is_empty());
+        assert!(
+            disk.tts.telegram.current_voice_id.is_empty(),
+            "removing the selected voice clears the selection"
+        );
+        assert!(
+            disk.audio_effects.enabled,
+            "voice removal keeps the effects section"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

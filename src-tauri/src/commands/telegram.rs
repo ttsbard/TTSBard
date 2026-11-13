@@ -484,11 +484,7 @@ pub async fn telegram_get_current_voice(
             if needs_sync {
                 let vid = voice_id.clone();
                 super::persist_blocking(settings_manager.inner(), move |mgr| {
-                    let mut settings = mgr
-                        .load()
-                        .map_err(|e| anyhow::anyhow!("Failed to load settings: {}", e))?;
-                    settings.tts.telegram.current_voice_id = vid;
-                    mgr.save(&settings)
+                    mgr.set_telegram_current_voice_id(vid)
                 })
                 .await?;
                 super::emit_settings_changed(&app_handle);
@@ -639,13 +635,7 @@ pub async fn telegram_set_speaker(
     if success {
         let vid = voice_code;
         super::persist_blocking(settings_manager.inner(), move |mgr| {
-            let mut settings = mgr
-                .load()
-                .map_err(|e| anyhow::anyhow!("Failed to load settings: {}", e))?;
-
-            settings.tts.telegram.current_voice_id = vid;
-
-            mgr.save(&settings)
+            mgr.set_telegram_current_voice_id(vid)
         })
         .await?;
 
@@ -687,22 +677,7 @@ pub async fn telegram_add_voice_code(
     }
 
     super::persist_blocking(settings_manager.inner(), move |mgr| {
-        let mut settings = mgr
-            .load()
-            .map_err(|e| anyhow::anyhow!("Failed to load settings: {}", e))?;
-
-        if settings
-            .tts
-            .telegram
-            .voices
-            .iter()
-            .any(|v| v.id == voice.id)
-        {
-            return Err(anyhow::anyhow!("Voice with this ID already exists"));
-        }
-
-        settings.tts.telegram.voices.push(voice);
-        mgr.save(&settings)
+        mgr.add_telegram_voice_code(voice)
     })
     .await?;
 
@@ -720,17 +695,7 @@ pub async fn telegram_remove_voice_code(
 ) -> Result<(), String> {
     let vid = voice_id.clone();
     super::persist_blocking(settings_manager.inner(), move |mgr| {
-        let mut settings = mgr
-            .load()
-            .map_err(|e| anyhow::anyhow!("Failed to load settings: {}", e))?;
-
-        settings.tts.telegram.voices.retain(|v| v.id != vid);
-
-        if settings.tts.telegram.current_voice_id == vid {
-            settings.tts.telegram.current_voice_id.clear();
-        }
-
-        mgr.save(&settings)
+        mgr.remove_telegram_voice_code(&vid)
     })
     .await?;
 
@@ -757,13 +722,7 @@ pub async fn telegram_select_voice(
     if success {
         let vid = voice_id.clone();
         super::persist_blocking(settings_manager.inner(), move |mgr| {
-            let mut settings = mgr
-                .load()
-                .map_err(|e| anyhow::anyhow!("Failed to load settings: {}", e))?;
-
-            settings.tts.telegram.current_voice_id = vid;
-
-            mgr.save(&settings)
+            mgr.set_telegram_current_voice_id(vid)
         })
         .await?;
 

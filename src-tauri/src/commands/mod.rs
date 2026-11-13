@@ -697,12 +697,9 @@ pub async fn select_tts_provider_by_id(
     let manager = settings_manager.inner().clone();
     state
         .select_tts_provider(id.clone(), move |provider_id, legacy_type| {
-            let mut settings = manager.load().map_err(|e| e.to_string())?;
-            settings.tts.provider_id = Some(provider_id);
-            if let Some(provider_type) = legacy_type {
-                settings.tts.provider = provider_type;
-            }
-            manager.save(&settings).map_err(|e| e.to_string())
+            manager
+                .set_tts_provider_selection(provider_id, legacy_type)
+                .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| CommandError::new(error_code::SELECTION_FAILED, e, false))?;
