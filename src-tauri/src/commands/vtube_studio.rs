@@ -70,20 +70,19 @@ fn emit_vts_runtime_status(app_handle: &AppHandle, state: &AppState) {
     emit_vts_item_status(app_handle, &state.vtube_studio.get_item_status());
 }
 
-async fn persist_and_apply_vts_token(
-    manager: &SettingsManager,
-    runtime_settings: &tokio::sync::RwLock<VTubeStudioSettings>,
-    token: String,
-) -> Result<(), String> {
-    let mgr = manager.clone();
-    let persisted_token = token.clone();
-    crate::commands::persist_blocking(&mgr, move |m| {
-        m.set_vtube_studio_token(Some(persisted_token))
-    })
-    .await?;
+/// Ответ для вытесненной попытки подключения. Соединение не установлено,
+/// поэтому нельзя возвращать успех: UI не должен показывать живое соединение
+/// по устаревшему результату.
+const SUPERSEDED_CONNECTION_MESSAGE: &str =
+    "Запрос к VTube Studio вытеснен более новым запросом подключения/отключения";
 
-    runtime_settings.write().await.token = Some(token);
-    Ok(())
+/// Persist-first: новый токен сначала сохраняется на диск. Runtime-настройка
+/// обновляется сервисом отдельно (`commit_connection_success`) и только если
+/// попытка подключения всё ещё актуальна — иначе устаревший токен не должен
+/// перетереть более новый.
+async fn persist_vts_token(manager: &SettingsManager, token: String) -> Result<(), String> {
+    info!("Persisting new VTS authentication token");
+    crate::commands::persist_blocking(manager, move |m| m.set_vtube_studio_token(Some(token))).await
 }
 
 #[tauri::command]
@@ -608,39 +607,45 @@ pub async fn test_vtube_studio_connection(
         .await;
 
     match result {
-        Ok(new_token) => {
-            if let Some(tok) = new_token {
-                info!("Persisting new VTS authentication token");
-                if let Err(error) = persist_and_apply_vts_token(
-                    settings_manager.inner(),
-                    &state.vtube_studio.settings,
-                    tok,
-                )
-                .await
-                {
-                    state.vtube_studio.disconnect().await;
-                    emit_vts_runtime_status(&app_handle, state.inner());
-                    return Err(error);
-                }
+        Ok(success) => {
+            let manager = settings_manager.inner().clone();
+            let report = state
+                .vtube_studio
+                .commit_connection_success(success, move |token| async move {
+                    persist_vts_token(&manager, token).await
+                })
+                .await;
+
+            // Вытесненная попытка не публикует ни токен, ни живое соединение.
+            if report.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
             }
 
-            // Сокет устанавливается сервисом только при живом desired_running;
-            // после параллельного disconnect() попытка отбрасывается. Поэтому
-            // auth-флаг не должен «утекать» в UI при погашенном желании.
-            if state.vtube_studio.is_desired_running() {
-                state.vtube_studio.mark_authenticated(true);
+            // Ошибка записи токена: сервис уже снял соединение этой попытки,
+            // поэтому публикуем актуальный статус и item-состояние.
+            if let Some(error) = report.persist_error() {
+                emit_vts_runtime_status(&app_handle, state.inner());
+                return Err(error.to_string());
             }
 
             let item_status = state.vtube_studio.get_item_status();
             emit_vts_item_status(&app_handle, &item_status);
 
+            // `live == false` — standalone-проверка auth при desired_running=false:
+            // сокет не установлен, но аутентификация и токен проверены. Сервис
+            // сам выставляет auth/status только вместе с установленным actor-ом.
             Ok("Successfully connected to VTube Studio.".to_string())
         }
-        Err(e) => {
-            state.vtube_studio.mark_authenticated(false);
+        Err(failure) => {
+            if failure.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
+            }
             let item_status = state.vtube_studio.get_item_status();
             emit_vts_item_status(&app_handle, &item_status);
-            Err(format!("VTube Studio connection failed: {}", e))
+            Err(format!(
+                "VTube Studio connection failed: {}",
+                failure.message().unwrap_or("unknown error")
+            ))
         }
     }
 }
@@ -671,27 +676,41 @@ pub async fn connect_vtube_studio(
         .await;
 
     match result {
-        Ok(new_token) => {
-            if let Some(tok) = new_token {
-                info!("Persisting new VTS authentication token");
-                if let Err(error) = persist_and_apply_vts_token(
-                    settings_manager.inner(),
-                    &state.vtube_studio.settings,
-                    tok,
-                )
-                .await
-                {
-                    state.vtube_studio.disconnect().await;
-                    emit_vts_runtime_status(&app_handle, state.inner());
-                    return Err(error);
-                }
+        Ok(success) => {
+            let manager = settings_manager.inner().clone();
+            let report = state
+                .vtube_studio
+                .commit_connection_success(success, move |token| async move {
+                    persist_vts_token(&manager, token).await
+                })
+                .await;
+
+            if report.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
+            }
+
+            emit_vts_runtime_status(&app_handle, state.inner());
+
+            if let Some(error) = report.persist_error() {
+                return Err(error.to_string());
+            }
+
+            if report.is_live() {
+                Ok("Подключено к VTube Studio".to_string())
+            } else {
+                // Сокет не установлен: соединение отменили во время попытки.
+                Err(SUPERSEDED_CONNECTION_MESSAGE.to_string())
+            }
+        }
+        Err(failure) => {
+            if failure.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
             }
             emit_vts_runtime_status(&app_handle, state.inner());
-            Ok("Подключено к VTube Studio".to_string())
-        }
-        Err(e) => {
-            emit_vts_runtime_status(&app_handle, state.inner());
-            Err(e)
+            Err(failure
+                .message()
+                .unwrap_or("VTube Studio connection failed")
+                .to_string())
         }
     }
 }
@@ -733,27 +752,40 @@ pub async fn restart_vtube_studio(
         .await;
 
     match result {
-        Ok(new_token) => {
-            if let Some(tok) = new_token {
-                info!("Persisting new VTS authentication token");
-                if let Err(error) = persist_and_apply_vts_token(
-                    settings_manager.inner(),
-                    &state.vtube_studio.settings,
-                    tok,
-                )
-                .await
-                {
-                    state.vtube_studio.disconnect().await;
-                    emit_vts_runtime_status(&app_handle, state.inner());
-                    return Err(error);
-                }
+        Ok(success) => {
+            let manager = settings_manager.inner().clone();
+            let report = state
+                .vtube_studio
+                .commit_connection_success(success, move |token| async move {
+                    persist_vts_token(&manager, token).await
+                })
+                .await;
+
+            if report.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
+            }
+
+            emit_vts_runtime_status(&app_handle, state.inner());
+
+            if let Some(error) = report.persist_error() {
+                return Err(error.to_string());
+            }
+
+            if report.is_live() {
+                Ok("Restarted VTube Studio".to_string())
+            } else {
+                Err(SUPERSEDED_CONNECTION_MESSAGE.to_string())
+            }
+        }
+        Err(failure) => {
+            if failure.is_superseded() {
+                return Err(SUPERSEDED_CONNECTION_MESSAGE.to_string());
             }
             emit_vts_runtime_status(&app_handle, state.inner());
-            Ok("Restarted VTube Studio".to_string())
-        }
-        Err(e) => {
-            emit_vts_runtime_status(&app_handle, state.inner());
-            Err(e)
+            Err(failure
+                .message()
+                .unwrap_or("VTube Studio connection failed")
+                .to_string())
         }
     }
 }
@@ -953,7 +985,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vts_token_persist_failure_preserves_runtime_token() {
+    fn vts_token_persist_failure_reports_error() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -966,26 +998,18 @@ mod tests {
         let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
 
-        let runtime_settings = tokio::sync::RwLock::new(VTubeStudioSettings {
-            token: Some("old-token".to_string()),
-            ..VTubeStudioSettings::default()
-        });
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let result = runtime.block_on(persist_and_apply_vts_token(
-            &manager,
-            &runtime_settings,
-            "new-token".to_string(),
-        ));
+        let result = runtime.block_on(persist_vts_token(&manager, "new-token".to_string()));
 
-        assert!(result.is_err());
-        assert_eq!(
-            runtime.block_on(async { runtime_settings.read().await.token.clone() }),
-            Some("old-token".to_string())
+        assert!(result.is_err(), "missing config dir must fail persistence");
+        assert!(
+            manager.get_vtube_studio_settings().token.is_none(),
+            "failed persist must not update the manager state"
         );
     }
 
     #[test]
-    fn vts_token_commit_updates_persistence_before_runtime() {
+    fn vts_token_persist_writes_token_to_disk() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -996,23 +1020,14 @@ mod tests {
             unique
         ));
         let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
-        let runtime_settings = tokio::sync::RwLock::new(VTubeStudioSettings::default());
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime
-            .block_on(persist_and_apply_vts_token(
-                &manager,
-                &runtime_settings,
-                "new-token".to_string(),
-            ))
+            .block_on(persist_vts_token(&manager, "new-token".to_string()))
             .unwrap();
 
         assert_eq!(
             manager.get_vtube_studio_settings().token,
-            Some("new-token".to_string())
-        );
-        assert_eq!(
-            runtime.block_on(async { runtime_settings.read().await.token.clone() }),
             Some("new-token".to_string())
         );
         let disk: crate::config::AppSettings =

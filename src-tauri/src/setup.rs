@@ -1275,43 +1275,51 @@ fn init_vtube_studio(app_state: &AppState, app_handle: AppHandle) {
         let _ = app_handle_clone.emit("vtube-studio-status-changed", &status);
 
         match result {
-            Ok(new_token) => {
+            Ok(success) => {
                 info!("VTube Studio: autostart connected successfully");
                 // persist-first: новый токен сначала сохраняется на диск и только
-                // после успешной записи публикуется в runtime-настройках. Ошибка
-                // сохранения оставляет runtime со старым токеном — то же
-                // поведение, что у ручного подключения.
-                if let Some(ref tok) = new_token {
-                    let persisted = match app_handle_clone.try_state::<SettingsManager>() {
-                        Some(mgr) => {
-                            let inner = mgr.inner().clone();
-                            let tok_clone = tok.clone();
-                            crate::commands::persist_blocking(&inner, move |m| {
-                                let mut vts = m.get_vtube_studio_settings();
-                                vts.token = Some(tok_clone);
-                                m.set_vtube_studio_settings(&vts)
-                            })
-                            .await
+                // после успешной записи публикуется в runtime-настройках. Коммит
+                // отбрасывается, если попытку вытеснили новый connect/disconnect.
+                let persist_handle = app_handle_clone.clone();
+                let report = app_state_clone
+                    .vtube_studio
+                    .commit_connection_success(success, move |token| {
+                        let handle = persist_handle;
+                        async move {
+                            match handle.try_state::<SettingsManager>() {
+                                Some(mgr) => {
+                                    let inner = mgr.inner().clone();
+                                    crate::commands::persist_blocking(&inner, move |m| {
+                                        let mut vts = m.get_vtube_studio_settings();
+                                        vts.token = Some(token);
+                                        m.set_vtube_studio_settings(&vts)
+                                    })
+                                    .await
+                                }
+                                None => Err("SettingsManager not available".to_string()),
+                            }
                         }
-                        None => Err("SettingsManager not available".to_string()),
-                    };
+                    })
+                    .await;
 
-                    match persisted {
-                        Ok(()) => {
-                            app_state_clone.vtube_studio.settings.write().await.token =
-                                Some(tok.clone());
-                        }
-                        Err(error) => {
-                            warn!(
-                                error = %error,
-                                "VTube Studio: failed to persist autostart token"
-                            );
-                        }
-                    }
+                if report.is_superseded() {
+                    info!("VTube Studio: autostart attempt superseded; token not published");
+                } else if let Some(error) = report.persist_error() {
+                    warn!(
+                        error = %error,
+                        "VTube Studio: failed to persist autostart token"
+                    );
                 }
             }
-            Err(e) => {
-                info!(error = %e, "VTube Studio: autostart connection failed (non-fatal)");
+            Err(failure) => {
+                if failure.is_superseded() {
+                    info!("VTube Studio: autostart attempt superseded (non-fatal)");
+                } else {
+                    info!(
+                        error = failure.message().unwrap_or("unknown error"),
+                        "VTube Studio: autostart connection failed (non-fatal)"
+                    );
+                }
             }
         }
     });

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -362,6 +363,121 @@ pub enum ConnectOrigin {
     Autostart,
 }
 
+/// Маркер конкретной попытки подключения. Возвращается вызывающей стороне
+/// вместе с результатом, чтобы та могла отличить актуальный результат от
+/// вытесненного (`connect`/`test_connection`/typing-reconnect/`disconnect`
+/// увеличивают generation). Не сериализуется и не покидает backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionAttempt(u64);
+
+impl ConnectionAttempt {
+    fn generation(self) -> u64 {
+        self.0
+    }
+}
+
+/// Успешный итог сетевой фазы попытки.
+#[derive(Debug)]
+pub struct ConnectionSuccess {
+    token: Option<String>,
+    live: bool,
+    attempt: ConnectionAttempt,
+}
+
+/// Провал сетевой фазы попытки.
+#[derive(Debug)]
+pub struct ConnectionFailure {
+    superseded: bool,
+    message: Option<String>,
+}
+
+impl ConnectionFailure {
+    fn failed(message: String) -> Self {
+        Self {
+            superseded: false,
+            message: Some(message),
+        }
+    }
+
+    fn superseded() -> Self {
+        Self {
+            superseded: true,
+            message: None,
+        }
+    }
+
+    /// Попытку вытеснили более новым connect/disconnect/reconnect. Это не
+    /// ошибка текущей сессии: состояние, токен и UI трогать нельзя.
+    pub fn is_superseded(&self) -> bool {
+        self.superseded
+    }
+
+    /// Сообщение об ошибке актуальной попытки (`None` для вытесненной).
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+}
+
+/// Итог применения успешного результата попытки к токену и состоянию.
+#[derive(Debug)]
+pub struct ConnectionReport {
+    live: bool,
+    superseded: bool,
+    persist_error: Option<String>,
+}
+
+impl ConnectionReport {
+    fn live(live: bool) -> Self {
+        Self {
+            live,
+            superseded: false,
+            persist_error: None,
+        }
+    }
+
+    fn superseded() -> Self {
+        Self {
+            live: false,
+            superseded: true,
+            persist_error: None,
+        }
+    }
+
+    fn persist_failed(error: String) -> Self {
+        Self {
+            live: false,
+            superseded: false,
+            persist_error: Some(error),
+        }
+    }
+
+    /// Живая сессия установлена и результат не вытеснен.
+    pub fn is_live(&self) -> bool {
+        self.live && !self.superseded
+    }
+
+    /// Попытку вытеснили: live-состояние и токен публиковать нельзя.
+    pub fn is_superseded(&self) -> bool {
+        self.superseded
+    }
+
+    /// Запись токена на диск не удалась; соединение этой попытки уже снято.
+    pub fn persist_error(&self) -> Option<&str> {
+        self.persist_error.as_deref()
+    }
+}
+
+/// Решение об установке аутентифицированного сокета под `inner`-локом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallDecision {
+    Install,
+    /// Попытку вытеснили более новым connect/disconnect/reconnect.
+    Superseded,
+    /// Сокет намеренно не устанавливается: соединение больше не нужно
+    /// (standalone-проверка auth при `desired_running == false`).
+    AuthOnly,
+}
+
 pub struct VTubeStudioService {
     pub settings: Arc<tokio::sync::RwLock<VTubeStudioSettings>>,
     inner: Arc<tokio::sync::Mutex<InnerState>>,
@@ -377,6 +493,14 @@ pub struct VTubeStudioService {
     /// попытку, вытесненную более новым connect/disconnect. Сетевые `.await`
     /// выполняются без удержания `inner`.
     connection_attempt: AtomicU64,
+    /// Сериализует коммиты токенов между собой.
+    token_commit: tokio::sync::Mutex<()>,
+    /// Линеаризует инвалидацию попытки (`begin_connection_attempt`) и durable-
+    /// коммит токена. Инвалидация берёт write-lock, коммит — read-lock на всё
+    /// время записи на диск: попытку нельзя вытеснить между проверкой
+    /// актуальности и фактической записью, поэтому устаревший токен не может
+    /// попасть на диск после более нового.
+    attempt_gate: tokio::sync::RwLock<()>,
     /// Generation decay-таймера ошибки ручного подключения. Инкремент в начале
     /// `connect()`/`disconnect()` и при вооружении таймера гасит устаревшие таймеры.
     error_decay_generation: Arc<AtomicU64>,
@@ -412,6 +536,8 @@ impl VTubeStudioService {
             item_transition: ItemTransitionState::new(),
             session: AtomicU64::new(0),
             connection_attempt: AtomicU64::new(0),
+            token_commit: tokio::sync::Mutex::new(()),
+            attempt_gate: tokio::sync::RwLock::new(()),
             error_decay_generation: Arc::new(AtomicU64::new(0)),
             error_decay_delay: parking_lot::Mutex::new(ERROR_DECAY_DELAY),
             app_handle: parking_lot::Mutex::new(None),
@@ -443,22 +569,65 @@ impl VTubeStudioService {
     }
 
     /// Начинает новую попытку подключения, вытесняя все предыдущие.
-    fn begin_connection_attempt(&self) -> u64 {
-        self.connection_attempt.fetch_add(1, Ordering::SeqCst) + 1
+    ///
+    /// Write-lock `attempt_gate` — точка линеаризации с durable-коммитом токена:
+    /// инвалидация ждёт завершения записи токена, а коммит под read-lock не
+    /// может стать устаревшим посреди записи на диск.
+    async fn begin_connection_attempt(&self) -> ConnectionAttempt {
+        let _gate = self.attempt_gate.write().await;
+        ConnectionAttempt(self.connection_attempt.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
     /// Попытка всё ещё актуальна (не вытеснена новым connect/disconnect)?
-    fn is_current_connection_attempt(&self, attempt: u64) -> bool {
-        self.connection_attempt.load(Ordering::SeqCst) == attempt
+    fn is_current_attempt(&self, attempt: ConnectionAttempt) -> bool {
+        self.connection_attempt.load(Ordering::SeqCst) == attempt.generation()
     }
 
-    /// Можно ли устанавливать сокет очередной попытки. Вызывать под `inner`-локом:
+    /// Решение об установке сокета очередной попытки. Вызывать под `inner`-локом:
     /// проверка обязана быть атомарной с установкой actor, иначе `disconnect()`
     /// или более новый `connect()` успеют выполнить teardown между проверкой и
     /// записью сокета. `is_desired_running()` дополнительно отсекает сокет,
-    /// пришедший после того, как соединение уже стало ненужным.
-    fn can_install_connection_locked(&self, attempt: u64) -> bool {
-        self.is_current_connection_attempt(attempt) && self.is_desired_running()
+    /// пришедший после того, как соединение уже стало ненужным, но оставляет
+    /// возможность standalone-проверки auth без установки actor-а.
+    fn install_decision_locked(&self, attempt: ConnectionAttempt) -> InstallDecision {
+        if !self.is_current_attempt(attempt) {
+            InstallDecision::Superseded
+        } else if !self.is_desired_running() {
+            InstallDecision::AuthOnly
+        } else {
+            InstallDecision::Install
+        }
+    }
+
+    /// Фиксирует провал сетевой фазы, только если попытка ещё актуальна.
+    /// Вытесненная ошибка не меняет auth/status и не вооружает decay-таймер.
+    ///
+    /// Проверка актуальности и публикация Error/auth=false выполняются под тем
+    /// же read-gate `attempt_gate`, что и durable-коммит: новая попытка не может
+    /// начаться между проверкой и записью (её `begin_connection_attempt` берёт
+    /// write-gate), поэтому устаревшая ошибка не перетрёт более новую сессию.
+    /// Сетевых await-ов внутри нет — только короткая мутация.
+    async fn record_connection_failure(
+        &self,
+        attempt: ConnectionAttempt,
+        error: String,
+        origin: Option<ConnectOrigin>,
+    ) -> ConnectionFailure {
+        let _gate = self.attempt_gate.read().await;
+        if !self.is_current_attempt(attempt) {
+            debug!(
+                attempt = attempt.generation(),
+                "VTS attempt failure superseded; connection state untouched"
+            );
+            return ConnectionFailure::superseded();
+        }
+
+        self.is_authenticated.store(false, Ordering::SeqCst);
+        self.set_connection_status(VTubeStudioConnectionStatus::Error);
+        if origin == Some(ConnectOrigin::Manual) {
+            self.arm_error_decay();
+        }
+        ConnectionFailure::failed(error)
     }
 
     pub fn set_connection_status(&self, status: VTubeStudioConnectionStatus) {
@@ -580,7 +749,37 @@ impl VTubeStudioService {
                 None => return Err("VTube Studio WebSocket is not available.".to_string()),
             }
         };
+        self.actor_request_with_sender(
+            &sender,
+            Some(my_generation),
+            expected_msg_type,
+            build_req,
+            request_timeout,
+        )
+        .await
+    }
 
+    /// `mpsc::Sender` текущего connection-actor-а (`Err` — соединения нет).
+    /// Нужен teardown-у: pinned sender адресует конкретную сессию, поэтому
+    /// поздние best-effort запросы не уйдут в более новый actor.
+    async fn current_actor_sender(&self) -> Result<mpsc::Sender<ActorRequest>, String> {
+        let inner = self.inner.lock().await;
+        match inner.actor.as_ref() {
+            Some(h) => Ok(h.sender.clone()),
+            None => Err("VTube Studio WebSocket is not available.".to_string()),
+        }
+    }
+
+    /// Отправка запроса через конкретный actor-sender (сессия пиннится sender-ом).
+    /// `generation` используется только для диагностических логов.
+    async fn actor_request_with_sender(
+        &self,
+        sender: &mpsc::Sender<ActorRequest>,
+        generation: Option<u64>,
+        expected_msg_type: &str,
+        build_req: impl FnOnce(&str) -> VtsRequest,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
         let request_id = self.next_id();
         let req = build_req(&request_id);
         let json = serde_json::to_string(&req).map_err(|e| e.to_string())?;
@@ -603,7 +802,7 @@ impl VTubeStudioService {
         match timeout(request_timeout, rx).await {
             Ok(Ok(value)) => value,
             Ok(Err(_)) => {
-                debug!(expected_msg_type, %my_generation, "VTS actor dropped reply");
+                debug!(expected_msg_type, ?generation, "VTS actor dropped reply");
                 Err("VTube Studio request was cancelled.".to_string())
             }
             Err(_) => {
@@ -611,7 +810,7 @@ impl VTubeStudioService {
                 // или при позднем ответе. Actor НЕ инвалидируем.
                 debug!(
                     expected_msg_type,
-                    %request_id, %my_generation, "VTS response timed out"
+                    %request_id, ?generation, "VTS response timed out"
                 );
                 Err("Response timed out".to_string())
             }
@@ -825,12 +1024,22 @@ impl VTubeStudioService {
         host: &str,
         port: u16,
         stored_token: Option<&str>,
-    ) -> Result<Option<String>, String> {
-        let attempt = self.begin_connection_attempt();
+    ) -> Result<ConnectionSuccess, ConnectionFailure> {
+        let attempt = self.begin_connection_attempt().await;
 
         // Teardown — под коротким локом; сетевые операции ниже идут без `inner`,
         // чтобы не блокировать disconnect()/heartbeat/actor на время connect.
+        // Read-gate + перепроверка: вытеснённый teardown не имеет права снести
+        // actor более новой попытки.
         {
+            let _gate = self.attempt_gate.read().await;
+            if !self.is_current_attempt(attempt) {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS test_connection superseded before teardown"
+                );
+                return Err(ConnectionFailure::superseded());
+            }
             let mut inner = self.inner.lock().await;
             self.stop_typing_keepalive_locked(&mut inner);
             self.stop_heartbeat_locked(&mut inner);
@@ -840,55 +1049,61 @@ impl VTubeStudioService {
 
         let mut ws = match connect_ws(host, port).await {
             Ok(ws) => ws,
-            Err(e) => {
-                if self.is_current_connection_attempt(attempt) {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(self.record_connection_failure(attempt, e, None).await),
         };
 
         let new_token = match perform_authentication(&mut ws, self.next_id(), stored_token).await {
             Ok(token) => token,
-            Err(e) => {
-                if self.is_current_connection_attempt(attempt) {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(self.record_connection_failure(attempt, e, None).await),
         };
 
         if let Some(ref token) = new_token {
             ws = match connect_and_auth_fresh(host, port, token).await {
                 Ok(fresh_ws) => fresh_ws,
-                Err(e) => {
-                    if self.is_current_connection_attempt(attempt) {
-                        self.is_authenticated.store(false, Ordering::SeqCst);
-                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    }
-                    return Err(e);
-                }
+                Err(e) => return Err(self.record_connection_failure(attempt, e, None).await),
             };
         }
 
-        // Установка сокета: только если попытка не вытеснена более новым
-        // connect()/disconnect() за время сетевых операций.
+        // Установка сокета: проверка актуальности и публикация Connected/auth
+        // атомарны под read-gate + `inner` — новая попытка не может начаться
+        // между проверкой и установкой.
+        let _gate = self.attempt_gate.read().await;
         let mut inner = self.inner.lock().await;
-        if !self.can_install_connection_locked(attempt) {
-            debug!(
-                attempt,
-                "VTS test_connection superseded; discarding authenticated socket"
-            );
-            return Ok(new_token);
+        match self.install_decision_locked(attempt) {
+            InstallDecision::Superseded => {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS test_connection superseded; discarding authenticated socket"
+                );
+                Err(ConnectionFailure::superseded())
+            }
+            InstallDecision::AuthOnly => {
+                // Standalone-проверка: auth подтверждён, но сокет намеренно
+                // не устанавливается (desired_running=false). Живую сессию не
+                // публикуем, токен сохранит вызывающий через commit.
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS test_connection verified auth without installing socket \
+                     (desired_running=false)"
+                );
+                Ok(ConnectionSuccess {
+                    token: new_token,
+                    live: false,
+                    attempt,
+                })
+            }
+            InstallDecision::Install => {
+                self.start_actor_locked(&mut inner, ws);
+                self.is_authenticated.store(true, Ordering::SeqCst);
+                self.set_connection_status(VTubeStudioConnectionStatus::Connected);
+                self.start_heartbeat_locked(&mut inner);
+                Ok(ConnectionSuccess {
+                    token: new_token,
+                    live: true,
+                    attempt,
+                })
+            }
         }
-
-        self.start_actor_locked(&mut inner, ws);
-        self.is_authenticated.store(true, Ordering::SeqCst);
-        self.set_connection_status(VTubeStudioConnectionStatus::Connected);
-        self.start_heartbeat_locked(&mut inner);
-        Ok(new_token)
     }
 
     pub async fn connect(
@@ -897,21 +1112,33 @@ impl VTubeStudioService {
         port: u16,
         stored_token: Option<&str>,
         origin: ConnectOrigin,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<ConnectionSuccess, ConnectionFailure> {
         // Новая попытка подключения гасит вооружённый decay-таймер прежней ошибки.
         self.error_decay_generation.fetch_add(1, Ordering::SeqCst);
         // Вытесняем более старые попытки подключения: их сокеты не должны
         // перетереть соединение, установленное этой попыткой (и наоборот).
-        let attempt = self.begin_connection_attempt();
-        self.set_desired_running(true);
-        self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
+        let attempt = self.begin_connection_attempt().await;
 
         let typing_action = { self.settings.read().await.typing_action.clone() };
 
-        // Teardown — под коротким локом; сетевые операции ниже идут без `inner`,
-        // иначе на всё время connect блокируются disconnect()/heartbeat/actor.
+        // Teardown и публикация Connecting — под одним коротким локом: иначе
+        // вытеснённый teardown мог бы перетереть статус более новой попытки.
+        // Read-gate + перепроверка делают проверку актуальности и teardown
+        // атомарными относительно начала новой попытки. Сетевые операции ниже
+        // идут без `inner`, иначе на всё время connect блокируются
+        // disconnect()/heartbeat/actor.
         {
+            let _gate = self.attempt_gate.read().await;
+            if !self.is_current_attempt(attempt) {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS connect superseded before teardown"
+                );
+                return Err(ConnectionFailure::superseded());
+            }
             let mut inner = self.inner.lock().await;
+            self.set_desired_running(true);
+            self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
             self.stop_typing_keepalive_locked(&mut inner);
             self.stop_heartbeat_locked(&mut inner);
             self.stop_actor_locked(&mut inner);
@@ -927,14 +1154,9 @@ impl VTubeStudioService {
                 // должен дать красный статус в titlebar (ROADMAP-074); сброс
                 // происходит только при явном disconnect() (или decay-таймере
                 // для ручной ошибки).
-                if self.is_current_connection_attempt(attempt) {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    if origin == ConnectOrigin::Manual {
-                        self.arm_error_decay();
-                    }
-                }
-                return Err(e);
+                return Err(self
+                    .record_connection_failure(attempt, e, Some(origin))
+                    .await);
             }
         };
 
@@ -942,14 +1164,9 @@ impl VTubeStudioService {
         let new_token = match auth_result {
             Ok(token) => token,
             Err(e) => {
-                if self.is_current_connection_attempt(attempt) {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    if origin == ConnectOrigin::Manual {
-                        self.arm_error_decay();
-                    }
-                }
-                return Err(e);
+                return Err(self
+                    .record_connection_failure(attempt, e, Some(origin))
+                    .await);
             }
         };
 
@@ -957,28 +1174,43 @@ impl VTubeStudioService {
             ws = match connect_and_auth_fresh(host, port, token).await {
                 Ok(fresh_ws) => fresh_ws,
                 Err(e) => {
-                    if self.is_current_connection_attempt(attempt) {
-                        self.is_authenticated.store(false, Ordering::SeqCst);
-                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                        if origin == ConnectOrigin::Manual {
-                            self.arm_error_decay();
-                        }
-                    }
-                    return Err(e);
+                    return Err(self
+                        .record_connection_failure(attempt, e, Some(origin))
+                        .await);
                 }
             };
         }
 
-        // Handoff аутентифицированного сокета в connection-actor. Проверка под
-        // локом: за время сетевых операций попытку могли вытеснить новый
-        // connect() или disconnect() — тогда сокет просто дропается.
+        // Handoff аутентифицированного сокета в connection-actor. Read-gate +
+        // `inner` держатся на всей короткой публикации: проверку актуальности,
+        // установку actor-а, auth=true и статус невозможно разделить с началом
+        // новой попытки. За время сетевых операций попытку могли вытеснить
+        // новый connect() или disconnect() — тогда сокет просто дропается, а
+        // вызывающий получает Superseded вместо ложного успеха.
+        let gate = self.attempt_gate.read().await;
         let mut inner = self.inner.lock().await;
-        if !self.can_install_connection_locked(attempt) {
-            debug!(
-                attempt,
-                "VTS connect superseded; discarding authenticated socket"
-            );
-            return Ok(new_token);
+        match self.install_decision_locked(attempt) {
+            InstallDecision::Superseded => {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS connect superseded; discarding authenticated socket"
+                );
+                return Err(ConnectionFailure::superseded());
+            }
+            InstallDecision::AuthOnly => {
+                // Соединение уже не нужно (desired_running=false): сокет не
+                // устанавливаем, живой сессии не публикуем.
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS connect not installed (desired_running=false)"
+                );
+                return Ok(ConnectionSuccess {
+                    token: new_token,
+                    live: false,
+                    attempt,
+                });
+            }
+            InstallDecision::Install => {}
         }
         self.start_actor_locked(&mut inner, ws);
         self.is_authenticated.store(true, Ordering::SeqCst);
@@ -1004,23 +1236,147 @@ impl VTubeStudioService {
 
         // item-refresh (если нужен) идёт через actor: освобождаем `inner`, чтобы
         // actor-задача могла отвечать (actor сам не блокируется на inner, но мы
-        // не хотим держать лок во время сетевого запроса).
+        // не хотим держать лок во время сетевого запроса). Read-gate тоже
+        // отпускаем: сетевой await не должен блокировать начало новой попытки.
         if let Some(file_name) = item_file_name {
             let session = self.read_session();
             drop(inner);
+            drop(gate);
             let (resolved, status) = self.do_item_refresh_with_desired(&file_name, session).await;
+
+            // Публикация item-состояния — снова короткая мутация под read-gate:
+            // если попытку вытеснили за время refresh, ничего не применяем.
+            let _gate = self.attempt_gate.read().await;
+            if !self.is_current_attempt(attempt) {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS connect superseded during item refresh; discarding stale item state"
+                );
+                return Err(ConnectionFailure::superseded());
+            }
+            let mut inner = self.inner.lock().await;
             if self.read_session() == session {
-                let mut inner = self.inner.lock().await;
                 inner.resolved_item = resolved;
                 *self.item_status.lock() = status;
-                self.start_heartbeat_locked(&mut inner);
             }
-            return Ok(new_token);
+            self.start_heartbeat_locked(&mut inner);
+            return Ok(ConnectionSuccess {
+                token: new_token,
+                live: true,
+                attempt,
+            });
         }
 
         self.start_heartbeat_locked(&mut inner);
 
-        Ok(new_token)
+        Ok(ConnectionSuccess {
+            token: new_token,
+            live: true,
+            attempt,
+        })
+    }
+
+    /// Применяет успешный результат попытки: сохраняет выданный токен через
+    /// `persist_token` (диск) и публикует его в runtime-настройках, но только
+    /// пока попытка остаётся актуальной.
+    ///
+    /// Коммиты сериализованы: устаревший результат не может записать токен
+    /// после более нового. Если запись на диск не удалась у актуальной попытки,
+    /// снимается только её соединение (scoped teardown), более новая сессия не
+    /// затрагивается.
+    ///
+    /// Durable-работа выполняется в отдельной задаче, которая владеет
+    /// attempt-gate (read) до фактического завершения записи. Поэтому отмена
+    /// будущего вызывающего (drop Tauri-команды/иное) не снимает fence и не
+    /// оставляет «оторванную» запись: `spawn_blocking` внутри `persist_token`
+    /// доживает до конца только под удерживаемым gate, а инвалидация попытки
+    /// (write-gate) не может пройти, пока задача не завершится.
+    pub async fn commit_connection_success<F, Fut>(
+        self: &Arc<Self>,
+        success: ConnectionSuccess,
+        persist_token: F,
+    ) -> ConnectionReport
+    where
+        F: FnOnce(String) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let service = Arc::clone(self);
+        let commit = tokio::spawn(async move {
+            service
+                .commit_connection_success_scoped(success, persist_token)
+                .await
+        });
+
+        match commit.await {
+            Ok(report) => report,
+            Err(error) => {
+                // Задача не содержит паник по построению; при аварии коммит
+                // нельзя считать успешным.
+                warn!(error = %error, "VTS token commit task failed");
+                ConnectionReport::superseded()
+            }
+        }
+    }
+
+    async fn commit_connection_success_scoped<F, Fut>(
+        &self,
+        success: ConnectionSuccess,
+        persist_token: F,
+    ) -> ConnectionReport
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        let attempt = success.attempt;
+
+        // Коммит под сериализующим локом (порядок коммитов) и read-gate
+        // (инвалидация попытки невозможна): проверка актуальности, durable-запись
+        // на диск и применение runtime-настройки образуют одну точку
+        // линеаризации с `begin_connection_attempt`/`discard_attempt_connection`.
+        let serialized = self.token_commit.lock().await;
+        let gate = self.attempt_gate.read().await;
+
+        let Some(token) = success.token.clone() else {
+            // Нового токена нет — состояние уже установлено сервисом.
+            return if self.is_current_attempt(attempt) {
+                ConnectionReport::live(success.live)
+            } else {
+                ConnectionReport::superseded()
+            };
+        };
+
+        if !self.is_current_attempt(attempt) {
+            debug!(
+                attempt = attempt.generation(),
+                "VTS token commit skipped: attempt superseded"
+            );
+            return ConnectionReport::superseded();
+        }
+
+        if let Err(error) = persist_token(token.clone()).await {
+            // Сериализующий и attempt-локи не удерживаем через scoped teardown:
+            // discard сам берёт write-gate и CAS-ит generation.
+            drop(gate);
+            drop(serialized);
+            if self.discard_attempt_connection(attempt).await {
+                warn!(error = %error, "VTS token persist failed; connection discarded");
+                return ConnectionReport::persist_failed(error);
+            }
+            debug!(
+                attempt = attempt.generation(),
+                "VTS token commit failure ignored: attempt superseded"
+            );
+            return ConnectionReport::superseded();
+        }
+
+        // Инвалидация заблокирована read-gate, поэтому попытка всё ещё
+        // актуальна: применяем runtime-токен и отпускаем gate.
+        {
+            let mut settings = self.settings.write().await;
+            settings.token = Some(token);
+        }
+        drop(gate);
+        ConnectionReport::live(success.live)
     }
 
     pub async fn set_typing(
@@ -1077,15 +1433,21 @@ impl VTubeStudioService {
         // Если actor-а нет — поднимаем соединение (raw-socket auth → start_actor_locked).
         let needs_reconnect = { self.inner.lock().await.actor.is_none() };
         if needs_reconnect {
-            let attempt = self.begin_connection_attempt();
+            let attempt = self.begin_connection_attempt().await;
 
             // Подготовка — под коротким локом; connect/auth ниже идут без `inner`.
+            // Read-gate + перепроверка: не вытеснит ли нас новая попытка между
+            // проверкой и сменой статуса.
             {
-                let mut inner = self.inner.lock().await;
-                if !self.is_current_connection_attempt(attempt) {
-                    debug!(attempt, "VTS typing reconnect already superseded");
+                let _gate = self.attempt_gate.read().await;
+                if !self.is_current_attempt(attempt) {
+                    debug!(
+                        attempt = attempt.generation(),
+                        "VTS typing reconnect already superseded"
+                    );
                     return Ok(());
                 }
+                let mut inner = self.inner.lock().await;
                 self.stop_heartbeat_locked(&mut inner);
                 self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
             }
@@ -1093,11 +1455,19 @@ impl VTubeStudioService {
             let mut ws = match connect_ws(host, port).await {
                 Ok(ws) => ws,
                 Err(e) => {
-                    debug!(error = %e, "VTS connect for typing=true failed");
-                    if self.is_current_connection_attempt(attempt) {
-                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                        self.emit_status();
+                    // Вытеснённый провал не является ошибкой текущей сессии:
+                    // состояние принадлежит более новой попытке.
+                    let _gate = self.attempt_gate.read().await;
+                    if !self.is_current_attempt(attempt) {
+                        debug!(
+                            attempt = attempt.generation(),
+                            "VTS typing reconnect failure superseded"
+                        );
+                        return Ok(());
                     }
+                    debug!(error = %e, "VTS connect for typing=true failed");
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    self.emit_status();
                     return Err(e);
                 }
             };
@@ -1105,23 +1475,29 @@ impl VTubeStudioService {
             match perform_authentication(&mut ws, self.next_id(), Some(stored_token)).await {
                 Ok(_) => {}
                 Err(e) => {
-                    debug!(error = %e, "VTS auth for typing=true failed, discarding broken socket");
-                    if self.is_current_connection_attempt(attempt) {
-                        self.is_authenticated.store(false, Ordering::SeqCst);
-                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                        self.emit_status();
+                    let _gate = self.attempt_gate.read().await;
+                    if !self.is_current_attempt(attempt) {
+                        debug!(
+                            attempt = attempt.generation(),
+                            "VTS typing reconnect auth failure superseded"
+                        );
+                        return Ok(());
                     }
+                    debug!(error = %e, "VTS auth for typing=true failed, discarding broken socket");
+                    self.is_authenticated.store(false, Ordering::SeqCst);
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    self.emit_status();
                     return Err(e);
                 }
             }
 
-            // Установка сокета под локом с generation-проверкой: за время
-            // сетевых операций попытку могли вытеснить disconnect() или более
-            // новый connect() — тогда сокет дропается и typing не начинается.
+            // Установка сокета под read-gate + `inner`: проверка актуальности и
+            // публикация Connected/auth атомарны относительно новой попытки.
+            let _gate = self.attempt_gate.read().await;
             let mut inner = self.inner.lock().await;
-            if !self.can_install_connection_locked(attempt) {
+            if self.install_decision_locked(attempt) != InstallDecision::Install {
                 debug!(
-                    attempt,
+                    attempt = attempt.generation(),
                     "VTS typing reconnect superseded; discarding socket"
                 );
                 return Ok(());
@@ -1503,29 +1879,86 @@ impl VTubeStudioService {
     }
 
     pub async fn disconnect(&self) {
-        let typing_action = { self.settings.read().await.typing_action.clone() };
-
         // Явная остановка гасит вооружённый decay-таймер ошибки ручного подключения.
         self.error_decay_generation.fetch_add(1, Ordering::SeqCst);
         // Инвалидируем все in-flight попытки подключения: их сокет не должен
         // быть установлен уже после teardown.
-        self.begin_connection_attempt();
+        let scope = self.begin_connection_attempt().await;
+        // Teardown — со scope этой попытки: если за время best-effort отправок
+        // стартовала более новая попытка, её сессию не трогаем (последнее
+        // намерение пользователя побеждает).
+        if self.teardown_connection(scope).await {
+            info!("VTube Studio disconnected");
+        } else {
+            debug!("VTS disconnect superseded by a newer attempt; state untouched");
+        }
+    }
+
+    /// Снимает соединение, установленное попыткой `attempt`, только если она
+    /// всё ещё актуальна. Используется, когда аутентифицированный сокет нельзя
+    /// оставить (например, токен не записался): нельзя рвать более новую сессию,
+    /// но и нельзя оставлять соединение без сохранённого токена.
+    ///
+    /// Возвращает true, если teardown действительно выполнен этой попыткой.
+    async fn discard_attempt_connection(&self, attempt: ConnectionAttempt) -> bool {
+        let claimed = ConnectionAttempt(attempt.generation().wrapping_add(1));
+        // CAS под write-gate: не даёт вытеснить более новую попытку. Если
+        // generation уже ушёл вперёд, соединение принадлежит ей.
+        {
+            let _gate = self.attempt_gate.write().await;
+            if self
+                .connection_attempt
+                .compare_exchange(
+                    attempt.generation(),
+                    claimed.generation(),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_err()
+            {
+                debug!(
+                    attempt = attempt.generation(),
+                    "VTS discard skipped: attempt superseded"
+                );
+                return false;
+            }
+        }
+
+        self.error_decay_generation.fetch_add(1, Ordering::SeqCst);
+        self.teardown_connection(claimed).await
+    }
+
+    /// Снимает сессию, принадлежащую попытке `scope`. Перед каждым необратимым
+    /// шагом актуальность перепроверяется, а разрушительная часть выполняется
+    /// под read-gate `attempt_gate`: более новая попытка не может стартовать
+    /// между проверкой и остановкой actor-а (её `begin_connection_attempt`
+    /// требует write-gate). Best-effort отправки идут через sender, снятый в
+    /// начале teardown-а, поэтому даже при появлении новой сессии они не
+    /// попадут в новый actor.
+    async fn teardown_connection(&self, scope: ConnectionAttempt) -> bool {
+        let typing_action = { self.settings.read().await.typing_action.clone() };
+
+        if !self.is_current_attempt(scope) {
+            return false;
+        }
 
         // Собираем состояние под кратким локом, не держа его через await.
-        let (typing_active, resolved_item, has_actor) = {
+        let (typing_active, resolved_item, actor_sender) = {
             let inner = self.inner.lock().await;
             (
                 inner.typing_active,
                 inner.resolved_item.clone(),
-                inner.actor.is_some(),
+                inner.actor.as_ref().map(|handle| handle.sender.clone()),
             )
         };
 
-        self.set_desired_running(false);
+        if !self.is_current_attempt(scope) {
+            return false;
+        }
 
-        // Best-effort отправки ПЕРЕД teardown (через actor, без удержания inner).
+        // Best-effort отправки ПЕРЕД teardown, через sender текущей сессии.
         // Конкурентная heartbeat-failure может убить actor mid-send (Q7) — допустимо.
-        if has_actor {
+        if let Some(sender) = actor_sender.as_ref() {
             if typing_action.output_mode == VTubeStudioTypingMode::Item {
                 let applied = self.item_transition.read_applied();
                 let should_hide = matches!(
@@ -1535,7 +1968,7 @@ impl VTubeStudioService {
                 if should_hide {
                     if let Some(ref item) = resolved_item {
                         let start = Instant::now();
-                        if let Err(_e) = animate_item(self, item, false).await {
+                        if let Err(_e) = animate_item_on(self, sender, item, false).await {
                             warn!(
                                 mode = "Item",
                                 file_name = %item.file_name,
@@ -1556,11 +1989,13 @@ impl VTubeStudioService {
             } else if typing_active {
                 match typing_action.output_mode {
                     VTubeStudioTypingMode::Event => {
-                        let _ = inject_typing(self, &typing_action.parameter_name, 0.0).await;
+                        let _ = inject_typing_on(self, sender, &typing_action.parameter_name, 0.0)
+                            .await;
                     }
                     VTubeStudioTypingMode::Hotkeys => {
                         if !typing_action.stop_hotkey_id.is_empty() {
-                            let _ = trigger_hotkey(self, &typing_action.stop_hotkey_id).await;
+                            let _ = trigger_hotkey_on(self, sender, &typing_action.stop_hotkey_id)
+                                .await;
                         }
                     }
                     VTubeStudioTypingMode::Item => {}
@@ -1568,14 +2003,25 @@ impl VTubeStudioService {
             }
         }
 
+        // Разрушительная часть: под read-gate инвалидация невозможна, поэтому
+        // проверка актуальности и остановка actor-а атомарны с началом новой
+        // попытки.
+        let _gate = self.attempt_gate.read().await;
+        if !self.is_current_attempt(scope) {
+            return false;
+        }
+
         if typing_action.output_mode == VTubeStudioTypingMode::Item {
             self.invalidate_session();
             self.item_transition.reset();
         }
 
-        // Teardown: атомарно останавливаем actor/heartbeat/typing, инвалидируем состояние.
         {
             let mut inner = self.inner.lock().await;
+            if !self.is_current_attempt(scope) {
+                return false;
+            }
+            self.set_desired_running(false);
             self.stop_typing_keepalive_locked(&mut inner);
             self.stop_heartbeat_locked(&mut inner);
             self.stop_actor_locked(&mut inner);
@@ -1586,7 +2032,7 @@ impl VTubeStudioService {
             self.set_connection_status(VTubeStudioConnectionStatus::Disconnected);
             *self.item_status.lock() = VTubeStudioItemStatus::Inactive;
         }
-        info!("VTube Studio disconnected");
+        true
     }
 
     fn stop_typing_keepalive_locked(&self, inner: &mut InnerState) {
@@ -2370,9 +2816,22 @@ async fn inject_typing(
     parameter_name: &str,
     value: f64,
 ) -> Result<(), String> {
+    let sender = svc.current_actor_sender().await?;
+    inject_typing_on(svc, &sender, parameter_name, value).await
+}
+
+/// `inject_typing` через pinned sender конкретной сессии (teardown).
+async fn inject_typing_on(
+    svc: &VTubeStudioService,
+    sender: &mpsc::Sender<ActorRequest>,
+    parameter_name: &str,
+    value: f64,
+) -> Result<(), String> {
     let name = parameter_name.to_string();
     let _value = svc
-        .actor_request(
+        .actor_request_with_sender(
+            sender,
+            None,
             "InjectParameterDataResponse",
             |id| VtsRequest::inject_parameter_request(id, &name, value),
             REQUEST_TIMEOUT,
@@ -2385,9 +2844,21 @@ async fn inject_typing(
 }
 
 async fn trigger_hotkey(svc: &VTubeStudioService, hotkey_id: &str) -> Result<(), String> {
+    let sender = svc.current_actor_sender().await?;
+    trigger_hotkey_on(svc, &sender, hotkey_id).await
+}
+
+/// `trigger_hotkey` через pinned sender конкретной сессии (teardown).
+async fn trigger_hotkey_on(
+    svc: &VTubeStudioService,
+    sender: &mpsc::Sender<ActorRequest>,
+    hotkey_id: &str,
+) -> Result<(), String> {
     let id_param = hotkey_id.to_string();
     let _value = svc
-        .actor_request(
+        .actor_request_with_sender(
+            sender,
+            None,
             "HotkeyTriggerResponse",
             |id| VtsRequest::hotkey_trigger_request(id, &id_param),
             REQUEST_TIMEOUT,
@@ -2422,6 +2893,17 @@ async fn animate_item(
     resolved: &ResolvedItem,
     show: bool,
 ) -> Result<(), String> {
+    let sender = svc.current_actor_sender().await?;
+    animate_item_on(svc, &sender, resolved, show).await
+}
+
+/// `animate_item` через pinned sender конкретной сессии (teardown).
+async fn animate_item_on(
+    svc: &VTubeStudioService,
+    sender: &mpsc::Sender<ActorRequest>,
+    resolved: &ResolvedItem,
+    show: bool,
+) -> Result<(), String> {
     let (opacity, frame, play_state) = match (&resolved.kind, show) {
         (ItemKind::Animated, true) => (1.0, Some(0), Some(true)),
         (ItemKind::Animated, false) => (0.0, None, Some(false)),
@@ -2437,7 +2919,9 @@ async fn animate_item(
 
     let instance_id = resolved.instance_id.clone();
     let value = svc
-        .actor_request(
+        .actor_request_with_sender(
+            sender,
+            None,
             "ItemAnimationControlResponse",
             |id| {
                 VtsRequest::item_animation_control_request(
@@ -6538,5 +7022,714 @@ mod tests {
                 VTubeStudioConnectionStatus::Error
             );
         });
+    }
+
+    // ---------------------------------------------------------------------------
+    // Fencing regressions: stale results, durable token commit, teardown scope
+    // ---------------------------------------------------------------------------
+
+    /// Fake VTube Studio для детерминированных гонок connect. Первое соединение
+    /// придерживает ответ на AuthenticationTokenRequest до `release`, давая тесту
+    /// окно, в котором попытку можно вытеснить. `close_on_release` обрывает
+    /// соединение вместо ответа (stale-error сценарий).
+    struct FakeVts {
+        port: u16,
+        token_request_seen: Option<oneshot::Receiver<()>>,
+        release: Option<oneshot::Sender<()>>,
+        shutdown: CancellationToken,
+    }
+
+    impl FakeVts {
+        async fn wait_for_token_request(&mut self) {
+            let seen = self
+                .token_request_seen
+                .take()
+                .expect("fake VTS token-request gate already consumed");
+            timeout(Duration::from_secs(10), seen)
+                .await
+                .expect("connect did not request a token in time")
+                .expect("fake VTS token-request signal dropped");
+        }
+
+        fn release(&mut self) {
+            if let Some(tx) = self.release.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    impl Drop for FakeVts {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    async fn spawn_fake_vts(close_on_release: bool) -> FakeVts {
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let shutdown = CancellationToken::new();
+        let accept_shutdown = shutdown.clone();
+
+        let seen_tx = Arc::new(parking_lot::Mutex::new(Some(seen_tx)));
+        let release_rx = Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+        let mut first_connection = true;
+
+        tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    _ = accept_shutdown.cancelled() => break,
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((stream, _addr)) = accepted else {
+                    break;
+                };
+                let gated = first_connection;
+                first_connection = false;
+                let seen_tx = Arc::clone(&seen_tx);
+                let release_rx = Arc::clone(&release_rx);
+                let connection_shutdown = accept_shutdown.clone();
+
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
+                    loop {
+                        let incoming = tokio::select! {
+                            _ = connection_shutdown.cancelled() => break,
+                            incoming = ws.next() => incoming,
+                        };
+                        let Some(Ok(message)) = incoming else {
+                            break;
+                        };
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let Ok(request) = serde_json::from_str::<VtsRequest>(&text) else {
+                            continue;
+                        };
+                        let (message_type, data) = match request.message_type.as_str() {
+                            "AuthenticationTokenRequest" => {
+                                if gated {
+                                    if let Some(tx) = seen_tx.lock().take() {
+                                        let _ = tx.send(());
+                                    }
+                                    if let Some(wait) = release_rx.lock().await.take() {
+                                        let _ = wait.await;
+                                    }
+                                    if close_on_release {
+                                        return;
+                                    }
+                                }
+                                (
+                                    "AuthenticationTokenResponse",
+                                    serde_json::json!({ "authenticationToken": "fake-vts-token" }),
+                                )
+                            }
+                            "AuthenticationRequest" => (
+                                "AuthenticationResponse",
+                                serde_json::json!({ "authenticated": true, "reason": "" }),
+                            ),
+                            _ => continue,
+                        };
+                        let response = serde_json::json!({
+                            "apiName": "VTubeStudioPublicAPI",
+                            "apiVersion": "1.0",
+                            "requestID": request.request_id,
+                            "messageType": message_type,
+                            "data": data,
+                        });
+                        if ws.send(Message::Text(response.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        FakeVts {
+            port,
+            token_request_seen: Some(seen_rx),
+            release: Some(release_tx),
+            shutdown,
+        }
+    }
+
+    /// Actor-handle с живым receiver-ом: позволяет управлять ответами и
+    /// удерживать best-effort запросы teardown-а.
+    fn fake_actor_with_receiver(
+        capacity: usize,
+    ) -> (ConnectionActorHandle, mpsc::Receiver<ActorRequest>) {
+        let (sender, receiver) = mpsc::channel::<ActorRequest>(capacity);
+        let handle = ConnectionActorHandle {
+            sender,
+            cancel: CancellationToken::new(),
+            join: tokio::spawn(async {}),
+        };
+        (handle, receiver)
+    }
+
+    /// Успешный connect устанавливает живую сессию; токен коммитится в
+    /// runtime-настройки только после durable-записи.
+    #[tokio::test]
+    async fn connect_success_installs_live_session_and_commits_token() {
+        let mut server = spawn_fake_vts(false).await;
+        let svc = Arc::new(VTubeStudioService::new());
+
+        let connect_svc = Arc::clone(&svc);
+        let port = server.port;
+        let connect = tokio::spawn(async move {
+            connect_svc
+                .connect("127.0.0.1", port, None, ConnectOrigin::Manual)
+                .await
+        });
+
+        server.wait_for_token_request().await;
+        server.release();
+        let success = connect.await.unwrap().expect("connect must succeed");
+
+        assert!(success.live);
+        assert_eq!(success.token.as_deref(), Some("fake-vts-token"));
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected
+        );
+        assert!(svc.is_authenticated());
+        assert!(svc.inner.lock().await.actor.is_some());
+        assert!(svc.inner.lock().await.heartbeat_cancel.is_some());
+
+        let persisted = Arc::new(parking_lot::Mutex::new(None::<String>));
+        let persisted_for_commit = Arc::clone(&persisted);
+        let report = svc
+            .commit_connection_success(success, move |token| async move {
+                *persisted_for_commit.lock() = Some(token);
+                Ok(())
+            })
+            .await;
+
+        assert!(report.is_live());
+        assert!(!report.is_superseded());
+        assert!(report.persist_error().is_none());
+        assert_eq!(*persisted.lock(), Some("fake-vts-token".to_string()));
+        assert_eq!(
+            svc.settings.read().await.token.as_deref(),
+            Some("fake-vts-token")
+        );
+
+        svc.disconnect().await;
+    }
+
+    /// Устаревший успех не должен ни установить сокет, ни перетереть более
+    /// новую сессию, ни вернуть ложный успех.
+    #[tokio::test]
+    async fn stale_success_is_superseded_and_preserves_newer_session() {
+        let mut server = spawn_fake_vts(false).await;
+        let svc = Arc::new(VTubeStudioService::new());
+
+        let connect_svc = Arc::clone(&svc);
+        let port = server.port;
+        let connect = tokio::spawn(async move {
+            connect_svc
+                .connect("127.0.0.1", port, None, ConnectOrigin::Manual)
+                .await
+        });
+
+        server.wait_for_token_request().await;
+
+        // Более новая попытка уже установила свою сессию, пока старая ждёт сеть.
+        let newer_attempt = svc.begin_connection_attempt().await;
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.connection_generation = inner.connection_generation.wrapping_add(1);
+            inner.actor = Some(make_fake_actor_handle());
+        }
+
+        server.release();
+        let failure = connect
+            .await
+            .unwrap()
+            .expect_err("stale success must be reported as superseded");
+
+        assert!(failure.is_superseded());
+        assert!(failure.message().is_none());
+        assert!(
+            svc.is_current_attempt(newer_attempt),
+            "newer attempt must stay current"
+        );
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected,
+            "stale success must not change status"
+        );
+        assert!(
+            svc.is_authenticated(),
+            "stale success must not clear auth of newer session"
+        );
+        assert!(svc.is_desired_running());
+        assert!(
+            svc.inner.lock().await.actor.is_some(),
+            "stale success must not tear down newer actor"
+        );
+    }
+
+    /// Устаревшая ошибка не должна менять auth/status/actor текущей сессии.
+    #[tokio::test]
+    async fn stale_error_is_superseded_and_preserves_current_session() {
+        let mut server = spawn_fake_vts(true).await;
+        let svc = Arc::new(VTubeStudioService::new());
+
+        let connect_svc = Arc::clone(&svc);
+        let port = server.port;
+        let connect = tokio::spawn(async move {
+            connect_svc
+                .connect("127.0.0.1", port, None, ConnectOrigin::Manual)
+                .await
+        });
+
+        server.wait_for_token_request().await;
+
+        let newer_attempt = svc.begin_connection_attempt().await;
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.connection_generation = inner.connection_generation.wrapping_add(1);
+            inner.actor = Some(make_fake_actor_handle());
+        }
+
+        server.release();
+        let failure = connect
+            .await
+            .unwrap()
+            .expect_err("stale failure must be reported as superseded");
+
+        assert!(failure.is_superseded());
+        assert!(failure.message().is_none());
+        assert!(svc.is_current_attempt(newer_attempt));
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected,
+            "stale error must not overwrite status with Error"
+        );
+        assert!(
+            svc.is_authenticated(),
+            "stale error must not clear auth of current session"
+        );
+        assert!(svc.is_desired_running());
+        assert!(
+            svc.inner.lock().await.actor.is_some(),
+            "stale error must not tear down current actor"
+        );
+    }
+
+    /// Standalone-проверка auth при desired_running=false: токен получен и
+    /// коммитится, но actor не устанавливается и живая сессия не публикуется.
+    #[tokio::test]
+    async fn test_connection_without_desired_running_verifies_auth_without_actor() {
+        let mut server = spawn_fake_vts(false).await;
+        let svc = Arc::new(VTubeStudioService::new());
+        assert!(!svc.is_desired_running());
+
+        let test_svc = Arc::clone(&svc);
+        let port = server.port;
+        let test =
+            tokio::spawn(async move { test_svc.test_connection("127.0.0.1", port, None).await });
+
+        server.wait_for_token_request().await;
+        server.release();
+        let success = test.await.unwrap().expect("auth test must succeed");
+
+        assert!(!success.live, "no socket must be installed");
+        assert_eq!(success.token.as_deref(), Some("fake-vts-token"));
+        assert!(svc.inner.lock().await.actor.is_none());
+        assert!(!svc.is_authenticated());
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Disconnected
+        );
+        assert!(!svc.is_desired_running());
+
+        let persisted = Arc::new(parking_lot::Mutex::new(None::<String>));
+        let persisted_for_commit = Arc::clone(&persisted);
+        let report = svc
+            .commit_connection_success(success, move |token| async move {
+                *persisted_for_commit.lock() = Some(token);
+                Ok(())
+            })
+            .await;
+
+        assert!(!report.is_live(), "auth-only result must not report live");
+        assert!(!report.is_superseded());
+        assert!(report.persist_error().is_none());
+        assert_eq!(*persisted.lock(), Some("fake-vts-token".to_string()));
+        assert_eq!(
+            svc.settings.read().await.token.as_deref(),
+            Some("fake-vts-token")
+        );
+    }
+
+    /// Инвалидация попытки (disconnect/новый connect) не может пройти между
+    /// проверкой актуальности и durable-записью токена: запись и точка
+    /// линеаризации общие, поэтому устаревший токен не может лечь на диск
+    /// после более нового.
+    #[tokio::test]
+    async fn attempt_invalidation_cannot_interleave_with_durable_token_commit() {
+        let svc = Arc::new(VTubeStudioService::new());
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        let attempt = svc.begin_connection_attempt().await;
+
+        let order = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+        let (persist_started_tx, persist_started_rx) = oneshot::channel();
+        let (persist_release_tx, persist_release_rx) = oneshot::channel();
+
+        let commit_svc = Arc::clone(&svc);
+        let commit_order = Arc::clone(&order);
+        let commit = tokio::spawn(async move {
+            commit_svc
+                .commit_connection_success(
+                    ConnectionSuccess {
+                        token: Some("durable-token".to_string()),
+                        live: true,
+                        attempt,
+                    },
+                    move |_token| async move {
+                        commit_order.lock().push("persist:start");
+                        let _ = persist_started_tx.send(());
+                        let _ = persist_release_rx.await;
+                        commit_order.lock().push("persist:done");
+                        Ok(())
+                    },
+                )
+                .await
+        });
+
+        persist_started_rx.await.expect("persist must start");
+
+        let (invalidated_tx, mut invalidated_rx) = oneshot::channel();
+        let invalidation_svc = Arc::clone(&svc);
+        let invalidation_order = Arc::clone(&order);
+        let invalidation = tokio::spawn(async move {
+            invalidation_svc.begin_connection_attempt().await;
+            invalidation_order.lock().push("invalidate");
+            let _ = invalidated_tx.send(());
+        });
+
+        // Даём задаче инвалидации шанс дойти до write-gate: она обязана ждать
+        // завершения durable-записи.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            invalidated_rx.try_recv().is_err(),
+            "invalidation must block while the durable token commit is in flight"
+        );
+        assert_eq!(*order.lock(), ["persist:start"]);
+
+        persist_release_tx.send(()).unwrap();
+        let report = commit.await.unwrap();
+        assert!(report.is_live());
+        assert!(report.persist_error().is_none());
+
+        timeout(Duration::from_secs(10), invalidated_rx)
+            .await
+            .expect("invalidation must complete after the commit")
+            .unwrap();
+        invalidation.await.unwrap();
+
+        let steps = order.lock().clone();
+        assert_eq!(steps, ["persist:start", "persist:done", "invalidate"]);
+        assert!(!svc.is_current_attempt(attempt));
+        assert_eq!(
+            svc.settings.read().await.token.as_deref(),
+            Some("durable-token")
+        );
+    }
+
+    /// Уже вытесненная попытка не пишет ни диск, ни runtime-токен.
+    #[tokio::test]
+    async fn token_commit_skips_disk_and_runtime_for_superseded_attempt() {
+        let svc = Arc::new(VTubeStudioService::new());
+        svc.settings.write().await.token = Some("old-token".to_string());
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        let attempt = svc.begin_connection_attempt().await;
+        // Более новая попытка вытесняет предыдущую до начала коммита.
+        svc.begin_connection_attempt().await;
+
+        let persist_called = Arc::new(AtomicBool::new(false));
+        let persist_called_for_commit = Arc::clone(&persist_called);
+        let report = svc
+            .commit_connection_success(
+                ConnectionSuccess {
+                    token: Some("stale-token".to_string()),
+                    live: true,
+                    attempt,
+                },
+                move |_token| async move {
+                    persist_called_for_commit.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await;
+
+        assert!(report.is_superseded());
+        assert!(!report.is_live());
+        assert!(report.persist_error().is_none());
+        assert!(
+            !persist_called.load(Ordering::SeqCst),
+            "superseded attempt must not persist a token"
+        );
+        assert_eq!(
+            svc.settings.read().await.token.as_deref(),
+            Some("old-token")
+        );
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected
+        );
+        assert!(svc.is_authenticated());
+    }
+
+    /// Неудачная запись токена актуальной попытки снимает только её соединение.
+    #[tokio::test]
+    async fn token_persist_failure_discards_current_attempt_connection() {
+        let svc = Arc::new(VTubeStudioService::new());
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.actor = Some(make_fake_actor_handle());
+            inner.typing_active = true;
+        }
+        let attempt = svc.begin_connection_attempt().await;
+
+        let report = svc
+            .commit_connection_success(
+                ConnectionSuccess {
+                    token: Some("undurable-token".to_string()),
+                    live: true,
+                    attempt,
+                },
+                |_token| async move { Err("disk full".to_string()) },
+            )
+            .await;
+
+        assert!(!report.is_live());
+        assert!(!report.is_superseded());
+        assert_eq!(report.persist_error(), Some("disk full"));
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Disconnected
+        );
+        assert!(!svc.is_authenticated());
+        assert!(!svc.is_desired_running());
+        let inner = svc.inner.lock().await;
+        assert!(inner.actor.is_none());
+        assert!(!inner.typing_active);
+    }
+
+    /// Scoped-discard не имеет права трогать сессию более новой попытки.
+    #[tokio::test]
+    async fn discard_for_stale_attempt_keeps_newer_actor() {
+        let svc = VTubeStudioService::new();
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+
+        let stale_attempt = svc.begin_connection_attempt().await;
+        let (newer_actor, _newer_rx) = fake_actor_with_receiver(8);
+        let newer_sender = newer_actor.sender.clone();
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.actor = Some(newer_actor);
+        }
+        // Новая попытка вытесняет старую.
+        svc.begin_connection_attempt().await;
+
+        assert!(!svc.discard_attempt_connection(stale_attempt).await);
+
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected
+        );
+        assert!(svc.is_authenticated());
+        assert!(svc.is_desired_running());
+        let inner = svc.inner.lock().await;
+        let actor = inner.actor.as_ref().expect("newer actor must survive");
+        assert!(
+            actor.sender.same_channel(&newer_sender),
+            "newer actor must not be replaced"
+        );
+    }
+
+    /// Явный disconnect не должен останавливать/пересоздавать более новую
+    /// сессию, появившуюся за время best-effort отправок (await).
+    #[tokio::test]
+    async fn disconnect_teardown_does_not_touch_newer_actor_after_await() {
+        let svc = Arc::new(VTubeStudioService::new());
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        {
+            let mut s = svc.settings.write().await;
+            s.typing_action.output_mode = VTubeStudioTypingMode::Event;
+        }
+
+        let (old_actor, mut old_rx) = fake_actor_with_receiver(8);
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.connection_generation = 7;
+            inner.typing_active = true;
+            inner.actor = Some(old_actor);
+        }
+
+        // Держим best-effort inject=0.0 запрос, чтобы развести disconnect и
+        // появление новой сессии детерминированно.
+        let (inject_seen_tx, inject_seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let Some(request) = old_rx.recv().await else {
+                return;
+            };
+            let _ = inject_seen_tx.send(());
+            let _ = release_rx.await;
+            drop(request);
+        });
+
+        let disconnect_svc = Arc::clone(&svc);
+        let disconnect = tokio::spawn(async move {
+            disconnect_svc.disconnect().await;
+        });
+
+        inject_seen_rx
+            .await
+            .expect("disconnect must send best-effort inject");
+        assert!(
+            !disconnect.is_finished(),
+            "disconnect must still be waiting for the in-flight best-effort send"
+        );
+
+        // Пока disconnect висит на await, стартует более новая попытка и
+        // устанавливает собственную сессию.
+        let newer_attempt = svc.begin_connection_attempt().await;
+        let (newer_actor, _newer_rx) = fake_actor_with_receiver(8);
+        let newer_sender = newer_actor.sender.clone();
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.connection_generation = 8;
+            inner.actor = Some(newer_actor);
+        }
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+
+        release_tx.send(()).unwrap();
+        timeout(Duration::from_secs(10), disconnect)
+            .await
+            .expect("disconnect must finish")
+            .unwrap();
+
+        assert!(svc.is_current_attempt(newer_attempt));
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected,
+            "superseded disconnect must not report Disconnected"
+        );
+        assert!(
+            svc.is_authenticated(),
+            "superseded disconnect must not clear newer auth"
+        );
+        assert!(
+            svc.is_desired_running(),
+            "superseded disconnect must not clear newer desired_running"
+        );
+        let inner = svc.inner.lock().await;
+        let actor = inner.actor.as_ref().expect("newer actor must survive");
+        assert!(
+            actor.sender.same_channel(&newer_sender),
+            "superseded disconnect must not stop newer actor"
+        );
+    }
+
+    /// Вытеснённый connect не имеет права выполнить свой teardown (снести actor)
+    /// после await, за которым стартовала более новая попытка.
+    #[tokio::test]
+    async fn stale_connect_teardown_does_not_touch_newer_actor() {
+        let svc = Arc::new(VTubeStudioService::new());
+
+        // Держим settings-write, чтобы устаревший connect остановился между
+        // begin_connection_attempt и своим teardown-блоком.
+        let settings_guard = svc.settings.write().await;
+
+        let connect_svc = Arc::clone(&svc);
+        let connect = tokio::spawn(async move {
+            connect_svc
+                .connect("127.0.0.1", 9, None, ConnectOrigin::Manual)
+                .await
+        });
+
+        // Ждём, пока connect зарегистрирует свою попытку.
+        for _ in 0..64 {
+            if svc.connection_attempt.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            svc.connection_attempt.load(Ordering::SeqCst),
+            1,
+            "connect must have registered an attempt"
+        );
+
+        // Более новая попытка стартует и устанавливает свою сессию, пока
+        // устаревший connect ещё ждёт settings-лок.
+        let newer_attempt = svc.begin_connection_attempt().await;
+        svc.set_desired_running(true);
+        svc.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        svc.is_authenticated.store(true, Ordering::SeqCst);
+        let (newer_actor, _newer_rx) = fake_actor_with_receiver(8);
+        let newer_sender = newer_actor.sender.clone();
+        {
+            let mut inner = svc.inner.lock().await;
+            inner.connection_generation = inner.connection_generation.wrapping_add(1);
+            inner.actor = Some(newer_actor);
+        }
+        drop(settings_guard);
+
+        let failure = timeout(Duration::from_secs(10), connect)
+            .await
+            .expect("stale connect must finish")
+            .unwrap()
+            .expect_err("stale connect must not report success");
+        assert!(failure.is_superseded());
+
+        assert!(svc.is_current_attempt(newer_attempt));
+        assert_eq!(
+            svc.get_connection_status(),
+            VTubeStudioConnectionStatus::Connected,
+            "stale connect teardown must not overwrite newer status"
+        );
+        assert!(
+            svc.is_authenticated(),
+            "stale connect teardown must not clear newer auth"
+        );
+        assert!(svc.is_desired_running());
+        let inner = svc.inner.lock().await;
+        let actor = inner.actor.as_ref().expect("newer actor must survive");
+        assert!(
+            actor.sender.same_channel(&newer_sender),
+            "stale connect teardown must not stop newer actor"
+        );
     }
 }
