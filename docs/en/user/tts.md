@@ -67,7 +67,7 @@ Piper synthesizes speech inside TTSBard without a separate HTTP server.
 1. In **Settings → General → Folders**, click **Open** next to **Program data
    (audio cache and models)**. Create `models\piper` and put matching `name.onnx` and
    `name.onnx.json` voice files there.
-2. Restart TTSBard and open **TTS**.
+2. Open **TTS** and click **Refresh model list** in the Piper card.
 3. Show a hidden model through `⋯` if necessary.
 4. Select a **Piper** row and wait until ready.
 5. Speak a test phrase using **Voice only**.
@@ -109,12 +109,13 @@ Model packages are installed via the built-in catalog in **Settings → Models**
 - **Shtorm RU v2 Fast** — Russian voice cloning model from a reference audio clip,
   optimized for fast inference (INT8 quantization);
 - **Shtorm RU v2 Slow** — Russian voice cloning model with more expressive intonations;
-- **Kyutai English Clone** — English voice cloning model from a reference WAV;
-- **Bundled voice models** (such as Kyutai English with prepackaged voices like Alba
-  stored as safetensors embeddings).
+- **Kyutai English** — English voice cloning model from a reference WAV;
+- **xVibePocketTTS v0.1.0** — Russian voice cloning model from a reference WAV,
+  available for evaluation under the catalog license.
 
-Model files reside in `%LOCALAPPDATA%\ttsbard\models\pocket\<package-id>`
-(or `models\pocket\<package-id>` under the working directory). Each package
+Catalog downloads go into `models\pocket\<package-id>` under the current program
+data folder (by default `%LOCALAPPDATA%\ttsbard`). TTSBard also looks in
+`models\pocket` under the working directory. Each catalog package
 contains a `config.yaml` manifest, weights, a tokenizer (SentencePiece for
 Russian, JSON for English), and a set of ONNX graphs (`mimi_encoder`,
 `text_conditioner`, `flow_lm_main`, `flow_lm_flow`, `mimi_decoder`).
@@ -132,17 +133,26 @@ Russian, JSON for English), and a set of ONNX graphs (`mimi_encoder`,
      a dropdown menu will list the available voices. Select the desired voice
      without supplying an audio clip.
 
-### Reference Requirements and Model Peculiarities
+### Prepare a voice sample
 
-Cloned voice fidelity directly depends on the characteristics of the reference clip:
+Pocket TTS accepts WAV files from 0.05 to 12 seconds long. For voice cloning,
+**5–8 seconds** is usually enough.
 
-- **Duration:** 0.05 to 12 seconds (the 12s hard cap prevents ONNX memory overflow).
-  The recommended sweet spot is **5–8 seconds** of continuous speech.
-- **Content:** clean, coherent speech from a single speaker with natural intonation
-  and a **complete sentence** (avoid clipping mid-word, background music, background
-  talkers, or heavy room reverb).
-- **Sampling and quality:** use high-quality audio (24–48 kHz) without aggressively
-  low-passed high frequencies.
+1. **Choose a complete sentence with a single voice.** You can use a recording
+   or a clip of synthesized speech. Look for natural intonation and leave a
+   short pause after the last word. If the sentence is longer than 12 seconds,
+   choose a shorter one you can keep intact. Avoid music, echo, and other voices.
+2. **Export the clip as WAV.** If you have an MP3 or a longer recording, open it
+   in Audacity, select the sentence, and choose **File → Export Audio**.
+   Set the export range to **Current Selection**, the format to **WAV**, and the
+   encoding to **Signed 16-bit PCM**. Mono at 44.1 kHz works for a typical export.
+   Renaming the extension does not convert an MP3. If you have the original
+   audio before MP3 compression, use it.
+   [Audacity manual](https://manual.audacityteam.org/man/file_export_dialog.html)
+3. **Check the sample in Pocket TTS.** Click **Choose WAV**, preview the file
+   with **Listen**, then click **Prepare** and synthesize a test sentence.
+   Preparing the sample saves a separate mono copy at 24 kHz and adjusts its
+   volume.
 
 ### Why Reference Normalization is Essential
 
@@ -171,18 +181,15 @@ active speech level of **`RMS ~0.045–0.050 (~ -26 dBFS)`**.
 
 ### The "Prepare" Function (Reference Normalization)
 
-To eliminate pitch and timbre distortion, the Pocket TTS card features a dedicated
-**"Prepare"** button next to the selected reference WAV:
+Use **Prepare** next to the selected WAV to bring the sample to the input level
+used in the Pocket TTS tests.
 
-1. The app decodes the source WAV (leaving the original file completely untouched).
-2. The audio is downmixed to mono and resampled to 24 kHz using a windowed-sinc
-   polyphase filter (with anti-aliasing cutoff aligned to the target Nyquist
-   frequency: `cutoff = min(1.0, f_out / f_in)`, preserving the full spectrum up
-   to 12 kHz without high-frequency attenuation).
-3. Active speech frames (20 ms frames with energy >= 10% of overall RMS) are
-   analyzed, isolating speech from silence.
-4. The signal is scaled precisely to **`RMS = 0.048`** with a protective peak cap of
-   `0.98` to avoid clipping.
+1. The app reads the original WAV and creates a separate copy.
+2. The audio is downmixed to mono and resampled to 24 kHz.
+3. The app estimates the speech level using 20 ms frames whose RMS is at least
+   10% of the overall RMS.
+4. The app adjusts gain toward **`RMS = 0.048`** while keeping peaks below or
+   equal to `0.98`.
 5. The prepared copy is saved to `%APPDATA%\ttsbard\pocket-references\<package-id>.wav`,
    and the model immediately switches to this optimized file.
 
@@ -191,10 +198,8 @@ To eliminate pitch and timbre distortion, the Pocket TTS card features a dedicat
 Because the normalized reference (RMS ~0.048) causes raw model output to be quieter
 (`out_rms ~0.04–0.05`), the TTSBard Pocket TTS runtime applies automatic soft gain
 compensation:
-- Output PCM is gently boosted toward **`RMS = 0.12`** (with peak limit `0.98` and a
+- Output PCM is gently boosted toward **`RMS = 0.12`** (with peak limit `0.95` and a
   maximum boost factor of 4.0×).
-- This ensures Pocket TTS matches the loudness of other engines (Silero, Piper,
-  ElevenLabs) without distortion.
 
 ## Check your setup
 

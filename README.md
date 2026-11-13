@@ -11,7 +11,7 @@ TTSBard is a Windows application for communicating through text-to-speech in
 everyday life and on streams. A global hotkey opens and focuses the editor.
 After sending, keep typing, hide the window or return focus to the previous app.
 
-[Download TTSBard](https://github.com/alksef/TTSBard/releases) ·
+[Download TTSBard](https://github.com/ttsbard/TTSBard/releases) ·
 [First launch](docs/en/user/guide.md#first-launch) ·
 [Short PDF overview](docs/en/ttsbard-overview.pdf)
 
@@ -32,7 +32,8 @@ hiding is optional. Starting it again restores the existing instance.
 | Feature | What it does |
 |---|---|
 | **Quick editor** | Tabs, phrase history, autocomplete, offline Russian spell checking, quick inserts and delivery routes. |
-| **TTS** | Silero Bot through Telegram, local Piper voices, OpenAI, ElevenLabs and Fish Audio; local HTTP TTS servers compatible with TTS Voice Wizard’s Locally Hosted mode. |
+| **TTS** | Local Piper voices and Pocket TTS voice cloning from a WAV sample, Silero Bot through Telegram, OpenAI, ElevenLabs, Fish Audio, and local HTTP servers compatible with TTS Voice Wizard’s Locally Hosted mode. |
+| **Local models** | Install and manage Pocket TTS, OCR and RUAccent packages in **Settings → Models**. |
 | **Audio cache** | Caches synthesized speech and replays phrases with the same settings without waiting for synthesis or using additional provider quota. |
 | **Audio outputs** | Listen through speakers/headphones while sending speech to a virtual microphone for games and chats. |
 | **Audio processing** | Pitch, tempo, volume, DeepFilterNet denoising, EQ, compressor and limiter. |
@@ -125,7 +126,7 @@ TTSBard — Windows-приложение для общения с помощью
 горячей клавишей, сразу получает фокус для ввода и после отправки может остаться
 открытым, скрыться или вернуть фокус предыдущему приложению.
 
-[Скачать TTSBard](https://github.com/alksef/TTSBard/releases) ·
+[Скачать TTSBard](https://github.com/ttsbard/TTSBard/releases) ·
 [Первый запуск](docs/ru/user/guide.md#первый-запуск) ·
 [Краткий обзор в PDF](docs/ru/ttsbard-overview.pdf)
 
@@ -149,7 +150,8 @@ TTSBard — Windows-приложение для общения с помощью
 | Возможность | Что даёт |
 | --- | --- |
 | **Быстрый редактор** | Вкладки, история фраз, автодополнение, локальная проверка русской орфографии, быстрые вставки и выбор направлений отправки. |
-| **TTS** | Silero Bot в Telegram, локальные голоса Piper, OpenAI, ElevenLabs и Fish Audio; подключение локального HTTP TTS-сервера, совместимого с режимом Locally Hosted в TTS Voice Wizard. |
+| **TTS** | Локальные голоса Piper и клонирование голоса по WAV в Pocket TTS, Silero Bot в Telegram, OpenAI, ElevenLabs, Fish Audio и локальные HTTP-серверы, совместимые с режимом Locally Hosted в TTS Voice Wizard. |
+| **Локальные модели** | Установка и управление пакетами Pocket TTS, OCR и RUAccent в разделе **Настройки → Модели**. |
 | **Аудиокэш** | Сохраняет готовую озвучку: повторяющиеся фразы с теми же настройками воспроизводятся без ожидания синтеза и расхода лимитов TTS-сервиса. |
 | **Аудиовыходы** | Одновременное воспроизведение в наушники или динамики и виртуальный микрофон для игр и голосовых чатов. |
 | **Обработка звука** | Настройка высоты тона, темпа и громкости; шумоподавление DeepFilterNet, эквалайзер, компрессор и лимитер. |

@@ -2,7 +2,7 @@
 
 # TTSBard documentation
 
-- [Download](https://github.com/alksef/TTSBard/releases)
+- [Download](https://github.com/ttsbard/TTSBard/releases)
 - [First launch](user/guide.md)
 - [User guides](user/README.md)
 - [Integrations](integrations/README.md)

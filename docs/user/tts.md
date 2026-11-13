@@ -33,6 +33,10 @@ This guide has moved. / Инструкция перенесена.
 
 [Русский: Piper](../ru/user/tts.md#piper) · [English](../en/user/tts.md)
 
+<a id="pocket-tts"></a>
+
+[Русский: Pocket TTS](../ru/user/tts.md#pocket-tts) · [English: Pocket TTS](../en/user/tts.md#pocket-tts)
+
 <a id="проверка-настройки"></a>
 
 [Русский: Проверка настройки](../ru/user/tts.md#проверка-настройки) · [English](../en/user/tts.md)

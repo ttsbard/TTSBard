@@ -22,7 +22,7 @@ related_tasks: []
    - Добавлена функция `normalize_reference_wav_to_file` в `src-tauri/src/tts/pocket/audio.rs`: декодирует входной WAV, конвертирует в моно 24 кГц, нормирует активный RMS речи к целевому значению `0.048` (с защитой от клиппинга `peak <= 0.98`) и сохраняет результат в `<app_config_dir>/pocket-references/<package_id>.wav`.
    - Зарегистрирована Tauri-команда `normalize_pocket_reference(model_id)` в `src-tauri/src/commands/mod.rs` и `src-tauri/src/lib.rs`, которая нормализует референс и переключает выбор модели на подготовленный файл через `pocket-voices.json`.
 2. **Компенсация громкости на выходе (`src-tauri/src/tts/pocket/runtime.rs`):**
-   - Добавлена `apply_output_gain_compensation`: мягко подтягивает выходной PCM к `RMS = 0.12` с лимитером по пикам (`<= 0.95`) и ограничением максимального усиления (`<= 4.0x`), сохраняя громкость на уровне других TTS-движков.
+   - Добавлена `compensate_output_gain`: приближает уровень выходного PCM к `RMS = 0.12` с пределом пиков `0.95` и максимальным усилением в 4 раза.
 3. **Кнопка в карточке Pocket TTS (`TtsPocketCard.vue`, `locales/ru.json`, `locales/en.json`):**
    - В карточке Pocket TTS рядом с выбранным референсом добавлена кнопка «Подготовить» (`tts.pocket.normalize`), запускающая нормализацию с индикатором загрузки и обратной связью.
 4. **Документация:**
@@ -34,4 +34,3 @@ related_tasks: []
 - Громкие референсы больше не вызывают просадку F0 на `1.5–2.4` полутона; F0 синтеза приближается к оригиналу для женских и мужских голосов.
 - Выходная громкость автоматически компенсируется до стандартного уровня `RMS ~0.12` без клиппинга.
 - Покрыто unit-тестами Rust (`tts::pocket::audio::tests`, `tts::pocket::runtime::tests`) и Vitest (`TtsPocketCard.test.ts`).
-

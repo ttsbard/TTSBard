@@ -26,8 +26,8 @@ return-focus bindings can be customized.
 ### Local editor shortcuts
 
 The **Editor** section applies only inside CodeMirror and the tab bar. These
-are not registered as Windows system shortcuts. Rebind them or clear a binding
-to disable it.
+are not registered as Windows system shortcuts. You can change each combination
+and turn it on or off in the **Editor** section of the Hotkeys panel.
 
 | Default | Action |
 |---|---|
@@ -37,9 +37,9 @@ to disable it.
 | `Ctrl+Alt+Enter` | Speak, retain text and keep editing |
 | `F7` / `Shift+F7` | Next/previous spelling error |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next/previous tab |
-| `Ctrl+R` | Cycle phrase route |
-| `Ctrl+T` | Toggle typing state delivery to WebView/VTube Studio/VRChat |
-| `Ctrl+W` | Quick editor mode |
+| `Ctrl+R` | Cycle phrase route (off by default) |
+| `Ctrl+T` | Toggle typing state delivery to WebView/VTube Studio/VRChat (off by default) |
+| `Ctrl+W` | Quick editor mode (off by default) |
 | `Ctrl+H` | Phrase history |
 | `Ctrl+U` | Place stresses once |
 

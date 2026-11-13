@@ -7,9 +7,10 @@ from an editor opened with a hotkey.
 
 ## First launch
 
-1. Install your version from the [project releases](https://github.com/alksef/TTSBard/releases) and start TTSBard.
+1. Install your version from the [project releases](https://github.com/ttsbard/TTSBard/releases) and start TTSBard.
 2. Open **TTS**, configure and select a [provider or local model](tts.md).
-   Cloud providers require credentials; Piper requires model files.
+   Cloud providers require credentials. Add Piper voice files to the models
+   folder or install a Pocket TTS package under **Settings → Models**.
 3. In **Audio**, select your speakers and use the playback test button to check
    the volume. To send speech to Discord, OBS, VTube Studio, a game or another
    application, install and configure a [virtual audio cable](virtual-audio-cable.md).
@@ -95,7 +96,7 @@ again yourself after repairing or resetting the file.
 
 | Task | Guide |
 |---|---|
-| Configure a voice or install Piper | [TTS providers](tts.md) |
+| Configure a voice or set up Piper or Pocket TTS | [TTS providers](tts.md) |
 | Send speech to Discord, OBS, VTube Studio or games | [Virtual audio cable](virtual-audio-cable.md) |
 | Select outputs or troubleshoot THX distortion | [Audio devices and output format](audio-devices.md) |
 | Change the interface language or add a translation | [Language packs](language-packs.md) |
