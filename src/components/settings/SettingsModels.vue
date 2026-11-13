@@ -371,37 +371,46 @@ function forwardRuAccentMessage(message: string, severity?: MessageSeverity): vo
         <div class="section-actions">
           <button
             type="button"
-            class="ui-icon-button"
+            class="ui-icon-button section-action"
             :disabled="statusLoading"
             :title="t('settings.models.action.refresh_list')"
             :aria-label="t('settings.models.action.refresh_list')"
             @click="handleRefreshList"
           >
             <RefreshCw :size="18" :class="{ 'ui-spin': statusLoading }" />
+            <span class="section-action-hint" aria-hidden="true">
+              {{ t('settings.models.action.refresh_list') }}
+            </span>
           </button>
           <button
             type="button"
-            class="ui-button ui-button--compact ui-button--leading-icon"
+            class="ui-icon-button section-action"
             data-testid="download-catalog-button"
             :disabled="catalogRefreshPending || statusLoading"
             :title="t('settings.models.action.download_catalog')"
+            :aria-label="t('settings.models.action.download_catalog')"
             @click="handleRefreshCatalog"
           >
-            <Loader2 v-if="catalogRefreshPending" :size="16" class="ui-spin" />
-            <Download v-else :size="16" />
-            <span>{{ t('settings.models.action.download_catalog') }}</span>
+            <Loader2 v-if="catalogRefreshPending" :size="18" class="ui-spin" />
+            <Download v-else :size="18" />
+            <span class="section-action-hint" aria-hidden="true">
+              {{ t('settings.models.action.download_catalog') }}
+            </span>
           </button>
           <button
             type="button"
-            class="ui-button ui-button--compact ui-button--leading-icon"
+            class="ui-icon-button section-action"
             :disabled="folderPending"
-            :title="t('settings.models.downloads.manual_hint')"
+            :title="t('settings.models.action.open_folder')"
+            :aria-label="t('settings.models.action.open_folder')"
             :aria-description="t('settings.models.downloads.manual_hint')"
             @click="handleOpenFolder"
           >
-            <Loader2 v-if="folderPending" :size="16" class="ui-spin" />
-            <FolderOpen v-else :size="16" />
-            <span>{{ t('settings.models.action.open_folder') }}</span>
+            <Loader2 v-if="folderPending" :size="18" class="ui-spin" />
+            <FolderOpen v-else :size="18" />
+            <span class="section-action-hint" aria-hidden="true">
+              {{ t('settings.models.action.open_folder') }}
+            </span>
           </button>
         </div>
       </div>
@@ -431,16 +440,6 @@ function forwardRuAccentMessage(message: string, severity?: MessageSeverity): vo
       >
         <Download :size="16" class="callout-icon" aria-hidden="true" />
         <span class="callout-text">{{ t('settings.models.catalog.empty') }}</span>
-        <button
-          type="button"
-          class="ui-button ui-button--compact ui-button--leading-icon"
-          :disabled="catalogRefreshPending || statusLoading"
-          @click="handleRefreshCatalog"
-        >
-          <Loader2 v-if="catalogRefreshPending" :size="16" class="ui-spin" />
-          <Download v-else :size="16" />
-          <span>{{ t('settings.models.action.download_catalog') }}</span>
-        </button>
       </div>
 
       <template v-if="status.catalog">
@@ -708,10 +707,44 @@ function forwardRuAccentMessage(message: string, severity?: MessageSeverity): vo
 }
 
 .section-actions {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--ui-field-group-gap);
+  margin-left: auto;
+}
+
+/* Icon-only actions carry their localized name in title + aria-label. The
+   native title covers pointer hover; keyboard focus gets the same name in a
+   visible hint because browsers do not open native tooltips on focus.
+   The hint is anchored to the right edge of the action row, so a long name
+   stays inside the window at narrow widths and at the right window edge. */
+.section-action-hint {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: min(15rem, calc(100vw - 3rem));
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: var(--ui-line-height-multiline);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 18px rgba(var(--rgb-black), 0.22);
+  pointer-events: none;
+}
+
+.section-action:focus-visible .section-action-hint {
+  display: block;
 }
 
 .catalog-meta {
@@ -769,7 +802,11 @@ function forwardRuAccentMessage(message: string, severity?: MessageSeverity): vo
   scroll-margin-top: var(--ui-section-gap);
 }
 
-.models-group:focus {
+.models-group:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.models-group:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 4px;
   border-radius: 4px;

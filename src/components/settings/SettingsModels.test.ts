@@ -174,10 +174,20 @@ describe('SettingsModels', () => {
 
     expect(root.textContent).not.toContain('settings.models.')
 
-    const openFolderBtn = Array.from(root.querySelectorAll('button')).find((btn) =>
-      btn.textContent?.includes('Open folder'),
+    const actionLabels = Array.from(root.querySelectorAll('.section-actions button')).map((btn) =>
+      btn.getAttribute('aria-label'),
     )
-    expect(openFolderBtn?.getAttribute('title')).toContain('Models added manually')
+    expect(actionLabels).toEqual([
+      'Reread local catalog',
+      'Download catalog from repository',
+      'Open folder',
+    ])
+
+    const openFolderBtn = root.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open folder"]',
+    )
+    expect(openFolderBtn?.getAttribute('title')).toBe('Open folder')
+    expect(openFolderBtn?.getAttribute('aria-description')).toContain('Models added manually')
 
     const ruaccentRow = root.querySelector('[data-package-id="ruaccent-tiny"]')
     expect(ruaccentRow).not.toBeNull()
@@ -261,13 +271,23 @@ describe('SettingsModels', () => {
 
     const downloadBtn = root.querySelector<HTMLButtonElement>('[data-testid="download-catalog-button"]')
     expect(downloadBtn).not.toBeNull()
-    expect(downloadBtn?.textContent).toContain('Download catalog from repository')
+    expect(downloadBtn?.getAttribute('aria-label')).toBe('Download catalog from repository')
+    expect(downloadBtn?.getAttribute('title')).toBe('Download catalog from repository')
+    expect(downloadBtn?.disabled).toBe(false)
+
+    const catalogDownloadButtons = Array.from(root.querySelectorAll('button')).filter((btn) =>
+      btn.getAttribute('aria-label') === 'Download catalog from repository',
+    )
+    expect(catalogDownloadButtons).toHaveLength(1)
+    expect(catalogDownloadButtons[0]).toBe(downloadBtn)
+
     expect(root.querySelectorAll('.models-group')).toHaveLength(0)
 
     const emptyCallout = root.querySelector('[data-testid="empty-catalog-callout"]')
     expect(emptyCallout).not.toBeNull()
-    expect(emptyCallout?.textContent).toContain('has not been downloaded yet')
-    expect(emptyCallout?.querySelector('button')?.textContent).toContain('Download catalog from repository')
+    expect(emptyCallout?.querySelector('svg')).not.toBeNull()
+    expect(emptyCallout?.querySelector('.callout-text')?.textContent).toContain('has not been downloaded yet')
+    expect(emptyCallout?.querySelector('button')).toBeNull()
   })
 
   it('highlights outdated installed packages with mismatch warning and keeps Reinstall button', async () => {

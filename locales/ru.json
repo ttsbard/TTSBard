@@ -119,7 +119,7 @@
     "settings.models.action.cancel": "Отмена",
     "settings.models.action.retry": "Повторить",
     "settings.models.action.open_folder": "Открыть папку",
-    "settings.models.action.refresh_list": "Обновить список",
+    "settings.models.action.refresh_list": "Перечитать локальный каталог",
     "settings.models.action.download_catalog": "Загрузить каталог из репозитория",
     "settings.models.loading": "Загрузка пакетов моделей…",
     "settings.models.progress.preparing": "Подготовка…",

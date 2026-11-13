@@ -119,7 +119,7 @@
     "settings.models.action.cancel": "Cancel",
     "settings.models.action.retry": "Retry",
     "settings.models.action.open_folder": "Open folder",
-    "settings.models.action.refresh_list": "Refresh list",
+    "settings.models.action.refresh_list": "Reread local catalog",
     "settings.models.action.download_catalog": "Download catalog from repository",
     "settings.models.loading": "Loading model packages...",
     "settings.models.progress.preparing": "Preparing…",
