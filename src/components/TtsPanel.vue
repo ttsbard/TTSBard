@@ -625,6 +625,12 @@ async function handlePocketActivated(id: string) {
   await reloadSettings();
 }
 
+// The card owns the refresh request and hands back the backend snapshot, so the
+// list (and its empty state) updates as soon as the rescan completes.
+function applyPiperSnapshot(providers: TtsProviderInfoDto[]) {
+  piperProviders.value = Array.isArray(providers) ? providers : [];
+}
+
 function openTelegramModal() {
   showTelegramModal.value = true;
   sileroError.value = null;
@@ -1115,12 +1121,13 @@ function dismissStatus() {
 
       <!-- Piper local provider -->
       <TtsPiperCard
-        v-if="piperVisible && piperProviders.length > 0"
+        v-if="piperVisible"
         :providers="piperProviders"
         :active-id="activePiperId"
         :loading="piperLoading"
         :errors="piperError"
         @select="selectPiperProvider"
+        @refreshed="applyPiperSnapshot"
       />
     </div>
 

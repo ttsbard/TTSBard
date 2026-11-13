@@ -143,6 +143,52 @@ pub async fn speak_text_raw_export(
     tts_pipeline::synthesize_and_export(&state, &text, &path).await
 }
 
+/// Snapshot every registered TTS provider for settings/UI consumers.
+///
+/// Built from the live registry rather than persisted settings so a rescan is
+/// reflected immediately, including providers whose persisted selection is
+/// stale.
+fn tts_provider_infos(state: &AppState) -> Vec<TtsProviderInfoDto> {
+    let registry = state.tts_registry.lock();
+    let active_id = registry.active_id().map(str::to_string);
+    registry
+        .iter()
+        .map(|entry| {
+            let (kind, runtime_status) = match &entry.provider {
+                TtsProvider::OpenAi(_) => ("openai", None),
+                TtsProvider::Silero(_) => ("silero", None),
+                TtsProvider::Local(_) => ("local-http", None),
+                TtsProvider::Fish(_) => ("fish", None),
+                TtsProvider::ElevenLabs(_) => ("elevenlabs", None),
+                TtsProvider::Piper(tts) => (
+                    "piper",
+                    Some(if tts.is_loaded() {
+                        "ready"
+                    } else {
+                        "discovered"
+                    }),
+                ),
+                TtsProvider::Pocket(tts) => ("pocket", Some(tts.status_string())),
+            };
+            TtsProviderInfoDto {
+                id: entry.id.clone(),
+                display_name: entry.display_name.clone(),
+                kind: kind.to_string(),
+                active: Some(&entry.id) == active_id.as_ref(),
+                runtime_status: runtime_status.map(str::to_string),
+            }
+        })
+        .collect()
+}
+
+/// Snapshot only the discovered Piper models, in registry order.
+fn piper_provider_infos(state: &AppState) -> Vec<TtsProviderInfoDto> {
+    tts_provider_infos(state)
+        .into_iter()
+        .filter(|info| info.kind == "piper")
+        .collect()
+}
+
 /// Get all application settings in a single call
 #[tauri::command]
 pub async fn get_all_app_settings(
@@ -208,38 +254,7 @@ pub async fn get_all_app_settings(
     settings.tts.elevenlabs = settings_manager.get_elevenlabs_settings_dto();
 
     // Populate runtime TTS provider info from the registry
-    {
-        let registry = app_state.tts_registry.lock();
-        let active_id = registry.active_id().map(|s| s.to_string());
-        settings.tts.providers = registry
-            .iter()
-            .map(|entry| {
-                let (kind, runtime_status) = match &entry.provider {
-                    TtsProvider::OpenAi(_) => ("openai", None),
-                    TtsProvider::Silero(_) => ("silero", None),
-                    TtsProvider::Local(_) => ("local-http", None),
-                    TtsProvider::Fish(_) => ("fish", None),
-                    TtsProvider::ElevenLabs(_) => ("elevenlabs", None),
-                    TtsProvider::Piper(tts) => (
-                        "piper",
-                        Some(if tts.is_loaded() {
-                            "ready"
-                        } else {
-                            "discovered"
-                        }),
-                    ),
-                    TtsProvider::Pocket(tts) => ("pocket", Some(tts.status_string())),
-                };
-                TtsProviderInfoDto {
-                    id: entry.id.clone(),
-                    display_name: entry.display_name.clone(),
-                    kind: kind.to_string(),
-                    active: Some(&entry.id) == active_id.as_ref(),
-                    runtime_status: runtime_status.map(str::to_string),
-                }
-            })
-            .collect();
-    }
+    settings.tts.providers = tts_provider_infos(app_state.inner());
 
     info!(
         tts_provider = ?settings.tts.provider,
@@ -768,6 +783,19 @@ pub async fn refresh_pocket_models(
     state.register_pocket_providers();
     emit_settings_changed(&app_handle);
     Ok(pocket_models_snapshot(state.inner()))
+}
+
+/// Re-scan `models/piper` in the shared model search-root order. New models are
+/// registered, changed models replaced, and removed models dropped. Returns the
+/// refreshed Piper snapshot and notifies every settings consumer.
+#[tauri::command]
+pub async fn refresh_piper_models(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<TtsProviderInfoDto>, String> {
+    state.register_piper_providers();
+    emit_settings_changed(&app_handle);
+    Ok(piper_provider_infos(state.inner()))
 }
 
 /// Validate a user-selected WAV reference. Readiness distinguishes missing and

@@ -10,7 +10,9 @@ use crate::tts::{
     local_http_server::LocalHttpServerTts,
     openai::OpenAiTts,
     piper::runtime::LocalModelTts,
-    piper::scanner::{discover_piper_models, merge_piper_roots, scan_piper_models_root},
+    piper::scanner::{
+        discover_piper_models, merge_piper_roots, scan_piper_models_root, PiperModelDescriptor,
+    },
     pocket::{
         descriptor::PocketModelDescriptor, discover_pocket_models,
         merge_pocket_roots as merge_pocket_model_roots,
@@ -743,9 +745,15 @@ impl AppState {
     /// ID after per-root validation, so a broken candidate in the cwd never
     /// blocks a valid same-ID model in the data root, while a valid cwd model
     /// wins over the data-root duplicate.
-    /// Does NOT select any Piper provider — the current built-in provider is preserved.
+    ///
+    /// Repeated scans reconcile the registry: new models are added, models
+    /// whose files changed are replaced, and models whose directory disappeared
+    /// are dropped. The current selection is kept while its model survives; if
+    /// the active Piper model disappeared, the usual saved-or-first fallback
+    /// keeps a usable provider selected.
     /// Does NOT create ONNX sessions (they are lazily initialized on first use).
-    pub fn register_piper_providers(&self) {
+    /// Returns the number of discovered Piper models.
+    pub fn register_piper_providers(&self) -> usize {
         let per_root: Vec<Vec<_>> = crate::paths::model_search_roots()
             .iter()
             .map(|root| {
@@ -758,19 +766,15 @@ impl AppState {
             .collect();
         let descriptors = merge_piper_roots(per_root);
 
-        let count = descriptors.len();
-        let mut registry = self.tts_registry.lock();
-
-        for desc in &descriptors {
-            let tts = LocalModelTts::from_descriptor(desc);
-            registry.add_or_replace(TtsProviderEntry {
-                id: desc.id.clone(),
-                display_name: desc.display_name.clone(),
-                provider: TtsProvider::Piper(Arc::new(tts)),
-            });
-        }
+        let saved_id = self.settings_cache.read().tts.provider_id.clone();
+        let count = reconcile_piper_registry(
+            &mut self.tts_registry.lock(),
+            &descriptors,
+            saved_id.as_deref(),
+        );
 
         info!(count = count, "Piper provider registration complete");
+        count
     }
 
     /// Discover and register Pocket TTS packages across the same shared model
@@ -957,6 +961,48 @@ fn reconcile_pocket_registry(
             id: desc.id.clone(),
             display_name: desc.display_name.clone(),
             provider: TtsProvider::Pocket(tts),
+        });
+    }
+
+    if registry.active_id().is_none() {
+        registry.restore_saved_or_first(saved_id);
+    }
+    descriptors.len()
+}
+
+/// Reconcile Piper provider entries with a freshly scanned descriptor list.
+///
+/// New models are added, entries for changed model files are replaced, and
+/// entries whose `models/piper` directory disappeared are dropped. Removing the
+/// active model clears the selection, so the saved-or-first fallback runs only
+/// when nothing is active anymore: it never overrides a live built-in or
+/// remaining Piper selection.
+fn reconcile_piper_registry(
+    registry: &mut TtsProviderRegistry,
+    descriptors: &[PiperModelDescriptor],
+    saved_id: Option<&str>,
+) -> usize {
+    let discovered: std::collections::HashSet<&str> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.id.as_str())
+        .collect();
+    let stale: Vec<String> = registry
+        .iter()
+        .filter(|entry| {
+            matches!(entry.provider, TtsProvider::Piper(_))
+                && !discovered.contains(entry.id.as_str())
+        })
+        .map(|entry| entry.id.clone())
+        .collect();
+    for id in stale {
+        registry.remove(&id);
+    }
+
+    for desc in descriptors {
+        registry.add_or_replace(TtsProviderEntry {
+            id: desc.id.clone(),
+            display_name: desc.display_name.clone(),
+            provider: TtsProvider::Piper(Arc::new(LocalModelTts::from_descriptor(desc))),
         });
     }
 
@@ -1876,5 +1922,104 @@ mod tests {
 
         drop(registry);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ── Piper registry reconciliation tests ──
+
+    fn piper_test_descriptor(id: &str, display_name: &str) -> PiperModelDescriptor {
+        let root = std::path::PathBuf::from(format!("/piper/{id}"));
+        PiperModelDescriptor {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            onnx_path: root.join("voice.onnx"),
+            json_path: root.join("voice.onnx.json"),
+            sample_rate: 22_050,
+            phoneme_id_map: serde_json::Value::Null,
+        }
+    }
+
+    fn piper_entry(id: &str, display_name: &str) -> TtsProviderEntry {
+        TtsProviderEntry {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            provider: TtsProvider::Piper(Arc::new(LocalModelTts::new(
+                format!("/piper/{id}/voice.onnx"),
+                format!("/piper/{id}/voice.onnx.json"),
+            ))),
+        }
+    }
+
+    #[test]
+    fn piper_refresh_adds_replaces_and_drops_discovered_models() {
+        let mut registry = TtsProviderRegistry::new();
+        registry.add_or_replace(entry("openai", "OpenAI", dummy_local()));
+        registry.add_or_replace(piper_entry("local-piper:amy", "Amy"));
+        registry.add_or_replace(piper_entry("local-piper:gone", "Gone"));
+
+        let descriptors = vec![
+            piper_test_descriptor("local-piper:amy", "Amy v2"),
+            piper_test_descriptor("local-piper:giga", "Giga"),
+        ];
+        let count = reconcile_piper_registry(&mut registry, &descriptors, None);
+
+        assert_eq!(count, 2);
+        assert_eq!(
+            registry.get("local-piper:amy").unwrap().display_name,
+            "Amy v2"
+        );
+        assert!(registry.get("local-piper:giga").is_some());
+        assert!(registry.get("local-piper:gone").is_none());
+        assert!(registry.get("openai").is_some());
+        // Non-Piper providers are never touched by a Piper rescan.
+        assert_eq!(registry.active_id(), Some("openai"));
+    }
+
+    #[test]
+    fn piper_refresh_keeps_active_selection_when_its_model_survives() {
+        let mut registry = TtsProviderRegistry::new();
+        registry.add_or_replace(piper_entry("local-piper:amy", "Amy"));
+        registry.add_or_replace(piper_entry("local-piper:giga", "Giga"));
+        registry.select("local-piper:giga").unwrap();
+
+        let descriptors = vec![
+            piper_test_descriptor("local-piper:amy", "Amy"),
+            piper_test_descriptor("local-piper:giga", "Giga v2"),
+        ];
+        // A different saved ID must not steal the live selection.
+        reconcile_piper_registry(&mut registry, &descriptors, Some("local-piper:amy"));
+
+        assert_eq!(registry.active_id(), Some("local-piper:giga"));
+        assert_eq!(
+            registry.get("local-piper:giga").unwrap().display_name,
+            "Giga v2"
+        );
+    }
+
+    #[test]
+    fn piper_refresh_falls_back_when_the_active_model_disappears() {
+        let mut registry = TtsProviderRegistry::new();
+        registry.add_or_replace(piper_entry("local-piper:gone", "Gone"));
+        registry.select("local-piper:gone").unwrap();
+
+        let descriptors = vec![piper_test_descriptor("local-piper:giga", "Giga")];
+        let count = reconcile_piper_registry(&mut registry, &descriptors, Some("local-piper:gone"));
+
+        assert_eq!(count, 1);
+        assert!(registry.get("local-piper:gone").is_none());
+        assert_eq!(registry.active_id(), Some("local-piper:giga"));
+    }
+
+    #[test]
+    fn piper_refresh_with_no_models_drops_pipers_and_keeps_builtin_active() {
+        let mut registry = TtsProviderRegistry::new();
+        registry.add_or_replace(entry("openai", "OpenAI", dummy_local()));
+        registry.add_or_replace(piper_entry("local-piper:amy", "Amy"));
+        registry.select("openai").unwrap();
+
+        let count = reconcile_piper_registry(&mut registry, &[], None);
+
+        assert_eq!(count, 0);
+        assert!(registry.get("local-piper:amy").is_none());
+        assert_eq!(registry.active_id(), Some("openai"));
     }
 }
