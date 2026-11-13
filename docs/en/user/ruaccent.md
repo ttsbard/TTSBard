@@ -13,7 +13,7 @@ synthesis, leaving the editor unchanged.
 
 ## Download and prepare a model
 
-Open **Settings → Models** (if the catalog is not downloaded yet, click **Download catalog from repository**), find **RUAccent Tiny** under **Stress placement (RUAccent)**, and select **Download**. When the package shows **On disk**,
+Open **Settings → Models** (if the catalog is not downloaded yet, click **Download catalog from repository**), find **RUAccent Tiny (Compact INT8 + FST)** under **Stress placement (RUAccent)**, and select **Download**. When the package shows **On disk**,
 continue to the stress placement settings further down the same tab.
 
 ### Install manually
@@ -33,6 +33,9 @@ Use the same relative path under a custom data directory. Alternatively use
 directory, which TTSBard does not modify.
 
 ### Manual download
+
+The compact catalog package ships `dictionary/accents.fst`. The runtime also
+accepts `dictionary/accents.json.gz` from the upstream files shown below.
 
 1. Open [Files](https://huggingface.co/ruaccent/accentuator/tree/main).
 2. Download the shared `dictionary` and `nn` files shown below, preserving paths.
