@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
                     :disabled="!isPreviewing"
                     @click="stopReferencePreview"
                   >
-                    <Square :size="18" aria-hidden="true" />
+                    <Square :size="16" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
@@ -748,6 +748,26 @@ onBeforeUnmount(() => {
 .pocket-reference-actions {
   flex-wrap: wrap;
   gap: var(--ui-field-group-gap);
+}
+
+.pocket-stop-button {
+  border-color: var(--danger-border);
+  border-radius: 6px;
+  background: var(--color-bg-field);
+  color: var(--color-danger);
+}
+
+.pocket-stop-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.pocket-stop-button:hover:not(:disabled) {
+  background: var(--danger-bg-weak);
+}
+
+.pocket-stop-button:disabled {
+  opacity: 0.45;
 }
 
 .pocket-voice-list {
