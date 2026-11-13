@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 pub const MAX_ACTIVE_CAPACITY: usize = 50;
@@ -694,6 +696,335 @@ fn bump_activity(job: &mut SpeechJob) {
 
 fn is_terminal(status: JobStatus) -> bool {
     matches!(status, JobStatus::Completed | JobStatus::Cancelled)
+}
+
+// ── Speech worker ──
+//
+// The worker owns the queue state machine: it claims the next generation, runs
+// snapshot-driven preparation while observing per-job cancellation and global
+// shutdown, hands the audio to playback and routes the delivered text to the
+// external channels.
+
+fn q_state_dto(queue: &Arc<parking_lot::Mutex<SpeechQueue>>) -> SpeechQueueStateDto {
+    queue.lock().state()
+}
+
+#[allow(clippy::too_many_arguments)] // Worker dependencies are explicit ownership boundaries.
+pub(crate) async fn speech_worker(
+    queue: Arc<parking_lot::Mutex<SpeechQueue>>,
+    notify: Arc<tokio::sync::Notify>,
+    app_handle: AppHandle,
+    shutdown: CancellationToken,
+    editor: Arc<crate::editor::EditorService>,
+    playback_manager: Arc<parking_lot::Mutex<Option<Arc<crate::playback::PlaybackManager>>>>,
+    webview: Arc<crate::webview::service::WebViewService>,
+    twitch: Arc<crate::twitch::TwitchService>,
+    vrchat: Arc<crate::vrchat::VrchatService>,
+) {
+    use crate::commands::tts_pipeline;
+
+    loop {
+        let work_item = {
+            let mut q = queue.lock();
+            match q.claim_next_generation() {
+                Ok(Some(item)) => Some(item),
+                Ok(None) => {
+                    drop(q);
+                    None
+                }
+                Err(e) => {
+                    warn!(error = %e, "claim_next_generation error, worker continuing");
+                    drop(q);
+                    None
+                }
+            }
+        };
+
+        let work_item = match work_item {
+            Some(item) => item,
+            None => {
+                tokio::select! {
+                    _ = notify.notified() => {
+                        continue;
+                    }
+                    _ = shutdown.cancelled() => {
+                        info!("Speech worker exiting on shutdown (idle wait)");
+                        return;
+                    }
+                }
+            }
+        };
+
+        {
+            let q = queue.lock();
+            let dto = q.state();
+            drop(q);
+            let _ = app_handle.emit("speech-queue-changed", dto);
+        }
+
+        let job_id = work_item.job_id;
+        let snapshot = work_item.snapshot;
+        let original_text = work_item.original_text;
+        let cancellation = work_item.cancel_token;
+
+        let preparation = tts_pipeline::prepare_speech(&snapshot, &original_text, &cancellation);
+        let prepared = match await_preparation(preparation, &cancellation, &shutdown).await {
+            PreparationWait::Completed(result) => result,
+            PreparationWait::Cancelled => {
+                info!(
+                    job_id = %job_id,
+                    "Speech preparation cancelled; dropping pending provider work"
+                );
+                continue;
+            }
+            PreparationWait::Shutdown => {
+                let mut q = queue.lock();
+                let _ = q.fail_generation(
+                    job_id,
+                    "Speech preparation cancelled (shutdown)".to_string(),
+                );
+                let dto = q.state();
+                drop(q);
+                let _ = app_handle.emit("speech-queue-changed", dto);
+                info!("Speech worker exiting on shutdown (during preparation)");
+                return;
+            }
+        };
+
+        match prepared {
+            Ok(prepared) => {
+                let (speaker, mic) =
+                    tts_pipeline::compute_output_configs(&snapshot.audio, &snapshot.audio_effects);
+
+                if speaker.is_none() && mic.is_none() {
+                    let mut q = queue.lock();
+                    let _ = q.fail_generation(
+                        job_id,
+                        "All outputs disabled (speaker and mic both off)".to_string(),
+                    );
+                    let dto = q.state();
+                    drop(q);
+                    let _ = app_handle.emit("speech-queue-changed", dto);
+                    continue;
+                }
+
+                let provider_text = prepared.provider_text.clone();
+                let insert_text = prepared.insert_text.clone();
+
+                let handoff_guard = {
+                    let mut q = queue.lock();
+                    let status = q.get_status(job_id);
+                    if status != Some(JobStatus::Generating) {
+                        drop(q);
+                        info!(job_id = %job_id, observed_status = ?status, "worker discard: not Generating after preparation");
+                        let _ = app_handle.emit("speech-queue-changed", q_state_dto(&queue));
+                        continue;
+                    }
+                    let _ = q.mark_ready(job_id, insert_text.clone());
+                    let guard = q
+                        .get_handoff_guard(job_id)
+                        .expect("handoff_guard missing after mark_ready");
+                    let dto = q.state();
+                    drop(q);
+                    let _ = app_handle.emit("speech-queue-changed", dto);
+                    guard
+                };
+
+                let handoff_accepted = {
+                    let _g = handoff_guard.lock();
+
+                    {
+                        let q = queue.lock();
+                        let status = q.get_status(job_id);
+                        if status != Some(JobStatus::Ready) {
+                            drop(q);
+                            info!(job_id = %job_id, observed_status = ?status, "worker discard: cancelled after mark_ready");
+                            false
+                        } else {
+                            drop(q);
+                            let pb_guard = playback_manager.lock();
+                            if let Some(pb) = pb_guard.as_ref() {
+                                pb.enqueue_with_outputs(
+                                    job_id.to_string(),
+                                    insert_text.clone(),
+                                    prepared.audio,
+                                    speaker,
+                                    mic,
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                };
+
+                if !handoff_accepted {
+                    let mut q = queue.lock();
+                    if q.get_status(job_id) == Some(JobStatus::Ready) {
+                        let _ = q.fail_playback(
+                            job_id,
+                            "Playback handoff rejected (queue full or no manager)".to_string(),
+                        );
+                        let dto = q.state();
+                        drop(q);
+                        let _ = app_handle.emit("speech-queue-changed", dto);
+                    }
+                    continue;
+                }
+
+                {
+                    let text = insert_text.clone();
+                    let delivery_text = prepared.delivery_text.clone();
+                    let webview_svc = webview.clone();
+                    let twitch_svc = twitch.clone();
+                    let vrchat_svc = vrchat.clone();
+                    let skip_twitch = snapshot.delivery.skip_twitch();
+                    let skip_webview = snapshot.delivery.skip_webview();
+                    let skip_vrchat = snapshot.delivery.skip_vrchat();
+                    let join_handle = tokio::task::spawn_blocking(move || {
+                        route_external_text_from_handles(
+                            &webview_svc,
+                            &twitch_svc,
+                            &vrchat_svc,
+                            &delivery_text,
+                            &text,
+                            skip_twitch,
+                            skip_webview,
+                            skip_vrchat,
+                        );
+                    });
+                    if let Err(e) = join_handle.await {
+                        warn!(error = %e, "route_external_text join failed");
+                    }
+                }
+
+                {
+                    // Owned handle: the history slot guard must not be held
+                    // across blocking I/O or awaits. The write stays on the
+                    // blocking pool and is awaited before the phrase event is
+                    // published (persist-before-publish).
+                    if let Some(history) = editor.history_handle() {
+                        let (provider, voice, cache_key) =
+                            if prepared.cache_saved || prepared.cache_hit {
+                                (
+                                    prepared.provider_name.clone(),
+                                    prepared.voice_name.clone(),
+                                    prepared.cache_key.clone(),
+                                )
+                            } else {
+                                (String::new(), String::new(), String::new())
+                            };
+                        let provider_text = provider_text.clone();
+                        let insert_text_for_history = insert_text.clone();
+                        let write = move || {
+                            history.record_phrase_with_meta(
+                                &provider_text,
+                                &insert_text_for_history,
+                                &provider,
+                                &voice,
+                                &cache_key,
+                            )
+                        };
+                        if let Err(error) = crate::history::write_phrase_blocking(write).await {
+                            warn!(error = %error, "Failed to persist phrase history");
+                        }
+                    }
+                }
+
+                let history_event = crate::events::AppEvent::TextSentToTts(
+                    crate::events::RoutedText::broadcast(insert_text.clone()),
+                );
+                crate::setup::emit_app_event(&app_handle, history_event);
+
+                loop {
+                    let status = {
+                        let q = queue.lock();
+                        q.get_status(job_id)
+                    };
+
+                    match status {
+                        Some(JobStatus::Playing) => break,
+                        Some(JobStatus::Failed) => break,
+                        Some(JobStatus::Ready) => {
+                            tokio::select! {
+                                _ = notify.notified() => {
+                                    continue;
+                                }
+                                _ = shutdown.cancelled() => {
+                                    info!("Speech worker exiting on shutdown (waiting for Playing)");
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!(?status, job_id = %job_id, "Unexpected status waiting for Playing");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let mut q = queue.lock();
+                let _ = q.fail_generation(job_id, e.clone());
+                let dto = q.state();
+                drop(q);
+                let _ = app_handle.emit("speech-queue-changed", dto);
+                warn!(error = %e, job_id = %job_id, "Speech preparation failed, worker waiting for retry/skip");
+            }
+        }
+    }
+}
+
+/// Deliver the routed text to the external channels according to the snapshot
+/// delivery policy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_external_text_from_handles(
+    webview: &crate::webview::service::WebViewService,
+    twitch: &crate::twitch::TwitchService,
+    vrchat: &crate::vrchat::VrchatService,
+    delivery_text: &str,
+    insert_text: &str,
+    skip_twitch: bool,
+    skip_webview: bool,
+    skip_vrchat: bool,
+) {
+    if !skip_webview {
+        // ROADMAP-107: per-server choice between the user's original text and
+        // the TTS-processed representation, read at delivery time.
+        let send_original = webview.settings.blocking_read().send_original_text;
+        let text = if send_original {
+            delivery_text
+        } else {
+            insert_text
+        };
+        webview.send_event(crate::events::AppEvent::TextSentToTts(
+            crate::events::RoutedText::broadcast(text.to_string()),
+        ));
+    }
+    if !skip_twitch {
+        let settings = twitch.settings.blocking_read();
+        if settings.enabled {
+            let send_original = settings.send_original_text;
+            drop(settings);
+            let text = if send_original {
+                delivery_text
+            } else {
+                insert_text
+            };
+            twitch.send_event(crate::events::TwitchEvent::SendMessage(text.to_string()));
+        }
+    }
+    if !skip_vrchat && vrchat.is_enabled() {
+        let vrchat_svc = vrchat.clone();
+        let text = delivery_text.to_string();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(e) = vrchat_svc.send_text(&text).await {
+                    tracing::warn!(error = %e, "Failed to deliver text to VRChat chatbox");
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]

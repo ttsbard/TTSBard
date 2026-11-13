@@ -42,7 +42,11 @@ impl Default for SoundPanelAppearance {
 
 /// Загрузить привязки из JSON файла (с миграцией из старого формата)
 pub fn load_bindings(state: &SoundPanelState) -> Result<Vec<SoundBinding>, String> {
-    let appdata_path = state.appdata_path.lock().unwrap().clone();
+    let appdata_path = state
+        .appdata_path
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .clone();
     let file_path = PathBuf::from(&appdata_path).join(BINDINGS_FILE);
 
     debug!(?file_path, "Loading bindings");
@@ -96,19 +100,18 @@ pub fn load_bindings(state: &SoundPanelState) -> Result<Vec<SoundBinding>, Strin
     Ok(bindings)
 }
 
-/// Сохранить текущее runtime-состояние наборов атомарно.
+/// Сохранить кандидатный снимок наборов для указанного состояния атомарно.
 ///
-/// Тонкая обёртка над [`persist_sets`] для set-команд, которым не нужен
-/// staged-аудио или кандидатный снимок: снимает текущие наборы из состояния
-/// и сохраняет их в JSON.
-pub fn save_sets(state: &SoundPanelState) -> Result<(), String> {
+/// Persist-first helper для мутаций `SoundSets`: вызывающий код строит снимок,
+/// сохраняет его этим вызовом и публикует в runtime только после успеха.
+/// Не изменяет runtime-состояние самостоятельно.
+pub fn save_sets(state: &SoundPanelState, sets: &SoundSets) -> Result<(), String> {
     let appdata_path = state
         .appdata_path
         .lock()
         .map_err(|e| format!("Lock error: {}", e))?
         .clone();
-    let sets = state.get_sets();
-    persist_sets(&appdata_path, &sets)
+    persist_sets(&appdata_path, sets)
 }
 
 /// Сохранить кандидатный снимок наборов в JSON файл атомарно.

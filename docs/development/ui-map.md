@@ -17,8 +17,8 @@
 
 | ID | Экран | Компонент | Вложенные поверхности |
 |---|---|---|---|
-| `input` | Ввод | `InputPanel.vue` | `editor/TtsEditor.vue`, `EditorTabs.vue`, `EditorMenu.vue`, `RouteSelector.vue`, `IncomingTextsTab.vue`, `IncomingRouteSelector.vue`, `SpellContextMenu.vue`, `PhraseHistoryList.vue` |
-| `tts` | Синтез речи | `TtsPanel.vue` | `tts/TtsOpenAICard.vue`, `TtsSileroCard.vue`, `TtsLocalCard.vue`, `TtsPocketCard.vue`, `TtsPiperCard.vue`, `TtsFishAudioCard.vue`, `TtsElevenLabsCard.vue`, `VoiceSelector.vue`, `FishAudioModelPicker.vue`, `TelegramConnectionStatus.vue`, `TelegramAuthModal.vue` |
+| `input` | Ввод | `InputPanel.vue` | `editor/TtsEditor.vue`, `editor/EditorTabs.vue`, `editor/EditorMenu.vue`, `editor/RouteSelector.vue`, `editor/IncomingTextsTab.vue` (маршрут и авто-воспроизведение входящего текста), `editor/IncomingRouteSelector.vue`, `editor/SpellContextMenu.vue`, `PhraseHistoryList.vue` |
+| `tts` | Синтез речи | `TtsPanel.vue` | `tts/TtsOpenAICard.vue`, `TtsSileroCard.vue`, `TtsLocalCard.vue`, `TtsPocketCard.vue`, `TtsPiperCard.vue`, `TtsFishAudioCard.vue`, `TtsElevenLabsCard.vue`, `VoiceSelector.vue`, `FishAudioModelPicker.vue`, `TelegramConnectionStatus.vue`, `TelegramAuthModal.vue` (в корне `src/components/`, вне `tts/`) |
 | `audio` | Аудио | `AudioPanel.vue` | `audio/AudioDevicesTab.vue`, `AudioEffectsTab.vue`, `AudioPreviewBar.vue`, `DspSettings.vue`, `EqSettings.vue`, `CompressorSettings.vue`, `LimiterSettings.vue`, `EffectsSettings.vue` |
 | `preprocessor` | Препроцессор | `PreprocessorPanel.vue` | Правила обработки и их условные настройки |
 | `webview` | WebView | `WebViewPanel.vue` | Сервер с постоянным LAN bind, порт, локальный/LAN URL; шаблоны, тест, внешнее подключение и UPnP |
@@ -26,7 +26,7 @@
 | `vtube-studio` | VTube Studio | `VTubeStudioPanel.vue` | Адрес/порт, параметры и действия при наборе, тестирование |
 | `vrchat` | VRChat | `VRChatPanel.vue` | Адрес и порт OSC, запуск при старте, тестовое сообщение, помощь |
 | `ocr` | OCR | `OcrPanel.vue` | Настройки распознавания, выбор экрана захвата и выбор области |
-| `input-server` | Входящий сервер | `InputServerPanel.vue` | Подключение и маршрутизация входящего текста |
+| `input-server` | Входящий сервер | `InputServerPanel.vue` | Сервер, адреса веб-формы и токен, API `/v1/speech`, тест. Маршрут входящего текста и авто-воспроизведение выбираются не здесь, а на поверхности входящих — `editor/IncomingTextsTab.vue` |
 | `hotkeys` | Горячие клавиши | `HotkeysPanel.vue` | Назначение сочетаний |
 | `intercept` | Перехват | `InterceptPanel.vue` | Настройки перехвата |
 | `settings` | Настройки | `SettingsPanel.vue` | Вкладки ниже |
@@ -51,7 +51,7 @@
 | Уведомления | Глобальная стопка в `src/components/ErrorToasts.vue`, панельные всплывающие сообщения в компонентах панелей, встроенные статусы в `src/components/shared/StatusMessage.vue` и `src/components/shared/TestResult.vue`. [Правила всплывающих уведомлений](ui-guidelines.md#всплывающие-уведомления) |
 | Компактный режим | `src/composables/mainWindowMode.ts` (единый владелец), `src/composables/mainWindowModeAdapter.ts` (native IPC), `src/components/MinimalModeButton.vue` (кнопка), `src/composables/useCompactWindowResize.ts`, `src/components/InputPanel.vue` — изменение размера за края окна; внутренние захваты в компактном режиме отсутствуют, разделитель высоты редактора доступен в обычном режиме. Меню `EditorMenu.vue` позволяет перейти в моно из компактного и обычного окна, а также независимо скрыть/показать панель вкладок; предпочтение видимости хранится в localStorage (`app-editor-tabs-visible`), сохраняется при выходе из моно. На поверхности входящих вкладки остаются доступны для возврата к тексту. При скрытых вкладках редактор имеет скругление всех углов 6 px. Список маршрутов в нижней панели раскрывается вверх |
 | Режим «Моно» | `src/components/MonoModeBar.vue`, `src/composables/mainWindowMode.ts`, `src/composables/useIntegrationStatusSlots.ts`, `src/App.vue`, `src/components/InputPanel.vue` — стиль компактного режима: скрыты titlebar, вкладки, action bar и история. Угловая `MinimalModeButton` остаётся для прямого возврата в обычное окно. Сверху отображается `MonoModeBar` (18 px) с центральной ручкой, кнопкой `ChevronDown` для возврата в компактный вид, кнопкой сворачивания окна и значками только активных ошибок интеграций с popover подробностей без смещения редактора или расширения окна. При переходе между компактным видом и моно геометрия окна сохраняется без ресайза; переход из обычного окна применяет сохранённый компактный размер |
-| Звуковая панель | `src-soundpanel/main.ts` → `SoundPanelApp.vue` в том же каталоге |
+| Звуковая панель | `src-soundpanel/main.ts` → `SoundPanelApp.vue` в том же каталоге. Отдельной вкладки SoundPanel в главном окне нет; `src/composables/useSoundPanel.ts` — legacy-композабл, не подключённый ни к одному компоненту и дублирующий типы/IPC `SoundPanelApp.vue` |
 | Управление воспроизведением | `src-playback/main.ts` → `PlaybackControlApp.vue` в том же каталоге |
 | Выбор области OCR | `src-ocr-selection/main.ts` → `SelectionApp.vue` в том же каталоге |
 | Браузерный overlay | `src-tauri/src/input_server/overlay.html` |

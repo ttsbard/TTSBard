@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { t } from '../src/i18n'
 import { createAsyncCleanupScope } from '../src/utils/asyncCleanup'
+import { debugError } from '../src/utils/debug'
 import { createFrameSession } from './frameSession'
 import type { LoadedFrame, PreviewDto } from './frameSession'
 import { isWithinBlurIgnoreWindow, selectionFromDrag } from './selection'
@@ -243,7 +244,14 @@ function onMouseUp(event: MouseEvent): void {
     x2: selection.x2,
     y2: selection.y2,
   })
-    .catch(() => {})
+    .catch((error) => {
+      // A rejected submit means the backend could not take this selection
+      // (hide failed, runtime unavailable, IPC error). Never swallow it
+      // silently: log it and drop the local presentation guard so the overlay
+      // cannot keep offering a drag into a session that is no longer backed.
+      debugError('[SelectionApp] Failed to submit OCR selection:', error)
+      clearSessionPresentation()
+    })
     .finally(() => {
       if (submitPendingId === sessionId) submitPendingId = null
     })
@@ -307,6 +315,10 @@ void boot()
 onBeforeUnmount(() => {
   scope.dispose()
   helper.dispose()
+  // `clearSessionPresentation()` owns the too-small `rejectedTimer` and the drag
+  // state: clearing it here keeps a pending timeout from firing into an
+  // unmounted overlay.
+  clearSessionPresentation()
 })
 </script>
 

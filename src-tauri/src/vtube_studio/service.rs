@@ -371,6 +371,12 @@ pub struct VTubeStudioService {
     item_status: Arc<parking_lot::Mutex<VTubeStudioItemStatus>>,
     item_transition: ItemTransitionState,
     session: AtomicU64,
+    /// Generation попытки подключения (`connect` / `test_connection` / typing
+    /// reconnect). Инкрементируется в начале каждой попытки и в `disconnect()`,
+    /// чтобы установка сокета под `inner`-локом могла отбросить устаревшую
+    /// попытку, вытесненную более новым connect/disconnect. Сетевые `.await`
+    /// выполняются без удержания `inner`.
+    connection_attempt: AtomicU64,
     /// Generation decay-таймера ошибки ручного подключения. Инкремент в начале
     /// `connect()`/`disconnect()` и при вооружении таймера гасит устаревшие таймеры.
     error_decay_generation: Arc<AtomicU64>,
@@ -405,6 +411,7 @@ impl VTubeStudioService {
             item_status: Arc::new(parking_lot::Mutex::new(VTubeStudioItemStatus::Inactive)),
             item_transition: ItemTransitionState::new(),
             session: AtomicU64::new(0),
+            connection_attempt: AtomicU64::new(0),
             error_decay_generation: Arc::new(AtomicU64::new(0)),
             error_decay_delay: parking_lot::Mutex::new(ERROR_DECAY_DELAY),
             app_handle: parking_lot::Mutex::new(None),
@@ -433,6 +440,25 @@ impl VTubeStudioService {
 
     fn invalidate_session(&self) -> u64 {
         self.session.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Начинает новую попытку подключения, вытесняя все предыдущие.
+    fn begin_connection_attempt(&self) -> u64 {
+        self.connection_attempt.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Попытка всё ещё актуальна (не вытеснена новым connect/disconnect)?
+    fn is_current_connection_attempt(&self, attempt: u64) -> bool {
+        self.connection_attempt.load(Ordering::SeqCst) == attempt
+    }
+
+    /// Можно ли устанавливать сокет очередной попытки. Вызывать под `inner`-локом:
+    /// проверка обязана быть атомарной с установкой actor, иначе `disconnect()`
+    /// или более новый `connect()` успеют выполнить teardown между проверкой и
+    /// записью сокета. `is_desired_running()` дополнительно отсекает сокет,
+    /// пришедший после того, как соединение уже стало ненужным.
+    fn can_install_connection_locked(&self, attempt: u64) -> bool {
+        self.is_current_connection_attempt(attempt) && self.is_desired_running()
     }
 
     pub fn set_connection_status(&self, status: VTubeStudioConnectionStatus) {
@@ -800,18 +826,25 @@ impl VTubeStudioService {
         port: u16,
         stored_token: Option<&str>,
     ) -> Result<Option<String>, String> {
-        let mut inner = self.inner.lock().await;
+        let attempt = self.begin_connection_attempt();
 
-        self.stop_typing_keepalive_locked(&mut inner);
-        self.stop_heartbeat_locked(&mut inner);
-        self.stop_actor_locked(&mut inner);
-        inner.typing_active = false;
+        // Teardown — под коротким локом; сетевые операции ниже идут без `inner`,
+        // чтобы не блокировать disconnect()/heartbeat/actor на время connect.
+        {
+            let mut inner = self.inner.lock().await;
+            self.stop_typing_keepalive_locked(&mut inner);
+            self.stop_heartbeat_locked(&mut inner);
+            self.stop_actor_locked(&mut inner);
+            inner.typing_active = false;
+        }
 
         let mut ws = match connect_ws(host, port).await {
             Ok(ws) => ws,
             Err(e) => {
-                self.is_authenticated.store(false, Ordering::SeqCst);
-                self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                if self.is_current_connection_attempt(attempt) {
+                    self.is_authenticated.store(false, Ordering::SeqCst);
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                }
                 return Err(e);
             }
         };
@@ -819,8 +852,10 @@ impl VTubeStudioService {
         let new_token = match perform_authentication(&mut ws, self.next_id(), stored_token).await {
             Ok(token) => token,
             Err(e) => {
-                self.is_authenticated.store(false, Ordering::SeqCst);
-                self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                if self.is_current_connection_attempt(attempt) {
+                    self.is_authenticated.store(false, Ordering::SeqCst);
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                }
                 return Err(e);
             }
         };
@@ -829,19 +864,30 @@ impl VTubeStudioService {
             ws = match connect_and_auth_fresh(host, port, token).await {
                 Ok(fresh_ws) => fresh_ws,
                 Err(e) => {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    if self.is_current_connection_attempt(attempt) {
+                        self.is_authenticated.store(false, Ordering::SeqCst);
+                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    }
                     return Err(e);
                 }
             };
         }
 
-        if self.is_desired_running() {
-            self.start_actor_locked(&mut inner, ws);
-            self.is_authenticated.store(true, Ordering::SeqCst);
-            self.set_connection_status(VTubeStudioConnectionStatus::Connected);
-            self.start_heartbeat_locked(&mut inner);
+        // Установка сокета: только если попытка не вытеснена более новым
+        // connect()/disconnect() за время сетевых операций.
+        let mut inner = self.inner.lock().await;
+        if !self.can_install_connection_locked(attempt) {
+            debug!(
+                attempt,
+                "VTS test_connection superseded; discarding authenticated socket"
+            );
+            return Ok(new_token);
         }
+
+        self.start_actor_locked(&mut inner, ws);
+        self.is_authenticated.store(true, Ordering::SeqCst);
+        self.set_connection_status(VTubeStudioConnectionStatus::Connected);
+        self.start_heartbeat_locked(&mut inner);
         Ok(new_token)
     }
 
@@ -854,17 +900,24 @@ impl VTubeStudioService {
     ) -> Result<Option<String>, String> {
         // Новая попытка подключения гасит вооружённый decay-таймер прежней ошибки.
         self.error_decay_generation.fetch_add(1, Ordering::SeqCst);
+        // Вытесняем более старые попытки подключения: их сокеты не должны
+        // перетереть соединение, установленное этой попыткой (и наоборот).
+        let attempt = self.begin_connection_attempt();
         self.set_desired_running(true);
         self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
 
         let typing_action = { self.settings.read().await.typing_action.clone() };
 
-        let mut inner = self.inner.lock().await;
-        self.stop_typing_keepalive_locked(&mut inner);
-        self.stop_heartbeat_locked(&mut inner);
-        self.stop_actor_locked(&mut inner);
-        inner.typing_active = false;
-        inner.resolved_item = None;
+        // Teardown — под коротким локом; сетевые операции ниже идут без `inner`,
+        // иначе на всё время connect блокируются disconnect()/heartbeat/actor.
+        {
+            let mut inner = self.inner.lock().await;
+            self.stop_typing_keepalive_locked(&mut inner);
+            self.stop_heartbeat_locked(&mut inner);
+            self.stop_actor_locked(&mut inner);
+            inner.typing_active = false;
+            inner.resolved_item = None;
+        }
 
         let ws_result = connect_ws(host, port).await;
         let mut ws = match ws_result {
@@ -874,10 +927,12 @@ impl VTubeStudioService {
                 // должен дать красный статус в titlebar (ROADMAP-074); сброс
                 // происходит только при явном disconnect() (или decay-таймере
                 // для ручной ошибки).
-                self.is_authenticated.store(false, Ordering::SeqCst);
-                self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                if origin == ConnectOrigin::Manual {
-                    self.arm_error_decay();
+                if self.is_current_connection_attempt(attempt) {
+                    self.is_authenticated.store(false, Ordering::SeqCst);
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    if origin == ConnectOrigin::Manual {
+                        self.arm_error_decay();
+                    }
                 }
                 return Err(e);
             }
@@ -887,10 +942,12 @@ impl VTubeStudioService {
         let new_token = match auth_result {
             Ok(token) => token,
             Err(e) => {
-                self.is_authenticated.store(false, Ordering::SeqCst);
-                self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                if origin == ConnectOrigin::Manual {
-                    self.arm_error_decay();
+                if self.is_current_connection_attempt(attempt) {
+                    self.is_authenticated.store(false, Ordering::SeqCst);
+                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                    if origin == ConnectOrigin::Manual {
+                        self.arm_error_decay();
+                    }
                 }
                 return Err(e);
             }
@@ -900,17 +957,29 @@ impl VTubeStudioService {
             ws = match connect_and_auth_fresh(host, port, token).await {
                 Ok(fresh_ws) => fresh_ws,
                 Err(e) => {
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    if origin == ConnectOrigin::Manual {
-                        self.arm_error_decay();
+                    if self.is_current_connection_attempt(attempt) {
+                        self.is_authenticated.store(false, Ordering::SeqCst);
+                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                        if origin == ConnectOrigin::Manual {
+                            self.arm_error_decay();
+                        }
                     }
                     return Err(e);
                 }
             };
         }
 
-        // Handoff аутентифицированного сокета в connection-actor.
+        // Handoff аутентифицированного сокета в connection-actor. Проверка под
+        // локом: за время сетевых операций попытку могли вытеснить новый
+        // connect() или disconnect() — тогда сокет просто дропается.
+        let mut inner = self.inner.lock().await;
+        if !self.can_install_connection_locked(attempt) {
+            debug!(
+                attempt,
+                "VTS connect superseded; discarding authenticated socket"
+            );
+            return Ok(new_token);
+        }
         self.start_actor_locked(&mut inner, ws);
         self.is_authenticated.store(true, Ordering::SeqCst);
         self.set_connection_status(VTubeStudioConnectionStatus::Connected);
@@ -1008,16 +1077,27 @@ impl VTubeStudioService {
         // Если actor-а нет — поднимаем соединение (raw-socket auth → start_actor_locked).
         let needs_reconnect = { self.inner.lock().await.actor.is_none() };
         if needs_reconnect {
-            let mut inner = self.inner.lock().await;
-            self.stop_heartbeat_locked(&mut inner);
-            self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
+            let attempt = self.begin_connection_attempt();
+
+            // Подготовка — под коротким локом; connect/auth ниже идут без `inner`.
+            {
+                let mut inner = self.inner.lock().await;
+                if !self.is_current_connection_attempt(attempt) {
+                    debug!(attempt, "VTS typing reconnect already superseded");
+                    return Ok(());
+                }
+                self.stop_heartbeat_locked(&mut inner);
+                self.set_connection_status(VTubeStudioConnectionStatus::Connecting);
+            }
 
             let mut ws = match connect_ws(host, port).await {
                 Ok(ws) => ws,
                 Err(e) => {
                     debug!(error = %e, "VTS connect for typing=true failed");
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    self.emit_status();
+                    if self.is_current_connection_attempt(attempt) {
+                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                        self.emit_status();
+                    }
                     return Err(e);
                 }
             };
@@ -1026,13 +1106,26 @@ impl VTubeStudioService {
                 Ok(_) => {}
                 Err(e) => {
                     debug!(error = %e, "VTS auth for typing=true failed, discarding broken socket");
-                    self.is_authenticated.store(false, Ordering::SeqCst);
-                    self.set_connection_status(VTubeStudioConnectionStatus::Error);
-                    self.emit_status();
+                    if self.is_current_connection_attempt(attempt) {
+                        self.is_authenticated.store(false, Ordering::SeqCst);
+                        self.set_connection_status(VTubeStudioConnectionStatus::Error);
+                        self.emit_status();
+                    }
                     return Err(e);
                 }
             }
 
+            // Установка сокета под локом с generation-проверкой: за время
+            // сетевых операций попытку могли вытеснить disconnect() или более
+            // новый connect() — тогда сокет дропается и typing не начинается.
+            let mut inner = self.inner.lock().await;
+            if !self.can_install_connection_locked(attempt) {
+                debug!(
+                    attempt,
+                    "VTS typing reconnect superseded; discarding socket"
+                );
+                return Ok(());
+            }
             self.start_actor_locked(&mut inner, ws);
             self.is_authenticated.store(true, Ordering::SeqCst);
             self.start_heartbeat_locked(&mut inner);
@@ -1414,6 +1507,9 @@ impl VTubeStudioService {
 
         // Явная остановка гасит вооружённый decay-таймер ошибки ручного подключения.
         self.error_decay_generation.fetch_add(1, Ordering::SeqCst);
+        // Инвалидируем все in-flight попытки подключения: их сокет не должен
+        // быть установлен уже после teardown.
+        self.begin_connection_attempt();
 
         // Собираем состояние под кратким локом, не держа его через await.
         let (typing_active, resolved_item, has_actor) = {

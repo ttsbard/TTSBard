@@ -575,13 +575,15 @@ pub fn initialize_hotkeys(
         "Initializing global shortcuts from settings"
     );
 
-    // Load hotkey settings
-    let settings_manager = crate::config::SettingsManager::new()
-        .map_err(|e| format!("Failed to create settings manager: {}", e))?;
-
-    let settings = settings_manager
-        .load()
-        .map_err(|e| format!("Failed to load settings: {}", e))?;
+    // Load hotkey settings from the managed settings manager. Creating a second
+    // `SettingsManager` here would give this module its own settings cache, so a
+    // later read could disagree with the owner and re-register stale shortcuts.
+    let settings = {
+        let settings_manager = app_handle.state::<crate::config::SettingsManager>();
+        settings_manager
+            .load()
+            .map_err(|e| format!("Failed to load settings: {}", e))?
+    };
 
     // Unregister any existing hotkeys
     unregister_all_hotkeys(&app_handle)?;
@@ -610,13 +612,14 @@ pub fn reregister_hotkeys(app_handle: &AppHandle) -> Result<(), Box<dyn std::err
     let app_state = app_handle.state::<AppState>();
     let app_state_inner = app_state.inner().clone();
 
-    // Load new hotkey settings
-    let settings_manager = crate::config::SettingsManager::new()
-        .map_err(|e| format!("Failed to create settings manager: {}", e))?;
-
-    let settings = settings_manager
-        .load()
-        .map_err(|e| format!("Failed to load settings: {}", e))?;
+    // Load new hotkey settings from the managed settings manager: a second
+    // instance would cache stale settings and defeat the owner's atomic writes.
+    let settings = {
+        let settings_manager = app_handle.state::<crate::config::SettingsManager>();
+        settings_manager
+            .load()
+            .map_err(|e| format!("Failed to load settings: {}", e))?
+    };
 
     // Unregister all hotkeys
     unregister_all_hotkeys(app_handle)?;

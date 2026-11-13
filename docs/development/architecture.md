@@ -29,24 +29,31 @@ flowchart LR
 - `src-tauri/src/lib.rs::run` создаёт Tauri builder, регистрирует shared state и
   команды frontend API.
 - `src-tauri/src/setup.rs::init_app` связывает настройки, окна, event channels,
-  keyboard hooks, playback и фоновые интеграции.
+  keyboard hooks, playback и фоновые интеграции. Кроме wiring, `setup.rs` сейчас
+  содержит долгоживущие runtime-циклы (в частности, speech worker).
 
 `lib.rs` и `setup.rs` являются composition root. Доменные правила не следует
-добавлять туда, если у них есть подходящий service или модуль.
+добавлять туда, если у них есть подходящий service или модуль. Фактическая роль
+этих модулей шире названия: `setup.rs` держит не только wiring, но и часть
+runtime-циклов, а `commands/` — не только тонкие адаптеры. `commands/mod.rs`
+владеет `coordinate_shutdown` и общими операциями, `commands/tts_pipeline.rs` —
+доменным TTS/RUAccent pipeline, `commands/window.rs` — управлением окнами,
+внешностью и хоткеями. Новый код следует размещать в соответствующем
+service/модуле, а не добавлять в эти файлы.
 
 ## Основные границы
 
 | Область | Владелец | Назначение |
 |---|---|---|
 | UI | `src/components/`, `src/composables/` | Представление, формы и локальное состояние интерфейса |
-| Команды | `src-tauri/src/commands/` | Тонкая граница вызовов Vue → Rust |
+| Команды | `src-tauri/src/commands/` | Граница вызовов Vue → Rust; часть команд пока владеет доменными операциями (shutdown, TTS pipeline, окна и хоткеи) |
 | События | `events.rs`, `event_loop.rs` | Внутреннее распределение событий и уведомления окон |
 | Состояние приложения | `state.rs` | Общие runtime handles, сервисы, registry и hot-path state |
 | Настройки | `config/` | Валидация, cache и сохранение пользовательских настроек |
 | TTS | `tts/` | Провайдеры, их registry и единый контракт синтеза |
 | Аудио | `audio/`, `signalsmith/`, `playback.rs` | Декодирование, DSP, очередь и вывод на устройства |
-| Редактор | `editor.rs`, `preprocessor/`, `spellcheck.rs` | Подготовка текста, история и проверка орфографии |
-| Окна и ввод | `window.rs`, `hotkeys.rs`, `soundpanel/` | Окна, глобальные клавиши и низкоуровневый ввод |
+| Редактор | `editor.rs`, `preprocessor/`, `spellcheck.rs`, `history.rs`, `tabs.rs`, `stress/` | Подготовка текста, история ввода и фраз, вкладки редактора, проверка орфографии, расстановка ударений RUAccent |
+| Окна и ввод | `window.rs`, `commands/window.rs`, `hotkeys.rs`, `config/windows.rs`, `playback_window.rs`, `soundpanel_window.rs`, `soundpanel/` | Окна, их геометрия и внешность, глобальные клавиши и низкоуровневый ввод |
 | Интеграции | `webview/`, `twitch/`, `telegram/`, `vtube_studio/` | Внешние протоколы и lifecycle подключений |
 | Внешний текст | `input_server/`, `commands/input_server.rs` | Loopback listener, общий intake, очередь ожидающих реплик |
 | OCR | `ocr/`, `commands/ocr.rs` | Пакеты моделей, runtime, захват, распознавание и передача в intake |
@@ -149,8 +156,12 @@ HTTP `POST /v1/speech` и результат OCR сходятся в
 распознавание, после чего передаёт текст с отметкой источника OCR.
 
 Для автоматически принятой реплики создаётся snapshot провайдера и голоса.
-Далее используется общий speech pipeline. Delivery policy внешнего текста
-исключает WebView и Twitch. Действие «Редактировать» открывает обычную вкладку:
+Далее используется общий speech pipeline. Delivery policy задаёт persisted
+маршрут входящего текста `IncomingRoute`: `AudioOnly`, `AudioWebview`,
+`AudioTwitch` или `Everywhere`. Аудио присутствует во всех маршрутах, а
+рассылка в WebView и Twitch включается выбранным маршрутом; неизвестное или
+отсутствующее значение нормализуется в `AudioOnly`. Действие «Редактировать»
+открывает обычную вкладку:
 последующая отправка подчиняется уже маршруту редактора.
 
 Frontend показывает вкладку «Входящие», если HTTP-сервер работает, OCR включён

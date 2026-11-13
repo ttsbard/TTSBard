@@ -4,6 +4,13 @@ use std::collections::HashMap;
 const RU_AFF: &str = include_str!("../resources/dict/ru.aff");
 const RU_DIC: &str = include_str!("../resources/dict/ru.dic");
 
+/// Upper bound for the per-word result cache.
+///
+/// The cache is an optimization only: an evicted word is simply checked again
+/// on the next request, so the batch that reaches the limit drops the whole
+/// cache instead of letting memory grow with every unique word the user types.
+const MAX_CACHE_ENTRIES: usize = 10_000;
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SpellResult {
     pub word: String,
@@ -84,6 +91,12 @@ impl SpellcheckManager {
         // Phase 3: write new results to cache (dict read-lock released)
         {
             let mut cache = self.cache.write();
+            // Bound the cache growth: once it is full, the incoming batch
+            // evicts it wholesale. Results stay correct — every evicted word is
+            // re-checked on demand.
+            if cache.len() >= MAX_CACHE_ENTRIES {
+                cache.clear();
+            }
             for (idx, r) in &new_results {
                 let w = &words[*idx];
                 cache.entry(w.clone()).or_insert_with(|| r.clone());
@@ -204,5 +217,51 @@ mod tests {
         let _ = mgr.check_words(&words);
         let second = mgr.check_words(&words);
         assert!(second.is_empty());
+    }
+
+    /// A full cache must be dropped instead of growing without limit, and the
+    /// evicted results must still be produced correctly on demand.
+    #[test]
+    fn cache_is_cleared_when_entry_limit_is_reached() {
+        let mgr = SpellcheckManager::new();
+        assert!(mgr.is_available());
+
+        {
+            let mut cache = mgr.cache.write();
+            for i in 0..MAX_CACHE_ENTRIES {
+                let word = format!("слово{}", i);
+                cache.insert(
+                    word.clone(),
+                    SpellResult {
+                        word,
+                        correct: true,
+                        suggestions: Vec::new(),
+                    },
+                );
+            }
+        }
+        assert_eq!(mgr.cache.read().len(), MAX_CACHE_ENTRIES);
+
+        let results = mgr.check_words(&["здравствуйте".into()]);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].correct);
+        assert_eq!(
+            mgr.cache.read().len(),
+            1,
+            "a full cache must be cleared before accepting new entries"
+        );
+    }
+
+    /// Below the limit the cache keeps accumulating instead of being cleared.
+    #[test]
+    fn cache_keeps_entries_below_the_limit() {
+        let mgr = SpellcheckManager::new();
+        assert!(mgr.is_available());
+
+        let words: Vec<String> = vec!["здравствуйте".into(), "привет".into()];
+        let _ = mgr.check_words(&words);
+        let _ = mgr.check_words(&words);
+
+        assert_eq!(mgr.cache.read().len(), words.len());
     }
 }

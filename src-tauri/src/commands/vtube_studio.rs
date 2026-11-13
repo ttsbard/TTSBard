@@ -624,7 +624,12 @@ pub async fn test_vtube_studio_connection(
                 }
             }
 
-            state.vtube_studio.mark_authenticated(true);
+            // Сокет устанавливается сервисом только при живом desired_running;
+            // после параллельного disconnect() попытка отбрасывается. Поэтому
+            // auth-флаг не должен «утекать» в UI при погашенном желании.
+            if state.vtube_studio.is_desired_running() {
+                state.vtube_studio.mark_authenticated(true);
+            }
 
             let item_status = state.vtube_studio.get_item_status();
             emit_vts_item_status(&app_handle, &item_status);

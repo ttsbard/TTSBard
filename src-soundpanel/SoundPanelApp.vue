@@ -301,10 +301,15 @@ function setKeyRef(key: string, el: HTMLElement | null) {
 }
 
 async function toggleClickthrough() {
+  const previous = clickthroughEnabled.value
+  const next = !previous
+  clickthroughEnabled.value = next
   try {
-    clickthroughEnabled.value = await invoke<boolean>('sp_set_floating_clickthrough', { enabled: !clickthroughEnabled.value })
+    await invoke('sp_set_floating_clickthrough', { enabled: next })
+    ;(document.activeElement as HTMLElement | null)?.blur()
   } catch (e) {
-    console.error('Failed to toggle clickthrough:', e)
+    clickthroughEnabled.value = previous
+    console.error('[SoundPanel] Failed to toggle clickthrough:', e)
   }
 }
 
@@ -577,6 +582,11 @@ onMounted(async () => {
       onBindingsChanged: onBindingsOrSetChanged,
       onActiveSetChanged: onBindingsOrSetChanged,
     })
+    await listenerScope.track(
+      listen<string>('no-binding', (event) => {
+        showNoBinding(event.payload)
+      }),
+    )
     installSoundPanelKeydown(listenerScope, onKeydown)
   } catch (e) {
     console.error('Failed to register soundpanel listeners:', e)

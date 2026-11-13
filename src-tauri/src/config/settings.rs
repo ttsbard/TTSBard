@@ -2123,7 +2123,13 @@ impl SettingsManager {
 
     /// Read, mutate, persist, and refresh the cache while holding the shared
     /// config writer lock for the complete read-modify-write transaction.
-    fn update_settings_atomically(&self, update: impl FnOnce(&mut AppSettings)) -> Result<()> {
+    ///
+    /// The closure may veto the update by returning an error: in that case
+    /// nothing is written and neither the disk file nor the cache changes.
+    fn update_settings_atomically(
+        &self,
+        update: impl FnOnce(&mut AppSettings) -> Result<()>,
+    ) -> Result<()> {
         let path = self.settings_path();
         let _guard = persistence::config_write_lock().lock();
 
@@ -2133,7 +2139,7 @@ impl SettingsManager {
         } else {
             AppSettings::default()
         };
-        update(&mut settings);
+        update(&mut settings)?;
 
         let content =
             serde_json::to_string_pretty(&settings).context("Failed to serialize settings")?;
@@ -2289,6 +2295,7 @@ impl SettingsManager {
     pub fn set_visible_tts_provider_ids(&self, provider_ids: Vec<String>) -> Result<()> {
         self.update_settings_atomically(move |settings| {
             settings.tts.visible_provider_ids = provider_ids;
+            Ok(())
         })
     }
 
@@ -2353,6 +2360,7 @@ impl SettingsManager {
             fish.format = format;
             fish.temperature = temperature;
             fish.sample_rate = sample_rate;
+            Ok(())
         })
     }
 
@@ -2369,21 +2377,22 @@ impl SettingsManager {
     }
 
     pub fn add_fish_audio_voice(&self, voice: crate::tts::VoiceModel) -> Result<()> {
-        let mut settings = self.load()?;
-        if !settings.tts.fish.voices.iter().any(|v| v.id == voice.id) {
-            settings.tts.fish.voices.push(voice);
-            self.save(&settings)?;
-        }
-        Ok(())
+        self.update_settings_atomically(move |settings| {
+            if !settings.tts.fish.voices.iter().any(|v| v.id == voice.id) {
+                settings.tts.fish.voices.push(voice);
+            }
+            Ok(())
+        })
     }
 
     pub fn remove_fish_audio_voice(&self, voice_id: &str) -> Result<()> {
-        let mut settings = self.load()?;
-        settings.tts.fish.voices.retain(|v| v.id != voice_id);
-        if settings.tts.fish.reference_id == voice_id {
-            settings.tts.fish.reference_id.clear();
-        }
-        self.save(&settings)
+        self.update_settings_atomically(|settings| {
+            settings.tts.fish.voices.retain(|v| v.id != voice_id);
+            if settings.tts.fish.reference_id == voice_id {
+                settings.tts.fish.reference_id.clear();
+            }
+            Ok(())
+        })
     }
 
     pub fn get_fish_audio_voices(&self) -> Vec<crate::tts::VoiceModel> {
@@ -2569,6 +2578,7 @@ impl SettingsManager {
             el.similarity_boost = similarity_boost;
             el.style = style;
             el.use_speaker_boost = use_speaker_boost;
+            Ok(())
         })
     }
 
@@ -2585,6 +2595,7 @@ impl SettingsManager {
             el.model_id = model_id;
             el.style = style;
             el.use_speaker_boost = use_speaker_boost;
+            Ok(())
         })
     }
 
@@ -2654,6 +2665,7 @@ impl SettingsManager {
         let settings = settings.clone();
         self.update_settings_atomically(move |app_settings| {
             app_settings.twitch = settings;
+            Ok(())
         })
     }
 
@@ -2685,6 +2697,7 @@ impl SettingsManager {
             app_settings.webview.port = port;
             app_settings.webview.upnp_enabled = upnp_enabled;
             app_settings.webview.send_original_text = send_original_text;
+            Ok(())
         })
     }
 
@@ -2700,6 +2713,7 @@ impl SettingsManager {
         self.update_settings_atomically(move |app_settings| {
             app_settings.input_server.start_on_boot = start_on_boot;
             app_settings.input_server.port = port;
+            Ok(())
         })
     }
 
@@ -2724,6 +2738,7 @@ impl SettingsManager {
         self.update_settings_atomically(move |app_settings| {
             app_settings.incoming.auto_play = auto_play;
             app_settings.incoming.route = route;
+            Ok(())
         })
     }
 
@@ -2737,6 +2752,7 @@ impl SettingsManager {
         self.update_settings_atomically(move |app_settings| {
             app_settings.ocr.enabled = enabled;
             app_settings.ocr.model_id = model_id;
+            Ok(())
         })
     }
 
@@ -2749,6 +2765,7 @@ impl SettingsManager {
     pub fn set_ocr_settings(&self, settings: OcrSettings) -> Result<()> {
         self.update_settings_atomically(move |app_settings| {
             app_settings.ocr = settings;
+            Ok(())
         })
     }
 
@@ -2765,9 +2782,10 @@ impl SettingsManager {
     where
         F: FnOnce(&mut LoggingSettings),
     {
-        let mut settings = self.load()?;
-        updater(&mut settings.logging);
-        self.save(&settings)
+        self.update_settings_atomically(|settings| {
+            updater(&mut settings.logging);
+            Ok(())
+        })
     }
 
     /// Get logging settings
@@ -2859,14 +2877,15 @@ impl SettingsManager {
         secret: Option<String>,
         dc_id: Option<i32>,
     ) -> Result<()> {
-        let mut settings = self.load()?;
-        settings.tts.network.mtproxy = MtProxySettings {
-            host,
-            port,
-            secret,
-            dc_id,
-        };
-        self.save(&settings)
+        self.update_settings_atomically(move |settings| {
+            settings.tts.network.mtproxy = MtProxySettings {
+                host,
+                port,
+                secret,
+                dc_id,
+            };
+            Ok(())
+        })
     }
 
     // ========== Theme Settings ==========
@@ -2934,6 +2953,7 @@ impl SettingsManager {
     pub fn set_legacy_audio_cache_migrated(&self) -> Result<()> {
         self.update_settings_atomically(move |settings| {
             settings.storage.legacy_audio_cache_migrated = true;
+            Ok(())
         })
     }
 
@@ -2947,6 +2967,7 @@ impl SettingsManager {
     pub fn set_legacy_models_migrated(&self) -> Result<()> {
         self.update_settings_atomically(move |settings| {
             settings.storage.legacy_models_migrated = true;
+            Ok(())
         })
     }
 
@@ -2962,6 +2983,7 @@ impl SettingsManager {
         self.update_settings_atomically(move |settings| {
             settings.storage.data_dir = data_dir;
             settings.storage.audio_cache_dir = audio_cache_dir;
+            Ok(())
         })
     }
 
@@ -3101,6 +3123,7 @@ impl SettingsManager {
         self.update_settings_atomically(move |settings| {
             settings.editor.homograph_accentor.enabled = enabled;
             settings.editor.homograph_accentor.accentor_pack_id = accentor_pack_id;
+            Ok(())
         })
     }
 
@@ -3110,6 +3133,7 @@ impl SettingsManager {
     pub fn set_editor_homograph_accentor_load_on_start(&self, load_on_start: bool) -> Result<()> {
         self.update_settings_atomically(move |settings| {
             settings.editor.homograph_accentor.load_on_start = load_on_start;
+            Ok(())
         })
     }
 
@@ -3265,9 +3289,11 @@ impl SettingsManager {
 
     /// Atomically save all DSP settings
     pub fn set_dsp_settings(&self, dsp: &DspSettings) -> Result<()> {
-        let mut settings = self.load()?;
-        settings.dsp = dsp.clone();
-        self.save(&settings)
+        let dsp = dsp.clone();
+        self.update_settings_atomically(move |settings| {
+            settings.dsp = dsp;
+            Ok(())
+        })
     }
 
     // ========== Hotkey Settings ==========
@@ -3283,26 +3309,28 @@ impl SettingsManager {
     /// * `name` - Either "main_window" or "sound_panel"
     /// * `hotkey` - The new hotkey configuration
     pub fn set_hotkey(&self, name: &str, hotkey: &super::hotkeys::Hotkey) -> Result<()> {
-        let mut settings = self.load()?;
-        let field = settings
-            .hotkeys
-            .get_global_by_name_mut(name)
-            .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
-        *field = hotkey.clone();
-        self.save(&settings)
+        self.update_settings_atomically(|settings| {
+            let field = settings
+                .hotkeys
+                .get_global_by_name_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
+            *field = hotkey.clone();
+            Ok(())
+        })
     }
 
     /// Flip the per-hotkey `enabled` switch without touching the stored
     /// combination. Conflict validation for a `false -> true` transition is the
     /// command layer's responsibility.
     pub fn set_hotkey_enabled_flag(&self, name: &str, enabled: bool) -> Result<()> {
-        let mut settings = self.load()?;
-        let field = settings
-            .hotkeys
-            .get_global_by_name_mut(name)
-            .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
-        field.enabled = enabled;
-        self.save(&settings)
+        self.update_settings_atomically(|settings| {
+            let field = settings
+                .hotkeys
+                .get_global_by_name_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
+            field.enabled = enabled;
+            Ok(())
+        })
     }
 
     /// Flip the per-editor-hotkey `enabled` switch without touching the stored
@@ -3311,36 +3339,28 @@ impl SettingsManager {
         if !super::hotkeys::EditorHotkeySettings::is_valid_action_id(action_id) {
             return Err(anyhow::anyhow!("Invalid editor action: {}", action_id));
         }
-        let mut settings = self.load()?;
-        let field = settings
-            .hotkeys
-            .editor
-            .get_mut_by_id(action_id)
-            .ok_or_else(|| anyhow::anyhow!("Invalid editor action: {}", action_id))?;
-        field.enabled = enabled;
-        self.save(&settings)
+        self.update_settings_atomically(|settings| {
+            let field = settings
+                .hotkeys
+                .editor
+                .get_mut_by_id(action_id)
+                .ok_or_else(|| anyhow::anyhow!("Invalid editor action: {}", action_id))?;
+            field.enabled = enabled;
+            Ok(())
+        })
     }
 
-    /// Set an editor-scoped hotkey.
+    /// Validate and assign an editor hotkey inside an atomic settings
+    /// transaction.
     ///
-    /// Validates action id, checks for duplicates within the editor group and
-    /// conflicts with global/main-window-local bindings. Saves settings and emits
-    /// `settings-changed` but does NOT call `reregister_hotkeys` (editor hotkeys
-    /// are never registered as global shortcuts).
-    ///
-    /// Empty binding is allowed and means disabled.
-    pub fn set_editor_hotkey(
-        &self,
+    /// The duplicate and global-conflict checks must see the same snapshot as
+    /// the assignment, so they run inside the closure instead of on a value
+    /// loaded beforehand.
+    fn apply_editor_hotkey(
+        settings: &mut AppSettings,
         action_id: &str,
         hotkey: &super::hotkeys::Hotkey,
     ) -> Result<()> {
-        use super::hotkeys::EditorHotkeySettings;
-        if !EditorHotkeySettings::is_valid_action_id(action_id) {
-            return Err(anyhow::anyhow!("Invalid editor action: {}", action_id));
-        }
-
-        let mut settings = self.load()?;
-
         // Check for duplicate within editor group
         if let Some(conflict) = settings.hotkeys.editor.find_duplicate(action_id, hotkey) {
             let label = editor_action_label(conflict);
@@ -3363,8 +3383,30 @@ impl SettingsManager {
             .get_mut_by_id(action_id)
             .ok_or_else(|| anyhow::anyhow!("Invalid editor action: {}", action_id))?;
         *field = hotkey.clone();
+        Ok(())
+    }
 
-        self.save(&settings)
+    /// Set an editor-scoped hotkey.
+    ///
+    /// Validates action id, checks for duplicates within the editor group and
+    /// conflicts with global/main-window-local bindings. Saves settings and emits
+    /// `settings-changed` but does NOT call `reregister_hotkeys` (editor hotkeys
+    /// are never registered as global shortcuts).
+    ///
+    /// Empty binding is allowed and means disabled.
+    pub fn set_editor_hotkey(
+        &self,
+        action_id: &str,
+        hotkey: &super::hotkeys::Hotkey,
+    ) -> Result<()> {
+        use super::hotkeys::EditorHotkeySettings;
+        if !EditorHotkeySettings::is_valid_action_id(action_id) {
+            return Err(anyhow::anyhow!("Invalid editor action: {}", action_id));
+        }
+
+        self.update_settings_atomically(|settings| {
+            Self::apply_editor_hotkey(settings, action_id, hotkey)
+        })
     }
 
     /// Reset an editor-scoped hotkey to its canonical default.
@@ -3394,10 +3436,12 @@ impl SettingsManager {
             "edit_next_incoming" => Hotkey::default_edit_next_incoming(),
             _ => return Err(anyhow::anyhow!("Invalid editor action: {}", action_id)),
         };
-        if let Some(current) = self.load()?.hotkeys.editor.get_by_id(action_id) {
-            default.enabled = current.enabled;
-        }
-        self.set_editor_hotkey(action_id, &default)?;
+        self.update_settings_atomically(|settings| {
+            if let Some(current) = settings.hotkeys.editor.get_by_id(action_id) {
+                default.enabled = current.enabled;
+            }
+            Self::apply_editor_hotkey(settings, action_id, &default)
+        })?;
         Ok(default)
     }
 
@@ -3421,10 +3465,15 @@ impl SettingsManager {
             "ocr_capture" => super::hotkeys::Hotkey::default_ocr_capture(),
             _ => return Err(anyhow::anyhow!("Invalid hotkey name: {}", name)),
         };
-        if let Some(current) = self.load()?.hotkeys.get_global_by_name(name) {
-            default.enabled = current.enabled;
-        }
-        self.set_hotkey(name, &default)?;
+        self.update_settings_atomically(|settings| {
+            let field = settings
+                .hotkeys
+                .get_global_by_name_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("Invalid hotkey name: {}", name))?;
+            default.enabled = field.enabled;
+            *field = default.clone();
+            Ok(())
+        })?;
         Ok(default)
     }
 
@@ -3465,6 +3514,7 @@ impl SettingsManager {
         let settings = settings.clone();
         self.update_settings_atomically(move |app_settings| {
             app_settings.vtube_studio = settings;
+            Ok(())
         })
     }
 
@@ -3478,6 +3528,7 @@ impl SettingsManager {
         let settings = settings.clone();
         self.update_settings_atomically(move |app_settings| {
             app_settings.vrchat = settings;
+            Ok(())
         })
     }
 }
@@ -8117,6 +8168,143 @@ mod tests {
         assert_eq!(stored.key, "E");
         assert_eq!(stored.modifiers, ctrl_e.modifiers);
         assert!(stored.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Atomic settings transactions ====================
+
+    /// Helper: build a SettingsManager over a fresh temp config dir.
+    fn atomic_settings_tmp_manager(label: &str) -> (SettingsManager, std::path::PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-atomic-settings-{}-{}-{}",
+            label,
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        (manager, dir)
+    }
+
+    /// The read-modify-write setters must never lose each other's update.
+    ///
+    /// Two managers with independent caches mutate different sections at the
+    /// same time. The old `self.load()` + `self.save(&settings)` pair could
+    /// write back a stale snapshot and drop one of the changes; the atomic
+    /// transaction re-reads the durable state, so both survive on disk.
+    #[test]
+    fn concurrent_mutating_setters_preserve_both_sections() {
+        let (manager_a, dir) = atomic_settings_tmp_manager("concurrent");
+        let manager_b = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        // Field no concurrent writer touches; written through the same lock.
+        manager_a.set_speaker_volume(55).unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let barrier_a = barrier.clone();
+        let barrier_b = barrier.clone();
+
+        let handle_a = std::thread::spawn(move || {
+            barrier_a.wait();
+            manager_a.set_mtproxy_settings(
+                Some("proxy.example".to_string()),
+                443,
+                Some("secret".to_string()),
+                Some(2),
+            )
+        });
+        let handle_b = std::thread::spawn(move || {
+            barrier_b.wait();
+            let mut dsp = DspSettings::default();
+            dsp.eq.enabled = true;
+            dsp.eq.bands[0].gain_db = 3.0;
+            dsp.limiter.enabled = true;
+            manager_b.set_dsp_settings(&dsp)
+        });
+
+        barrier.wait();
+        handle_a.join().unwrap().unwrap();
+        handle_b.join().unwrap().unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert_eq!(
+            disk.tts.network.mtproxy.host.as_deref(),
+            Some("proxy.example")
+        );
+        assert_eq!(disk.tts.network.mtproxy.port, 443);
+        assert_eq!(disk.tts.network.mtproxy.secret.as_deref(), Some("secret"));
+        assert_eq!(disk.tts.network.mtproxy.dc_id, Some(2));
+        assert!(disk.dsp.eq.enabled);
+        assert_eq!(disk.dsp.eq.bands[0].gain_db, 3.0);
+        assert!(disk.dsp.limiter.enabled);
+        assert_eq!(disk.audio.speaker_volume, 55);
+
+        // A fresh manager sees the same durable state, not a stale cache.
+        let reloaded = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        assert_eq!(reloaded.load().unwrap(), disk);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sequential mutations keep unrelated fields, repeated voice additions
+    /// stay idempotent, and a rejected hotkey update writes nothing at all.
+    #[test]
+    fn sequential_mutations_preserve_unrelated_settings() {
+        let (manager, dir) = atomic_settings_tmp_manager("sequential");
+        manager.set_openai_voice("nova".to_string()).unwrap();
+
+        let voice = crate::tts::VoiceModel {
+            id: "voice-1".to_string(),
+            title: "Voice".to_string(),
+            description: None,
+            cover_image: None,
+            languages: Vec::new(),
+            author_nickname: None,
+        };
+        manager.add_fish_audio_voice(voice.clone()).unwrap();
+        manager.add_fish_audio_voice(voice).unwrap();
+        manager
+            .set_fish_audio_reference_id("voice-1".to_string())
+            .unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert_eq!(
+            disk.tts.fish.voices.len(),
+            1,
+            "adding the same voice twice must stay idempotent"
+        );
+        assert_eq!(disk.tts.fish.reference_id, "voice-1");
+
+        manager.remove_fish_audio_voice("voice-1").unwrap();
+        manager
+            .update_logging(|logging| logging.level = "debug".to_string())
+            .unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert!(disk.tts.fish.voices.is_empty());
+        assert!(
+            disk.tts.fish.reference_id.is_empty(),
+            "removing the selected voice must clear the reference id"
+        );
+        assert_eq!(disk.tts.openai.voice, "nova");
+        assert_eq!(disk.logging.level, "debug");
+
+        // Validation is preserved and a rejected transaction is a no-op.
+        let before = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        let error = manager
+            .set_hotkey(
+                "bogus",
+                &crate::config::hotkeys::Hotkey::default_main_window(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Invalid hotkey name"), "{error}");
+        let after = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert_eq!(after, before, "a rejected update must not write settings");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

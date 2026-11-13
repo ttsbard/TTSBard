@@ -72,7 +72,9 @@ impl TelegramState {
         self.client.lock().await.clone()
     }
 
-    /// Сохранить/заменить клиент (для init / auto_restore).
+    /// Сохранить/заменить клиент. Owner-API оставлен для тестов; команды
+    /// используют `swap_client`, чтобы отключить прежний клиент после lock.
+    #[allow(dead_code)]
     pub(crate) async fn set_client(&self, client: TelegramClient) {
         *self.client.lock().await = Some(client);
     }
@@ -195,8 +197,13 @@ pub async fn telegram_init(
         }
     }
 
-    // Сохраняем клиент в состоянии
-    state.set_client(client.clone()).await;
+    // Сохраняем клиент в состоянии. Прежний клиент отключаем в фоне уже после
+    // освобождения lock: сетевой await не должен идти под `client`-мьютексом.
+    if let Some(old) = state.swap_client(client.clone()).await {
+        tokio::spawn(async move {
+            let _ = old.disconnect().await;
+        });
+    }
 
     // Update cached proxy status
     let proxy_status = client.get_proxy_status().await;
@@ -581,8 +588,13 @@ pub async fn telegram_auto_restore(
         }
     }
 
-    // Сохраняем клиент в состоянии
-    state.set_client(client.clone()).await;
+    // Сохраняем клиент в состоянии. Прежний клиент (если был) отключаем в фоне
+    // после освобождения lock, чтобы его сокеты не удерживали мьютекс.
+    if let Some(old) = state.swap_client(client.clone()).await {
+        tokio::spawn(async move {
+            let _ = old.disconnect().await;
+        });
+    }
 
     // Update cached proxy status
     let proxy_status = client.get_proxy_status().await;

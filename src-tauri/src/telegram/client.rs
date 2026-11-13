@@ -455,24 +455,24 @@ impl TelegramClient {
         *self.broadcast_tx.lock().await = Some(broadcast_tx);
         *self.dispatcher_handle.lock().await = Some(dispatcher);
 
-        // Проверяем, авторизован ли уже пользователь (только если есть phone)
+        // Проверяем, авторизован ли уже пользователь (только если есть phone).
+        // Клонируем клиента под коротким локом и отпускаем guard до сетевого
+        // `is_authorized().await`, чтобы не держать `self.client` на всё время
+        // запроса к серверу.
         if phone.is_some() {
-            let is_authorized = {
-                let client_guard = self.client.lock().await;
-                if let Some(c) = client_guard.as_ref() {
-                    match c.is_authorized().await {
-                        Ok(authorized) => {
-                            debug!(authorized, "[AUTH] Session restored");
-                            authorized
-                        }
-                        Err(e) => {
-                            error!(error = %e, "[AUTH] Error checking authorization");
-                            false
-                        }
+            let current = { self.client.lock().await.clone() };
+            let is_authorized = match current {
+                Some(c) => match c.is_authorized().await {
+                    Ok(authorized) => {
+                        debug!(authorized, "[AUTH] Session restored");
+                        authorized
                     }
-                } else {
-                    false
-                }
+                    Err(e) => {
+                        error!(error = %e, "[AUTH] Error checking authorization");
+                        false
+                    }
+                },
+                None => false,
             };
 
             if is_authorized {

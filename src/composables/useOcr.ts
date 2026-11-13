@@ -236,6 +236,9 @@ export function useOcr(active?: () => boolean) {
   // Bumped by every status event so an in-flight `get_ocr_status` snapshot
   // never overwrites a newer transition that arrived while it was pending.
   let statusLoadToken = 0
+  // Bumped by every `refreshStatus()` call so overlapping snapshots keep only
+  // the newest reply: a slower older request must never overwrite a newer one.
+  let statusRequestSeq = 0
   // Bumped by every settings refresh so an in-flight `get_ocr_settings`
   // snapshot never overwrites a newer refresh that started while it was
   // pending (out-of-order guard, mirrors statusLoadToken).
@@ -342,13 +345,18 @@ export function useOcr(active?: () => boolean) {
   }
 
   async function refreshStatus(): Promise<void> {
+    statusRequestSeq += 1
+    const request = statusRequestSeq
     const token = statusLoadToken
     try {
       const payload = await invoke<unknown>('get_ocr_status')
-      if (disposed || token !== statusLoadToken) return
+      // Drop the reply when it belongs to a superseded request (a newer
+      // `refreshStatus()` started meanwhile) or when a status event already
+      // delivered a newer transition.
+      if (disposed || request !== statusRequestSeq || token !== statusLoadToken) return
       status.value = convertOcrStatusFromRust(payload)
     } catch (e) {
-      if (disposed || token !== statusLoadToken) return
+      if (disposed || request !== statusRequestSeq || token !== statusLoadToken) return
       debugError('[Ocr] Failed to load status:', e)
     }
   }

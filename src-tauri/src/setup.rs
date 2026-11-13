@@ -25,11 +25,21 @@ use crate::config::{AppSettings, Hotkey, SettingsManager, WindowsManager, Window
 use crate::event_loop::EventHandler;
 use crate::events::AppEvent;
 use crate::soundpanel::SoundPanelState;
-use crate::speech_queue::JobStatus;
 use crate::state::AppState;
 use crate::tts::TtsProviderType;
 use crate::vtube_studio::ConnectOrigin;
 use std::sync::Arc;
+
+/// Publish an application event to the main webview under its Tauri event name.
+///
+/// The name is derived from [`AppEvent::to_tauri_event`], so the IPC contract
+/// check records this single dynamic expression for this file; the speech worker
+/// in [`crate::speech_queue`] publishes through this helper instead of deriving
+/// the event name itself.
+pub(crate) fn emit_app_event(app_handle: &AppHandle, event: AppEvent) {
+    let event_name = event.to_tauri_event();
+    let _ = app_handle.emit(event_name, &event);
+}
 
 /// Initialize the application (called from Tauri's setup callback)
 ///
@@ -147,7 +157,7 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
         let worker_twitch = app_state.inner().twitch.clone();
         let worker_vrchat = app_state.inner().vrchat.clone();
         app_state.inner().runtime.spawn(async move {
-            speech_worker(
+            crate::speech_queue::speech_worker(
                 worker_queue,
                 worker_notify,
                 worker_handle,
@@ -167,8 +177,7 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
         info!("Event thread started, waiting for events...");
         for event in event_rx {
             info!(event = ?std::mem::discriminant(&event), "Received from channel");
-            let event_name = event.to_tauri_event();
-            let _ = app_handle.emit(event_name, &event);
+            emit_app_event(&app_handle, event.clone());
 
             let handler = EventHandler::new(app_state_for_events.clone(), app_handle.clone());
             handler.handle(event);
@@ -191,8 +200,7 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
     let app_state_for_soundpanel = app_state.inner().clone();
     thread::spawn(move || {
         for event in soundpanel_rx {
-            let event_name = event.to_tauri_event();
-            let _ = app_handle_for_soundpanel.emit(event_name, &event);
+            emit_app_event(&app_handle_for_soundpanel, event.clone());
 
             match event {
                 AppEvent::ShowSoundPanelWindow => {
@@ -1062,7 +1070,7 @@ fn init_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "quit" => {
-                tauri::async_runtime::spawn(crate::commands::coordinate_shutdown(
+                tauri::async_runtime::spawn(crate::shutdown::coordinate_shutdown(
                     tray.app_handle().clone(),
                 ));
             }
@@ -1215,6 +1223,16 @@ fn init_vtube_studio(app_state: &AppState, app_handle: AppHandle) {
     // при transport-failure из idle независимо от того, включён ли автозапуск.
     app_state.vtube_studio.attach_app_handle(app_handle.clone());
 
+    // Подписка на общий shutdown (по аналогии с init_twitch_api_auth): активный
+    // сокет/сессия VTS закрываются при отмене токена, даже если завершение
+    // инициировано не через coordinate_shutdown.
+    let shutdown = app_state.shutdown.clone();
+    let vtube_studio = app_state.vtube_studio.clone();
+    app_state.runtime.spawn(async move {
+        shutdown.cancelled().await;
+        vtube_studio.disconnect().await;
+    });
+
     let start_on_boot = {
         let settings = app_state.vtube_studio.settings.blocking_read();
         settings.start_on_boot
@@ -1259,21 +1277,36 @@ fn init_vtube_studio(app_state: &AppState, app_handle: AppHandle) {
         match result {
             Ok(new_token) => {
                 info!("VTube Studio: autostart connected successfully");
+                // persist-first: новый токен сначала сохраняется на диск и только
+                // после успешной записи публикуется в runtime-настройках. Ошибка
+                // сохранения оставляет runtime со старым токеном — то же
+                // поведение, что у ручного подключения.
                 if let Some(ref tok) = new_token {
-                    let mut s = app_state_clone.vtube_studio.settings.write().await;
-                    s.token = Some(tok.clone());
-                    drop(s);
+                    let persisted = match app_handle_clone.try_state::<SettingsManager>() {
+                        Some(mgr) => {
+                            let inner = mgr.inner().clone();
+                            let tok_clone = tok.clone();
+                            crate::commands::persist_blocking(&inner, move |m| {
+                                let mut vts = m.get_vtube_studio_settings();
+                                vts.token = Some(tok_clone);
+                                m.set_vtube_studio_settings(&vts)
+                            })
+                            .await
+                        }
+                        None => Err("SettingsManager not available".to_string()),
+                    };
 
-                    let mgr_opt = app_handle_clone.try_state::<SettingsManager>();
-                    if let Some(mgr) = mgr_opt {
-                        let inner = mgr.inner().clone();
-                        let tok_clone = tok.clone();
-                        let _ = crate::commands::persist_blocking(&inner, move |m| {
-                            let mut vts = m.get_vtube_studio_settings();
-                            vts.token = Some(tok_clone);
-                            m.set_vtube_studio_settings(&vts)
-                        })
-                        .await;
+                    match persisted {
+                        Ok(()) => {
+                            app_state_clone.vtube_studio.settings.write().await.token =
+                                Some(tok.clone());
+                        }
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                "VTube Studio: failed to persist autostart token"
+                            );
+                        }
                     }
                 }
             }
@@ -1282,335 +1315,6 @@ fn init_vtube_studio(app_state: &AppState, app_handle: AppHandle) {
             }
         }
     });
-}
-
-fn q_state_dto(
-    q: &Arc<parking_lot::Mutex<crate::speech_queue::SpeechQueue>>,
-) -> crate::speech_queue::SpeechQueueStateDto {
-    q.lock().state()
-}
-
-// ── Speech worker ──
-
-#[allow(clippy::too_many_arguments)] // Worker dependencies are explicit ownership boundaries.
-async fn speech_worker(
-    queue: Arc<parking_lot::Mutex<crate::speech_queue::SpeechQueue>>,
-    notify: Arc<tokio::sync::Notify>,
-    app_handle: AppHandle,
-    shutdown: tokio_util::sync::CancellationToken,
-    editor: Arc<crate::editor::EditorService>,
-    playback_manager: Arc<parking_lot::Mutex<Option<Arc<crate::playback::PlaybackManager>>>>,
-    webview: Arc<crate::webview::service::WebViewService>,
-    twitch: Arc<crate::twitch::TwitchService>,
-    vrchat: Arc<crate::vrchat::VrchatService>,
-) {
-    use crate::commands::tts_pipeline;
-    use crate::speech_queue::PreparationWait;
-
-    loop {
-        let work_item = {
-            let mut q = queue.lock();
-            match q.claim_next_generation() {
-                Ok(Some(item)) => Some(item),
-                Ok(None) => {
-                    drop(q);
-                    None
-                }
-                Err(e) => {
-                    warn!(error = %e, "claim_next_generation error, worker continuing");
-                    drop(q);
-                    None
-                }
-            }
-        };
-
-        let work_item = match work_item {
-            Some(item) => item,
-            None => {
-                tokio::select! {
-                    _ = notify.notified() => {
-                        continue;
-                    }
-                    _ = shutdown.cancelled() => {
-                        info!("Speech worker exiting on shutdown (idle wait)");
-                        return;
-                    }
-                }
-            }
-        };
-
-        {
-            let q = queue.lock();
-            let dto = q.state();
-            drop(q);
-            let _ = app_handle.emit("speech-queue-changed", dto);
-        }
-
-        let job_id = work_item.job_id;
-        let snapshot = work_item.snapshot;
-        let original_text = work_item.original_text;
-        let cancellation = work_item.cancel_token;
-
-        let preparation = tts_pipeline::prepare_speech(&snapshot, &original_text);
-        let prepared =
-            match crate::speech_queue::await_preparation(preparation, &cancellation, &shutdown)
-                .await
-            {
-                PreparationWait::Completed(result) => result,
-                PreparationWait::Cancelled => {
-                    info!(
-                        job_id = %job_id,
-                        "Speech preparation cancelled; dropping pending provider work"
-                    );
-                    continue;
-                }
-                PreparationWait::Shutdown => {
-                    let mut q = queue.lock();
-                    let _ = q.fail_generation(
-                        job_id,
-                        "Speech preparation cancelled (shutdown)".to_string(),
-                    );
-                    let dto = q.state();
-                    drop(q);
-                    let _ = app_handle.emit("speech-queue-changed", dto);
-                    info!("Speech worker exiting on shutdown (during preparation)");
-                    return;
-                }
-            };
-
-        match prepared {
-            Ok(prepared) => {
-                let (speaker, mic) =
-                    tts_pipeline::compute_output_configs(&snapshot.audio, &snapshot.audio_effects);
-
-                if speaker.is_none() && mic.is_none() {
-                    let mut q = queue.lock();
-                    let _ = q.fail_generation(
-                        job_id,
-                        "All outputs disabled (speaker and mic both off)".to_string(),
-                    );
-                    let dto = q.state();
-                    drop(q);
-                    let _ = app_handle.emit("speech-queue-changed", dto);
-                    continue;
-                }
-
-                let provider_text = prepared.provider_text.clone();
-                let insert_text = prepared.insert_text.clone();
-
-                let handoff_guard = {
-                    let mut q = queue.lock();
-                    let status = q.get_status(job_id);
-                    if status != Some(JobStatus::Generating) {
-                        drop(q);
-                        info!(job_id = %job_id, observed_status = ?status, "worker discard: not Generating after preparation");
-                        let _ = app_handle.emit("speech-queue-changed", q_state_dto(&queue));
-                        continue;
-                    }
-                    let _ = q.mark_ready(job_id, insert_text.clone());
-                    let guard = q
-                        .get_handoff_guard(job_id)
-                        .expect("handoff_guard missing after mark_ready");
-                    let dto = q.state();
-                    drop(q);
-                    let _ = app_handle.emit("speech-queue-changed", dto);
-                    guard
-                };
-
-                let handoff_accepted = {
-                    let _g = handoff_guard.lock();
-
-                    {
-                        let q = queue.lock();
-                        let status = q.get_status(job_id);
-                        if status != Some(JobStatus::Ready) {
-                            drop(q);
-                            info!(job_id = %job_id, observed_status = ?status, "worker discard: cancelled after mark_ready");
-                            false
-                        } else {
-                            drop(q);
-                            let pb_guard = playback_manager.lock();
-                            if let Some(pb) = pb_guard.as_ref() {
-                                pb.enqueue_with_outputs(
-                                    job_id.to_string(),
-                                    insert_text.clone(),
-                                    prepared.audio,
-                                    speaker,
-                                    mic,
-                                )
-                            } else {
-                                false
-                            }
-                        }
-                    }
-                };
-
-                if !handoff_accepted {
-                    let mut q = queue.lock();
-                    if q.get_status(job_id) == Some(JobStatus::Ready) {
-                        let _ = q.fail_playback(
-                            job_id,
-                            "Playback handoff rejected (queue full or no manager)".to_string(),
-                        );
-                        let dto = q.state();
-                        drop(q);
-                        let _ = app_handle.emit("speech-queue-changed", dto);
-                    }
-                    continue;
-                }
-
-                {
-                    let text = insert_text.clone();
-                    let delivery_text = prepared.delivery_text.clone();
-                    let webview_svc = webview.clone();
-                    let twitch_svc = twitch.clone();
-                    let vrchat_svc = vrchat.clone();
-                    let skip_twitch = snapshot.delivery.skip_twitch();
-                    let skip_webview = snapshot.delivery.skip_webview();
-                    let skip_vrchat = snapshot.delivery.skip_vrchat();
-                    let join_handle = tokio::task::spawn_blocking(move || {
-                        route_external_text_from_handles(
-                            &webview_svc,
-                            &twitch_svc,
-                            &vrchat_svc,
-                            &delivery_text,
-                            &text,
-                            skip_twitch,
-                            skip_webview,
-                            skip_vrchat,
-                        );
-                    });
-                    if let Err(e) = join_handle.await {
-                        warn!(error = %e, "route_external_text join failed");
-                    }
-                }
-
-                {
-                    // Owned handle: the history slot guard must not be held
-                    // across blocking I/O or awaits. The write stays on the
-                    // blocking pool and is awaited before the phrase event is
-                    // published (persist-before-publish).
-                    if let Some(history) = editor.history_handle() {
-                        let (provider, voice, cache_key) =
-                            if prepared.cache_saved || prepared.cache_hit {
-                                (
-                                    prepared.provider_name.clone(),
-                                    prepared.voice_name.clone(),
-                                    prepared.cache_key.clone(),
-                                )
-                            } else {
-                                (String::new(), String::new(), String::new())
-                            };
-                        let provider_text = provider_text.clone();
-                        let insert_text_for_history = insert_text.clone();
-                        let write = move || {
-                            history.record_phrase_with_meta(
-                                &provider_text,
-                                &insert_text_for_history,
-                                &provider,
-                                &voice,
-                                &cache_key,
-                            )
-                        };
-                        if let Err(error) = crate::history::write_phrase_blocking(write).await {
-                            warn!(error = %error, "Failed to persist phrase history");
-                        }
-                    }
-                }
-
-                let history_event = crate::events::AppEvent::TextSentToTts(
-                    crate::events::RoutedText::broadcast(insert_text.clone()),
-                );
-                let event_name = history_event.to_tauri_event();
-                let _ = app_handle.emit(event_name, &history_event);
-
-                loop {
-                    let status = {
-                        let q = queue.lock();
-                        q.get_status(job_id)
-                    };
-
-                    match status {
-                        Some(JobStatus::Playing) => break,
-                        Some(JobStatus::Failed) => break,
-                        Some(JobStatus::Ready) => {
-                            tokio::select! {
-                                _ = notify.notified() => {
-                                    continue;
-                                }
-                                _ = shutdown.cancelled() => {
-                                    info!("Speech worker exiting on shutdown (waiting for Playing)");
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {
-                            warn!(?status, job_id = %job_id, "Unexpected status waiting for Playing");
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let mut q = queue.lock();
-                let _ = q.fail_generation(job_id, e.clone());
-                let dto = q.state();
-                drop(q);
-                let _ = app_handle.emit("speech-queue-changed", dto);
-                warn!(error = %e, job_id = %job_id, "Speech preparation failed, worker waiting for retry/skip");
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn route_external_text_from_handles(
-    webview: &crate::webview::service::WebViewService,
-    twitch: &crate::twitch::TwitchService,
-    vrchat: &crate::vrchat::VrchatService,
-    delivery_text: &str,
-    insert_text: &str,
-    skip_twitch: bool,
-    skip_webview: bool,
-    skip_vrchat: bool,
-) {
-    if !skip_webview {
-        // ROADMAP-107: per-server choice between the user's original text and
-        // the TTS-processed representation, read at delivery time.
-        let send_original = webview.settings.blocking_read().send_original_text;
-        let text = if send_original {
-            delivery_text
-        } else {
-            insert_text
-        };
-        webview.send_event(crate::events::AppEvent::TextSentToTts(
-            crate::events::RoutedText::broadcast(text.to_string()),
-        ));
-    }
-    if !skip_twitch {
-        let settings = twitch.settings.blocking_read();
-        if settings.enabled {
-            let send_original = settings.send_original_text;
-            drop(settings);
-            let text = if send_original {
-                delivery_text
-            } else {
-                insert_text
-            };
-            twitch.send_event(crate::events::TwitchEvent::SendMessage(text.to_string()));
-        }
-    }
-    if !skip_vrchat && vrchat.is_enabled() {
-        let vrchat_svc = vrchat.clone();
-        let text = delivery_text.to_string();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Err(e) = vrchat_svc.send_text(&text).await {
-                    tracing::warn!(error = %e, "Failed to deliver text to VRChat chatbox");
-                }
-            });
-        }
-    }
 }
 
 fn missing_piper_model_name<F>(saved_id: Option<&str>, is_registered: F) -> Option<String>
@@ -1653,8 +1357,9 @@ pub fn build_main_window_initialization_script(
 mod tests {
     use super::{
         has_sufficient_visible_area, missing_piper_model_name, missing_piper_notification,
-        route_external_text_from_handles, PhysicalRect,
+        PhysicalRect,
     };
+    use crate::speech_queue::route_external_text_from_handles;
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PhysicalRect {
         PhysicalRect {

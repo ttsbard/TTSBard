@@ -10,6 +10,7 @@ use crate::stress::adapters::ProviderStressAdapter;
 use crate::stress::annotations::StructuredStress;
 use crate::stress::runtime::RuAccentRuntimeSlot;
 use crate::tts::TtsProvider;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -440,10 +441,33 @@ fn resolve_tts_text(snapshot: &Snapshot, original_text: &str) -> Result<(String,
     Ok((delivery_text, tts_text))
 }
 
+/// Error contract for preparation stopped by per-job cancellation.
+///
+/// The speech worker drops the preparation future on cancellation; this error is
+/// the second line of defence for stages that were already dispatched when the
+/// token fired (heavy blocking RUAccent / TTS / DSP work).
+const SPEECH_PREPARATION_CANCELLED: &str = "Speech preparation cancelled";
+
+/// Bail out between heavy preparation stages once the job was cancelled.
+///
+/// The blocking stages themselves cannot be interrupted, so every boundary
+/// checks the token to avoid starting the next expensive stage for a job whose
+/// output will be discarded anyway.
+fn ensure_not_cancelled(cancel: &CancellationToken) -> Result<(), String> {
+    if cancel.is_cancelled() {
+        Err(SPEECH_PREPARATION_CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn prepare_speech(
     snapshot: &Snapshot,
     original_text: &str,
+    cancel: &CancellationToken,
 ) -> Result<PreparedSpeech, String> {
+    ensure_not_cancelled(cancel)?;
+
     let (delivery_text, text) = resolve_tts_text(snapshot, original_text)?;
 
     let text = match ai_correct_text_with_settings(
@@ -463,8 +487,10 @@ pub async fn prepare_speech(
             text
         }
     };
+    ensure_not_cancelled(cancel)?;
 
     let stress = native_stress_blocking(snapshot.accentor_runtime.clone(), text.clone()).await?;
+    ensure_not_cancelled(cancel)?;
     let (provider_text, insert_text) = provider_and_insert_text(&snapshot.tts_provider, &stress);
 
     let effects_fp =
@@ -478,6 +504,7 @@ pub async fn prepare_speech(
 
     match read_cache_blocking(cache_key.clone()).await {
         Ok(pcm) => {
+            ensure_not_cancelled(cancel)?;
             return Ok(PreparedSpeech {
                 provider_text,
                 insert_text,
@@ -496,14 +523,17 @@ pub async fn prepare_speech(
             }
         }
     }
+    ensure_not_cancelled(cancel)?;
 
     let audio_data = synthesize_with_provider(&snapshot.tts_provider, &provider_text).await?;
+    ensure_not_cancelled(cancel)?;
     let audio = apply_effects_blocking(
         audio_data,
         snapshot.audio_effects.clone(),
         snapshot.dsp.clone(),
     )
     .await?;
+    ensure_not_cancelled(cancel)?;
 
     let cache_saved = save_cache_blocking(cache_key.clone(), audio.clone()).await;
 
@@ -791,10 +821,29 @@ mod tests {
     #[tokio::test]
     async fn prefix_flag_mismatch_fails_before_synthesis() {
         let snapshot = make_snapshot(true, false, false);
-        let err = prepare_speech(&snapshot, "hello world").await.unwrap_err();
+        let err = prepare_speech(&snapshot, "hello world", &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             err.contains("prefix flags mismatch"),
             "expected prefix mismatch error, got: {err}"
+        );
+    }
+
+    /// An already cancelled job must not start any heavy stage: the token is
+    /// checked before preprocessing, AI correction, RUAccent and TTS.
+    #[tokio::test]
+    async fn cancelled_preparation_bails_out_before_heavy_stages() {
+        let snapshot = make_snapshot(false, false, false);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let err = prepare_speech(&snapshot, "hello world", &cancel)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("cancelled"),
+            "expected cancellation error, got: {err}"
         );
     }
 

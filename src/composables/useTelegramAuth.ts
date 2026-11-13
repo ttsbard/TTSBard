@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, getCurrentScope, onScopeDispose } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { debugLog, debugError } from '../utils/debug'
 import { LocalizedError, presentCommandError, normalizeCommandError } from '../ipc/commandError'
@@ -52,6 +52,7 @@ export function useTelegramAuth() {
   const limitsLoading = ref(false)
   const limitsError = ref<string | null>(null)
   const limitsOpId = ref(0)
+  const voiceOpId = ref(0)
   const operationId = ref(0)
 
   // Computed properties
@@ -64,17 +65,22 @@ export function useTelegramAuth() {
 
   // Get current Telegram connection status
   async function getStatus() {
+    const opId = ++operationId.value
     try {
       loading.value = true
       const is_authorized = await invoke<boolean>('telegram_get_status')
+
+      if (opId !== operationId.value) return status.value
 
       if (is_authorized) {
         // Get user info if authorized
         try {
           const user = await invoke<TelegramStatus>('telegram_get_user')
+          if (opId !== operationId.value) return status.value
           status.value = user
           state.value = 'connected'
         } catch (e) {
+          if (opId !== operationId.value) return status.value
           // If we can't get user info, still mark as connected
           status.value = { connected: true }
           state.value = 'connected'
@@ -87,6 +93,7 @@ export function useTelegramAuth() {
 
       return status.value
     } catch (error) {
+      if (opId !== operationId.value) return status.value
       debugError('Failed to get Telegram status:', error)
       const commandError = normalizeCommandError(error)
       if (commandError.code === 'telegram.not_initialized') {
@@ -98,7 +105,9 @@ export function useTelegramAuth() {
       state.value = 'error'
       return null
     } finally {
-      loading.value = false
+      if (opId === operationId.value) {
+        loading.value = false
+      }
     }
   }
 
@@ -232,23 +241,29 @@ export function useTelegramAuth() {
 
   // Sign out from Telegram
   async function signOut() {
+    const opId = ++operationId.value
     try {
       loading.value = true
       errorMessage.value = null
 
       await invoke('telegram_sign_out')
 
+      if (opId !== operationId.value) return false
+
       status.value = null
       state.value = 'idle'
       clearLimits()
       return true
     } catch (error) {
+      if (opId !== operationId.value) return false
       debugError('Failed to sign out:', error)
       errorMessage.value = presentCommandError(error, t('tts.silero.error.sign_out_failed'))
       state.value = 'error'
       return false
     } finally {
-      loading.value = false
+      if (opId === operationId.value) {
+        loading.value = false
+      }
     }
   }
 
@@ -279,10 +294,13 @@ export function useTelegramAuth() {
 
   // Refresh current voice information
   async function refreshVoice(): Promise<CurrentVoice | null> {
+    const opId = ++voiceOpId.value
     try {
       debugLog('[TELEGRAM VOICE] Refreshing current voice')
 
       const voice = await invoke<CurrentVoice | null>('telegram_get_current_voice')
+
+      if (opId !== voiceOpId.value) return null
 
       debugLog('[TELEGRAM VOICE] Current voice:', voice)
 
@@ -297,6 +315,7 @@ export function useTelegramAuth() {
 
       return voice
     } catch (error) {
+      if (opId !== voiceOpId.value) return null
       debugError('[TELEGRAM VOICE] Exception during refresh:', error)
       errorMessage.value = presentCommandError(error, t('tts.silero.error.voice_info_failed'))
       currentVoice.value = null
@@ -500,6 +519,19 @@ export function useTelegramAuth() {
     } catch (error) {
       debugError('[TELEGRAM VOICES] Auto-refresh voice failed:', error)
     }
+  }
+
+  // Unmount: инвалидируем все in-flight операции, чтобы их поздние ответы не
+  // писали в уже освобождённое состояние.
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      operationId.value++
+      voiceOpId.value++
+      limitsOpId.value++
+      loading.value = false
+      voiceLoading.value = false
+      limitsLoading.value = false
+    })
   }
 
   return {

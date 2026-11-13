@@ -11,7 +11,7 @@ use crate::soundpanel::intercept::InterceptSettings;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
@@ -83,6 +83,57 @@ impl SoundSets {
         let idx = self.find_active_index();
         if let Some(active) = self.sets.get_mut(idx) {
             active.bindings.retain(|b| b.key != key);
+        }
+    }
+
+    /// Сделать набор с указанным ID активным.
+    ///
+    /// Возвращает `false`, если набора с таким ID нет: состояние не меняется.
+    pub fn set_active(&mut self, id: &str) -> bool {
+        if self.sets.iter().any(|s| s.id == id) {
+            self.active_set_id = id.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Добавить новый набор и сделать его активным (мутация клона).
+    pub fn add_set(&mut self, name: &str) -> SoundSet {
+        let set = SoundSet {
+            id: gen_set_id(),
+            name: name.to_string(),
+            bindings: Vec::new(),
+        };
+        self.active_set_id = set.id.clone();
+        self.sets.push(set.clone());
+        set
+    }
+
+    /// Переименовать набор (мутация клона). Неизвестный ID игнорируется.
+    pub fn rename_set(&mut self, id: &str, name: &str) {
+        if let Some(set) = self.sets.iter_mut().find(|s| s.id == id) {
+            set.name = name.to_string();
+        }
+    }
+
+    /// Удалить набор (мутация клона). Если удалён активный — переключить на
+    /// соседний/предыдущий/пустой. Неизвестный ID игнорируется.
+    pub fn remove_set(&mut self, id: &str) {
+        let Some(idx) = self.sets.iter().position(|s| s.id == id) else {
+            return;
+        };
+
+        self.sets.remove(idx);
+
+        if self.active_set_id == id {
+            self.active_set_id = if let Some(next) = self.sets.get(idx) {
+                next.id.clone()
+            } else if idx > 0 {
+                self.sets[idx - 1].id.clone()
+            } else {
+                String::new()
+            };
         }
     }
 
@@ -207,6 +258,9 @@ pub struct SoundPanelState {
     /// Writer gate для сериализации мутаций перехвата между clones
     intercept_writer_gate: Arc<Mutex<()>>,
 
+    /// Writer gate для сериализации persist-first мутаций наборов между clones
+    sets_writer_gate: Arc<Mutex<()>>,
+
     /// When enabled, hide_on_blur is bypassed so the panel can persist and be
     /// dragged by its title bar.
     pub stay_visible: Arc<Mutex<bool>>,
@@ -250,6 +304,7 @@ impl SoundPanelState {
             floating_clickthrough: Arc::new(Mutex::new(false)),
             intercept: Arc::new(Mutex::new(intercept)),
             intercept_writer_gate: Arc::new(Mutex::new(())),
+            sets_writer_gate: Arc::new(Mutex::new(())),
             stay_visible: Arc::new(Mutex::new(false)),
             config_mode: Arc::new(Mutex::new(false)),
             window_focused: Arc::new(AtomicBool::new(false)),
@@ -296,62 +351,71 @@ impl SoundPanelState {
             .unwrap_or_default()
     }
 
-    /// Сменить активный набор по ID
-    pub fn set_active_set(&self, id: &str) {
-        if let Ok(mut sets) = self.sets.lock() {
-            if sets.sets.iter().any(|s| s.id == id) {
-                sets.active_set_id = id.to_string();
-            }
-        } else {
-            error!(target = "soundpanel::state", "Failed to lock sets");
-        }
+    /// Сменить активный набор по ID (persist-first).
+    ///
+    /// Неизвестный ID не меняет состояние.
+    pub fn set_active_set(&self, id: &str) -> Result<(), String> {
+        self.commit_sets_mutation(|sets| {
+            sets.set_active(id);
+        })?;
+        Ok(())
     }
 
-    /// Создать новый набор и сделать его активным
+    /// Создать новый набор и сделать его активным (persist-first).
     pub fn add_set(&self, name: &str) -> Result<SoundSet, String> {
-        let mut sets = self.sets.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let id = gen_set_id();
-        let set = SoundSet {
-            id,
-            name: name.to_string(),
-            bindings: Vec::new(),
-        };
-        let result = set.clone();
-        sets.sets.push(set);
-        sets.active_set_id = result.id.clone();
-        Ok(result)
+        let mut created = None;
+        self.commit_sets_mutation(|sets| {
+            created = Some(sets.add_set(name));
+        })?;
+        created.ok_or_else(|| "Set was not created".to_string())
     }
 
-    /// Переименовать набор
+    /// Переименовать набор (persist-first).
     pub fn rename_set(&self, id: &str, name: &str) -> Result<(), String> {
-        let mut sets = self.sets.lock().map_err(|e| format!("Lock error: {}", e))?;
-        if let Some(set) = sets.sets.iter_mut().find(|s| s.id == id) {
-            set.name = name.to_string();
-        }
+        self.commit_sets_mutation(|sets| sets.rename_set(id, name))?;
         Ok(())
     }
 
-    /// Удалить набор. Если удалён активный — переключить на соседний/первый.
+    /// Удалить набор (persist-first). Если удалён активный — переключить на
+    /// соседний/первый.
     pub fn remove_set(&self, id: &str) -> Result<(), String> {
-        let mut sets = self.sets.lock().map_err(|e| format!("Lock error: {}", e))?;
-
-        let target_idx = sets.sets.iter().position(|s| s.id == id);
-        if let Some(idx) = target_idx {
-            sets.sets.remove(idx);
-
-            if sets.active_set_id == id {
-                let new_active = if idx < sets.sets.len() {
-                    sets.sets[idx].id.clone()
-                } else if idx > 0 && !sets.sets.is_empty() {
-                    let new_idx = idx.saturating_sub(1).min(sets.sets.len() - 1);
-                    sets.sets[new_idx].id.clone()
-                } else {
-                    String::new()
-                };
-                sets.active_set_id = new_active;
-            }
-        }
+        self.commit_sets_mutation(|sets| sets.remove_set(id))?;
         Ok(())
+    }
+
+    /// Захватить writer gate наборов.
+    ///
+    /// Позволяет командам с привязками (staged-аудио + persist + publish)
+    /// выполнить всю мутацию набора под тем же gate, что и set-команды.
+    pub fn lock_sets_writer(&self) -> Result<MutexGuard<'_, ()>, String> {
+        self.sets_writer_gate
+            .lock()
+            .map_err(|e| format!("Writer lock error: {}", e))
+    }
+
+    /// Persist-first транзакция наборов.
+    ///
+    /// 1. Под writer gate снимает копию runtime-наборов.
+    /// 2. Применяет мутацию к копии, не трогая runtime.
+    /// 3. Сохраняет кандидатный снимок на диск.
+    /// 4. Только после успешного сохранения публикует снимок в runtime.
+    ///
+    /// Readers (`get_sets`, `get_all_bindings`) не берут writer gate и никогда
+    /// не блокируются на disk I/O; при ошибке записи runtime остаётся прежним.
+    fn commit_sets_mutation<M>(&self, mutate: M) -> Result<SoundSets, String>
+    where
+        M: FnOnce(&mut SoundSets),
+    {
+        let _writer_guard = self.lock_sets_writer()?;
+
+        let mut next_sets = self.get_sets();
+        mutate(&mut next_sets);
+
+        crate::soundpanel::storage::save_sets(self, &next_sets)?;
+
+        self.publish_sets(next_sets.clone());
+
+        Ok(next_sets)
     }
 
     /// Построить кандидатный снимок наборов с добавленной/заменённой привязкой
@@ -504,7 +568,10 @@ impl SoundPanelState {
 
     /// Получить цвет фона floating окна
     pub fn get_floating_bg_color(&self) -> String {
-        self.floating_bg_color.lock().unwrap().clone()
+        self.floating_bg_color
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| DEFAULT_FLOATING_BG_COLOR.to_string())
     }
 
     /// Установить цвет фона floating окна
@@ -557,7 +624,9 @@ impl SoundPanelState {
                 target = "soundpanel::state",
                 "Failed to lock floating_clickthrough"
             );
+            return;
         }
+        self.emit_event(AppEvent::SoundPanelAppearanceChanged);
     }
 
     /// Проверить, включен ли stay_visible
@@ -917,6 +986,139 @@ mod tests {
         assert_eq!(active.name, "Основной");
         assert_eq!(active.bindings.len(), 2);
         assert_eq!(active.bindings[0].key, 'A');
+    }
+
+    // ── Sets persistence failure safety ─────────────────────────────────
+
+    fn seeded_sets() -> SoundSets {
+        SoundSets {
+            active_set_id: "set1".into(),
+            sets: vec![
+                SoundSet {
+                    id: "set1".into(),
+                    name: "First".into(),
+                    bindings: vec![],
+                },
+                SoundSet {
+                    id: "set2".into(),
+                    name: "Second".into(),
+                    bindings: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn set_active_set_persist_failure_leaves_state_unchanged() {
+        let state = SoundPanelState::new(bad_path("active_fail"));
+        state.publish_sets(seeded_sets());
+
+        let result = state.set_active_set("set2");
+        assert!(result.is_err());
+        assert_eq!(state.get_sets().active_set_id, "set1");
+    }
+
+    #[test]
+    fn add_set_persist_failure_leaves_state_unchanged() {
+        let state = SoundPanelState::new(bad_path("add_fail"));
+        state.publish_sets(seeded_sets());
+
+        let result = state.add_set("Third");
+        assert!(result.is_err());
+        let sets = state.get_sets();
+        assert_eq!(sets.sets.len(), 2);
+        assert_eq!(sets.active_set_id, "set1");
+    }
+
+    #[test]
+    fn rename_set_persist_failure_leaves_state_unchanged() {
+        let state = SoundPanelState::new(bad_path("rename_fail"));
+        state.publish_sets(seeded_sets());
+
+        let result = state.rename_set("set1", "Renamed");
+        assert!(result.is_err());
+        assert_eq!(state.get_sets().sets[0].name, "First");
+    }
+
+    #[test]
+    fn remove_set_persist_failure_leaves_state_unchanged() {
+        let state = SoundPanelState::new(bad_path("remove_fail"));
+        state.publish_sets(seeded_sets());
+
+        let result = state.remove_set("set1");
+        assert!(result.is_err());
+        let sets = state.get_sets();
+        assert_eq!(sets.sets.len(), 2);
+        assert_eq!(sets.active_set_id, "set1");
+    }
+
+    #[test]
+    fn set_mutations_persist_snapshot_before_publishing() {
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard_state_sets_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().to_string();
+
+        let state = SoundPanelState::new(path);
+        let first = state.add_set("First").unwrap();
+
+        let bindings_file = dir.join("soundpanel_bindings.json");
+        let on_disk: SoundSets =
+            serde_json::from_str(&std::fs::read_to_string(&bindings_file).unwrap()).unwrap();
+        assert_eq!(on_disk.sets.len(), 1);
+        assert_eq!(on_disk.sets[0].id, first.id);
+        assert_eq!(on_disk.sets[0].name, "First");
+        assert_eq!(on_disk.active_set_id, first.id);
+
+        let second = state.add_set("Second").unwrap();
+        state.set_active_set(&first.id).unwrap();
+        state.rename_set(&second.id, "Renamed").unwrap();
+        state.remove_set(&first.id).unwrap();
+
+        let on_disk: SoundSets =
+            serde_json::from_str(&std::fs::read_to_string(&bindings_file).unwrap()).unwrap();
+        assert_eq!(on_disk.sets.len(), 1);
+        assert_eq!(on_disk.sets[0].id, second.id);
+        assert_eq!(on_disk.sets[0].name, "Renamed");
+        // Removing the active set switches to the only remaining one.
+        assert_eq!(on_disk.active_set_id, second.id);
+        assert_eq!(state.get_sets().active_set_id, second.id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sets_writer_gate_is_shared_between_clones() {
+        let state = SoundPanelState::new(bad_path("gate_shared"));
+        let clone = state.clone();
+
+        let guard = state.lock_sets_writer().unwrap();
+        assert!(matches!(
+            clone.sets_writer_gate.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        drop(guard);
+        assert!(clone.sets_writer_gate.try_lock().is_ok());
+    }
+
+    #[test]
+    fn remove_active_set_selects_neighbour_or_clears() {
+        let mut sets = SoundSets {
+            active_set_id: "set2".into(),
+            sets: seeded_sets().sets,
+        };
+
+        sets.remove_set("set2");
+        assert_eq!(sets.sets.len(), 1);
+        assert_eq!(sets.active_set_id, "set1");
+
+        sets.remove_set("set1");
+        assert!(sets.sets.is_empty());
+        assert!(sets.active_set_id.is_empty());
     }
 
     // ── Intercept persistence failure safety ────────────────────────────

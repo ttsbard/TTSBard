@@ -65,7 +65,11 @@ pub async fn save_webview_settings(
         "Saving webview settings"
     );
 
-    validate_upnp_token(settings.upnp_enabled, settings.access_token.as_deref())?;
+    // UPnP валидируем по фактически сохранённому токену из runtime-state, а не по
+    // клиентскому DTO: access_token этим сохранением не меняется, сервер работает
+    // именно с state, и DTO не должен подменять/обходить проверку.
+    let stored_token = state.webview.settings.read().await.access_token.clone();
+    validate_upnp_token(settings.upnp_enabled, stored_token.as_deref())?;
     validate_port(settings.port).map_err(|e| e.to_string())?;
 
     // Check if enabled status or port changed (start_on_boot doesn't require restart)

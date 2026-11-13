@@ -24,6 +24,7 @@ pub mod secrets;
 mod servers;
 mod settings_recovery;
 mod setup;
+mod shutdown;
 mod signalsmith;
 #[cfg(windows)]
 mod single_instance;
@@ -926,7 +927,7 @@ pub fn run() {
                             .load(std::sync::atomic::Ordering::SeqCst)
                         {
                             info!("Main window destroyed - starting coordinated shutdown");
-                            tauri::async_runtime::spawn(crate::commands::coordinate_shutdown(
+                            tauri::async_runtime::spawn(crate::shutdown::coordinate_shutdown(
                                 window.app_handle().clone(),
                             ));
                         }
@@ -983,7 +984,7 @@ pub fn run() {
                     return;
                 }
                 api.prevent_exit();
-                tauri::async_runtime::spawn(crate::commands::coordinate_shutdown(
+                tauri::async_runtime::spawn(crate::shutdown::coordinate_shutdown(
                     app_handle.clone(),
                 ));
             }

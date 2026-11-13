@@ -10,14 +10,21 @@ export type { VtsRuntimeState } from '../utils/rustStatus'
 const authenticated = ref(false)
 const desiredRunning = ref(false)
 
+// Монотонный номер refresh-запроса: ответы устаревших запросов не должны
+// перезаписывать более свежие authenticated / desiredRunning.
+let flagsRequest = 0
+
 function refreshConnectionFlags() {
+  const requestId = ++flagsRequest
   invoke<boolean>('get_vtube_studio_authenticated')
     .then((value) => {
+      if (requestId !== flagsRequest) return
       authenticated.value = value
     })
     .catch((e) => debugError('[useVtsRuntimeStatus] Failed to load authenticated:', e))
   invoke<boolean>('get_vtube_studio_desired_running')
     .then((value) => {
+      if (requestId !== flagsRequest) return
       desiredRunning.value = value
     })
     .catch((e) => debugError('[useVtsRuntimeStatus] Failed to load desired running:', e))

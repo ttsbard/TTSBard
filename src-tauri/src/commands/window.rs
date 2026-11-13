@@ -630,6 +630,31 @@ async fn apply_ocr_capture_binding_toggle(
     Ok(())
 }
 
+/// Restore the previously persisted binding after the OS rejected the new one.
+///
+/// `reregister_hotkeys` releases every module-owned shortcut before it registers
+/// the new set, so a rejected combination must not stay in `settings.json`: the
+/// stored value would claim a registration Windows never accepted. The restored
+/// value is therefore persisted and hotkeys are re-registered from it, which
+/// brings the previous shortcut back.
+async fn restore_global_hotkey(
+    name: &str,
+    previous: &Hotkey,
+    settings_manager: &SettingsManager,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let restore_name = name.to_string();
+    let restore_hotkey = previous.clone();
+    super::persist_blocking(settings_manager, move |mgr| {
+        mgr.set_hotkey(&restore_name, &restore_hotkey)
+    })
+    .await
+    .map_err(|error| format!("restoring the previous setting failed: {}", error))?;
+
+    crate::hotkeys::reregister_hotkeys(app_handle)
+        .map_err(|error| format!("re-registering the previous shortcuts failed: {}", error))
+}
+
 /// Set a hotkey
 #[tauri::command]
 pub async fn set_hotkey(
@@ -652,6 +677,14 @@ pub async fn set_hotkey(
         return Err(conflict);
     }
 
+    // Snapshot of the stored binding: if the OS rejects the new combination, the
+    // persisted setting is rolled back to this value.
+    let previous = settings
+        .hotkeys
+        .get_global_by_name(&name)
+        .ok_or_else(|| format!("Invalid hotkey name: {}", name))?
+        .clone();
+
     let name_clone = name.clone();
     let hotkey_clone = hotkey.clone();
     super::persist_blocking(settings_manager.inner(), move |mgr| {
@@ -661,8 +694,34 @@ pub async fn set_hotkey(
 
     super::emit_settings_changed(&app_handle);
 
-    crate::hotkeys::reregister_hotkeys(&app_handle)
-        .map_err(|e| format!("Failed to re-register hotkeys: {}", e))?;
+    // `reregister_hotkeys` reports `Box<dyn Error>`, which is not `Send`;
+    // convert it before any await so the rollback below can run.
+    let registration =
+        crate::hotkeys::reregister_hotkeys(&app_handle).map_err(|error| error.to_string());
+    if let Err(registration_error) = registration {
+        return Err(
+            match restore_global_hotkey(
+                &name,
+                &previous,
+                settings_manager.inner(),
+                &app_handle,
+            )
+            .await
+            {
+                Ok(()) => {
+                    super::emit_settings_changed(&app_handle);
+                    format!(
+                        "Failed to re-register hotkeys: {}; the shortcut was restored to its previous setting",
+                        registration_error
+                    )
+                }
+                Err(restore_error) => format!(
+                    "Failed to re-register hotkeys: {}; restoring the previous shortcut setting failed: {}",
+                    registration_error, restore_error
+                ),
+            },
+        );
+    }
 
     if name == "ocr_capture" {
         if let Some(app_state) = app_handle.try_state::<AppState>() {
@@ -706,6 +765,17 @@ pub async fn reset_hotkey_to_default(
     settings_manager: State<'_, SettingsManager>,
     app_handle: AppHandle,
 ) -> Result<Hotkey, String> {
+    // Snapshot of the stored binding: the default combination may already be
+    // taken by another enabled hotkey, in which case the OS registration is
+    // rejected and the persisted setting must be rolled back.
+    let previous = settings_manager
+        .load()
+        .map_err(|e| format!("Failed to load settings: {}", e))?
+        .hotkeys
+        .get_global_by_name(&name)
+        .ok_or_else(|| format!("Invalid hotkey name: {}", name))?
+        .clone();
+
     let name_clone = name.clone();
     let default = super::persist_blocking(settings_manager.inner(), move |mgr| {
         mgr.reset_hotkey_to_default(&name_clone)
@@ -714,8 +784,34 @@ pub async fn reset_hotkey_to_default(
 
     super::emit_settings_changed(&app_handle);
 
-    crate::hotkeys::reregister_hotkeys(&app_handle)
-        .map_err(|e| format!("Failed to re-register hotkeys: {}", e))?;
+    // `reregister_hotkeys` reports `Box<dyn Error>`, which is not `Send`;
+    // convert it before any await so the rollback below can run.
+    let registration =
+        crate::hotkeys::reregister_hotkeys(&app_handle).map_err(|error| error.to_string());
+    if let Err(registration_error) = registration {
+        return Err(
+            match restore_global_hotkey(
+                &name,
+                &previous,
+                settings_manager.inner(),
+                &app_handle,
+            )
+            .await
+            {
+                Ok(()) => {
+                    super::emit_settings_changed(&app_handle);
+                    format!(
+                        "Failed to re-register hotkeys: {}; the shortcut was restored to its previous setting",
+                        registration_error
+                    )
+                }
+                Err(restore_error) => format!(
+                    "Failed to re-register hotkeys: {}; restoring the previous shortcut setting failed: {}",
+                    registration_error, restore_error
+                ),
+            },
+        );
+    }
 
     if name == "ocr_capture" {
         if let Some(app_state) = app_handle.try_state::<AppState>() {
@@ -1461,9 +1557,9 @@ mod tests {
             enabled: true,
         };
         mgr.set_editor_hotkey("edit_word", &binding).unwrap();
-        // If reregister were called, it would create a new SettingsManager
-        // internally (which creates a separate cache). This test ensures
-        // the cache is consistent: we read back what we just wrote.
+        // If reregister were called, it would unregister/re-register the OS
+        // shortcuts for an editor-only change. This test ensures the local
+        // cache stays consistent: we read back what we just wrote.
         let settings = mgr.load().unwrap();
         assert_eq!(settings.hotkeys.editor.edit_word.key, "F8");
 

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -178,14 +179,15 @@ pub(crate) fn handle_ocr_capture(app_handle: &AppHandle, app_state: &AppState) {
             .begin_capture_session(emit, capture, prepare_overlay)
             .await
         {
-            BeginOutcome::Started => {
+            BeginOutcome::Started { session_id } => {
                 // The overlay stays hidden until the frontend fetches and
                 // decodes the frozen frame. A bounded watchdog cancels a session
                 // whose preview is never acknowledged, so a dead overlay cannot
-                // leak the SelectingArea state or keep its frame alive.
-                if let Some(snapshot) = service.selection_snapshot().await {
-                    schedule_preview_timeout(app_handle.clone(), service, snapshot.id);
-                }
+                // leak the SelectingArea state or keep its frame alive. The
+                // identity comes straight from the begin outcome, so no second
+                // snapshot round trip (and no risk of arming the wrong session)
+                // is needed.
+                schedule_preview_timeout(app_handle.clone(), service, session_id);
             }
             BeginOutcome::Ignored => {}
             BeginOutcome::CaptureFailed(error) => {
@@ -894,6 +896,14 @@ pub async fn save_ocr_settings(
         .ok_or_else(|| "SettingsManager not available".to_string())?;
 
     let service = state.ocr.clone();
+
+    // Serialise the whole read-modify-write with `refresh_ocr_packs`: both
+    // commands load the persisted OCR section, persist a reconcile result and
+    // drive a lifecycle transition, and an interleaved pair could persist a
+    // decision made from a snapshot the other command already replaced. The
+    // guard also makes the `OcrTransition::Restart` stop+start below atomic.
+    let _settings_guard = service.settings_write_lock().lock().await;
+
     let old_settings = service.settings.read().await.clone();
     let old_hotkey = service.registered_hotkey();
 
@@ -953,6 +963,9 @@ pub async fn save_ocr_settings(
             stop_ocr_runtime(&app_handle, state.inner()).await;
         }
         OcrTransition::Restart => {
+            // Both halves run under the settings-write guard, so no other
+            // settings-writing command can observe or act on the intermediate
+            // `Disabled` state.
             stop_ocr_runtime(&app_handle, state.inner()).await;
             start_ocr_runtime(&app_handle, state.inner(), &new_hotkey).await;
         }
@@ -1047,7 +1060,13 @@ pub async fn refresh_ocr_packs(
     settings_manager: State<'_, SettingsManager>,
     app_handle: AppHandle,
 ) -> Result<Vec<OcrPackDto>, String> {
-    let packs = state.ocr.discover_packs();
+    // Serialise with `save_ocr_settings`: the reconcile decision below is made
+    // from the persisted snapshot and then persisted back, so a concurrent save
+    // must not slip a different enabled/model pair in between.
+    let service = state.ocr.clone();
+    let _settings_guard = service.settings_write_lock().lock().await;
+
+    let packs = service.discover_packs_blocking().await;
     let persisted = settings_manager
         .load()
         .map_err(|e| format!("Failed to load settings: {e}"))?
@@ -1129,8 +1148,24 @@ pub async fn refresh_ocr_packs(
 pub async fn open_ocr_packs_folder(state: State<'_, AppState>) -> Result<(), String> {
     let root = state.ocr.packs_root().to_path_buf();
 
+    // Directory creation, canonicalization and the file-manager spawn are
+    // blocking file-system/process work: run them on the blocking pool so a slow
+    // or hung source (e.g. an unavailable network drive) never occupies a Tokio
+    // worker.
+    match tokio::task::spawn_blocking(move || reveal_ocr_packs_root(&root)).await {
+        Ok(result) => result,
+        Err(join_error) => {
+            tracing::warn!(error = %join_error, "OCR packs folder worker panicked");
+            Err("openFolderFailed".to_string())
+        }
+    }
+}
+
+/// Blocking body of [`open_ocr_packs_folder`]: create the managed packs root when
+/// missing, canonicalize it and reveal it in the platform file manager.
+fn reveal_ocr_packs_root(root: &Path) -> Result<(), String> {
     // Create the root directory first, before canonicalize.
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
 
     let root = root
         .canonicalize()

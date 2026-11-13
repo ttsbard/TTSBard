@@ -394,16 +394,12 @@ impl AudioPlayer {
         }
     }
 
-    /// Воспроизвести MP3 данные асинхронно на одно или два устройства
-    /// Uses Arc to share audio data efficiently between multiple outputs
-    /// cached_devices: Optional cache of audio devices to avoid enumeration
-    pub fn play_mp3_async_dual(
-        &mut self,
-        mp3_data: Vec<u8>,
-        speaker_config: Option<OutputConfig>,
-        virtual_mic_config: Option<OutputConfig>,
-        cached_devices: Option<Arc<RwLock<HashMap<String, cpal::Device>>>>,
-    ) -> Result<(), String> {
+    /// Остановить предыдущую сессию и открыть новую.
+    ///
+    /// Каждая сессия получает собственный `Arc<AtomicBool>`: старые потоки,
+    /// не завершившиеся за `JOIN_TIMEOUT`, остаются со своим установленным
+    /// флагом и не могут сбросить в `false` флаг новой сессии.
+    fn begin_playback_session(&mut self) -> Arc<AtomicBool> {
         // Останавливаем предыдущее воспроизведение
         self.stop_flag.store(true, Ordering::SeqCst);
 
@@ -426,14 +422,30 @@ impl AudioPlayer {
                 break;
             }
             // Примечание: join() блокирующий, но это допустимо для десктопного приложения
-            // Потоки должны быстро завершаться после установки stop_flag
+            // Потоки должны быстро завершаться после установки своего stop_flag
             if let Err(e) = handle.join() {
                 error!(error = ?e, "Thread join error");
             }
         }
 
-        // Сбрасываем флаг остановки для нового воспроизведения
-        self.stop_flag.store(false, Ordering::SeqCst);
+        // Новая сессия не разделяет флаг с незавершёнными старыми потоками
+        let session_stop_flag = Arc::new(AtomicBool::new(false));
+        self.stop_flag = session_stop_flag.clone();
+        session_stop_flag
+    }
+
+    /// Воспроизвести MP3 данные асинхронно на одно или два устройства
+    /// Uses Arc to share audio data efficiently between multiple outputs
+    /// cached_devices: Optional cache of audio devices to avoid enumeration
+    pub fn play_mp3_async_dual(
+        &mut self,
+        mp3_data: Vec<u8>,
+        speaker_config: Option<OutputConfig>,
+        virtual_mic_config: Option<OutputConfig>,
+        cached_devices: Option<Arc<RwLock<HashMap<String, cpal::Device>>>>,
+    ) -> Result<(), String> {
+        // Останавливаем предыдущую сессию и получаем собственный флаг новой.
+        let stop_flag = self.begin_playback_session();
 
         info!(data_size = mp3_data.len(), "Starting dual output playback");
 
@@ -459,14 +471,14 @@ impl AudioPlayer {
 
         // Запускаем воспроизведение на динамике
         if let Some(config) = speaker_config {
-            let stop_flag = self.stop_flag.clone();
+            let session_stop_flag = stop_flag.clone();
             let data = Arc::clone(&shared_data); // Cheap Arc clone, not Vec clone
             let devices_cache = cached_devices.clone();
 
             let handle = thread::spawn(move || {
                 debug!("Speaker thread started");
                 if let Err(e) =
-                    Self::play_to_device(stop_flag, data, config, "Speaker", devices_cache)
+                    Self::play_to_device(session_stop_flag, data, config, "Speaker", devices_cache)
                 {
                     error!(error = %e, "Speaker playback error");
                 }
@@ -477,15 +489,19 @@ impl AudioPlayer {
 
         // Запускаем воспроизведение на виртуальном микрофоне
         if let Some(config) = virtual_mic_config {
-            let stop_flag = self.stop_flag.clone();
+            let session_stop_flag = stop_flag.clone();
             let data = Arc::clone(&shared_data); // Cheap Arc clone, not Vec clone
             let devices_cache = cached_devices.clone();
 
             let handle = thread::spawn(move || {
                 debug!("Virtual mic thread started");
-                if let Err(e) =
-                    Self::play_to_device(stop_flag, data, config, "Virtual Mic", devices_cache)
-                {
+                if let Err(e) = Self::play_to_device(
+                    session_stop_flag,
+                    data,
+                    config,
+                    "Virtual Mic",
+                    devices_cache,
+                ) {
                     error!(error = %e, "Virtual mic playback error");
                 }
                 debug!("Virtual mic thread finished");
@@ -608,6 +624,39 @@ impl AudioPlayer {
 impl Default for AudioPlayer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn new_session_gets_its_own_stop_flag() {
+        let mut player = AudioPlayer::new();
+
+        let first = player.begin_playback_session();
+        let second = player.begin_playback_session();
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(first.load(Ordering::SeqCst));
+        assert!(!second.load(Ordering::SeqCst));
+        assert!(Arc::ptr_eq(&player.stop_flag, &second));
+    }
+
+    #[test]
+    fn timed_out_session_flag_is_not_reset_by_new_session() {
+        // A thread from a previous session that outlived JOIN_TIMEOUT keeps a
+        // clone of the old flag. Starting a new session must leave that flag
+        // set and keep the new session's flag cleared.
+        let mut player = AudioPlayer::new();
+        let old_session = player.begin_playback_session();
+        let still_running_thread_flag = old_session.clone();
+
+        let new_session = player.begin_playback_session();
+
+        assert!(still_running_thread_flag.load(Ordering::SeqCst));
+        assert!(!new_session.load(Ordering::SeqCst));
     }
 }
 

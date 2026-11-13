@@ -5,6 +5,7 @@ use super::{
     WebViewSettings, WEBVIEW_BIND_ADDRESS,
 };
 use crate::events::WebViewSseEvent;
+use crate::secret_log::safe_path_for_log;
 use crate::webview::security::{is_local_network, validate_token};
 use axum::{
     extract::{ConnectInfo, Query, State},
@@ -53,14 +54,20 @@ impl TemplateCache {
 
         // Create default templates if they don't exist
         if !html_path.exists() {
-            tracing::info!(html_path = ?html_path, "Creating default HTML template");
+            tracing::info!(
+                html_path = %safe_path_for_log(&html_path),
+                "Creating default HTML template"
+            );
             tokio::fs::write(&html_path, default_html())
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to write default HTML: {}", e))?;
         }
 
         if !css_path.exists() {
-            tracing::info!(css_path = ?css_path, "Creating default CSS");
+            tracing::info!(
+                css_path = %safe_path_for_log(&css_path),
+                "Creating default CSS"
+            );
             tokio::fs::write(&css_path, default_css())
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to write default CSS: {}", e))?;
@@ -69,14 +76,22 @@ impl TemplateCache {
         let html = tokio::fs::read_to_string(&html_path)
             .await
             .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, html_path = ?html_path, "Failed to read HTML, using default");
+                tracing::warn!(
+                    error = %e,
+                    html_path = %safe_path_for_log(&html_path),
+                    "Failed to read HTML, using default"
+                );
                 default_html()
             });
 
         let css = tokio::fs::read_to_string(&css_path)
             .await
             .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, css_path = ?css_path, "Failed to read CSS, using default");
+                tracing::warn!(
+                    error = %e,
+                    css_path = %safe_path_for_log(&css_path),
+                    "Failed to read CSS, using default"
+                );
                 default_css()
             });
 

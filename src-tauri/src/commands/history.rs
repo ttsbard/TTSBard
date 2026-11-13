@@ -28,20 +28,39 @@ pub fn get_phrase_completion(
     Ok(manager.suggest_phrase(&context, limit))
 }
 
+/// History mutations mutate in-memory state and then flush JSON to disk, so
+/// every write runs on the blocking pool instead of the async executor.
 #[tauri::command]
-pub fn record_history(text: String, history_state: State<'_, HistoryState>) -> Result<(), String> {
-    history_state.0.record_text(&text).map_err(|e| {
-        tracing::error!("Failed to persist input history: {:#}", e);
-        HISTORY_PERSIST_FAILED.to_string()
-    })
+pub async fn record_history(
+    text: String,
+    history_state: State<'_, HistoryState>,
+) -> Result<(), String> {
+    let manager = history_state.0.clone();
+    tokio::task::spawn_blocking(move || manager.record_text(&text))
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to persist input history: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to persist input history: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })
 }
 
 #[tauri::command]
-pub fn clear_history(history_state: State<'_, HistoryState>) -> Result<(), String> {
-    history_state.0.clear().map_err(|e| {
-        tracing::error!("Failed to persist input history clear: {:#}", e);
-        HISTORY_PERSIST_FAILED.to_string()
-    })
+pub async fn clear_history(history_state: State<'_, HistoryState>) -> Result<(), String> {
+    let manager = history_state.0.clone();
+    tokio::task::spawn_blocking(move || manager.clear())
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to persist input history clear: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to persist input history clear: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })
 }
 
 #[tauri::command]
@@ -56,25 +75,39 @@ pub fn get_phrase_history(
 }
 
 #[tauri::command]
-pub fn delete_phrase_history(
+pub async fn delete_phrase_history(
     id: String,
     history_state: State<'_, HistoryState>,
 ) -> Result<(), String> {
     if id.trim().is_empty() {
         return Err("Phrase id cannot be empty".to_string());
     }
-    history_state.0.delete_phrase(&id).map_err(|e| {
-        tracing::error!("Failed to persist phrase deletion: {:#}", e);
-        HISTORY_PERSIST_FAILED.to_string()
-    })
+    let manager = history_state.0.clone();
+    tokio::task::spawn_blocking(move || manager.delete_phrase(&id))
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to persist phrase deletion: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to persist phrase deletion: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })
 }
 
 #[tauri::command]
-pub fn clear_phrase_history(history_state: State<'_, HistoryState>) -> Result<(), String> {
-    history_state.0.clear_phrases().map_err(|e| {
-        tracing::error!("Failed to persist phrase clear: {:#}", e);
-        HISTORY_PERSIST_FAILED.to_string()
-    })
+pub async fn clear_phrase_history(history_state: State<'_, HistoryState>) -> Result<(), String> {
+    let manager = history_state.0.clone();
+    tokio::task::spawn_blocking(move || manager.clear_phrases())
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to persist phrase clear: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to persist phrase clear: {:#}", e);
+            HISTORY_PERSIST_FAILED.to_string()
+        })
 }
 
 #[tauri::command]

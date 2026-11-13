@@ -6,7 +6,7 @@ use crate::commands::window::resolve_main_appearance;
 use crate::config::{is_valid_hex_color, SettingsManager, WindowsManager};
 use crate::soundpanel::intercept::InterceptSettings;
 use crate::soundpanel::state::{SoundBinding, SoundPanelState, SoundSet, SoundSets};
-use crate::soundpanel::storage::{delete_sound_file, persist_sets, save_sets, stage_sound_file};
+use crate::soundpanel::storage::{delete_sound_file, persist_sets, stage_sound_file};
 use crate::soundpanel_window::{
     emit_soundpanel_bindings_changed, hide_soundpanel_window, restore_soundpanel_foreground,
     restore_soundpanel_foreground_retaining_target, update_soundpanel_appearance,
@@ -44,6 +44,10 @@ pub fn sp_add_binding(
         return Err("Key must be A–Z or 0–9".to_string());
     }
 
+    // Сериализует всю мутацию набора: проверка занятости клавиши, staged-аудио,
+    // persist кандидата и публикация в runtime.
+    let _writer_guard = state.lock_sets_writer()?;
+
     if let Some(existing) = state.get_binding(key_char) {
         return Err(format!(
             "Key {} is already bound to '{}'",
@@ -51,7 +55,11 @@ pub fn sp_add_binding(
         ));
     }
 
-    let appdata_path = state.appdata_path.lock().unwrap().clone();
+    let appdata_path = state
+        .appdata_path
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .clone();
     let original_snapshot = state.get_sets();
 
     let staged = stage_sound_file(&file_path, &appdata_path)?;
@@ -105,11 +113,17 @@ pub fn sp_update_binding(
 
     let key_char = key.to_uppercase().chars().next().ok_or("Key is empty")?;
 
+    let _writer_guard = state.lock_sets_writer()?;
+
     let binding = state
         .get_binding(key_char)
         .ok_or_else(|| format!("Key {} is not bound", key_char))?;
 
-    let appdata_path = state.appdata_path.lock().unwrap().clone();
+    let appdata_path = state
+        .appdata_path
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .clone();
     let original_snapshot = state.get_sets();
 
     let mut updated = binding.clone();
@@ -172,9 +186,15 @@ pub fn sp_remove_binding(
 
     let key_char = key.chars().next().ok_or("Key is empty")?;
 
+    let _writer_guard = state.lock_sets_writer()?;
+
     let binding = state.get_binding(key_char);
 
-    let appdata_path = state.appdata_path.lock().unwrap().clone();
+    let appdata_path = state
+        .appdata_path
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?
+        .clone();
 
     let candidate = state.candidate_remove_binding(key_char);
 
@@ -257,6 +277,10 @@ pub fn sp_get_floating_appearance(
 }
 
 /// Установить прозрачность floating окна звуковой панели
+///
+/// Сначала сохраняет настройку в `WindowsManager`, и только после успешной
+/// записи обновляет runtime-состояние (которое рассылает
+/// `SoundPanelAppearanceChanged`).
 #[tauri::command]
 pub fn sp_set_floating_opacity(
     value: u8,
@@ -264,14 +288,18 @@ pub fn sp_set_floating_opacity(
     windows_manager: State<'_, WindowsManager>,
 ) -> Result<(), String> {
     info!(value, "Setting opacity");
-    state.set_floating_opacity(value);
     windows_manager
         .set_soundpanel_opacity(value)
         .map_err(|e| format!("Failed to save settings: {}", e))?;
+    state.set_floating_opacity(value);
     Ok(())
 }
 
 /// Установить цвет фона floating окна звуковой панели
+///
+/// Сначала сохраняет настройку в `WindowsManager`, и только после успешной
+/// записи обновляет runtime-состояние (которое рассылает
+/// `SoundPanelAppearanceChanged`).
 #[tauri::command]
 pub fn sp_set_floating_bg_color(
     color: String,
@@ -282,14 +310,18 @@ pub fn sp_set_floating_bg_color(
         return Err("Invalid color format. Use #RRGGBB".to_string());
     }
     info!(color, "Setting bg color");
-    state.set_floating_bg_color(color.clone());
     windows_manager
-        .set_soundpanel_bg_color(color)
+        .set_soundpanel_bg_color(color.clone())
         .map_err(|e| format!("Failed to save settings: {}", e))?;
+    state.set_floating_bg_color(color);
     Ok(())
 }
 
 /// Установить clickthrough для floating окна звуковой панели
+///
+/// Сначала сохраняет настройку в `WindowsManager`, и только после успешной
+/// записи обновляет runtime-состояние (которое рассылает
+/// `SoundPanelAppearanceChanged`).
 #[tauri::command]
 pub fn sp_set_floating_clickthrough(
     enabled: bool,
@@ -297,10 +329,10 @@ pub fn sp_set_floating_clickthrough(
     windows_manager: State<'_, WindowsManager>,
 ) -> Result<(), String> {
     info!(enabled, "Setting clickthrough");
-    state.set_floating_clickthrough(enabled);
     windows_manager
         .set_soundpanel_clickthrough(enabled)
         .map_err(|e| format!("Failed to save settings: {}", e))?;
+    state.set_floating_clickthrough(enabled);
     Ok(())
 }
 
@@ -525,6 +557,9 @@ pub fn sp_get_active_set(state: State<'_, SoundPanelState>) -> Result<SoundSet, 
 }
 
 /// Сменить активный набор
+///
+/// Persist-first: state-метод сохраняет кандидатный снимок на диск и только
+/// затем публикует его в runtime.
 #[tauri::command]
 pub fn sp_set_active_set(
     id: String,
@@ -532,8 +567,7 @@ pub fn sp_set_active_set(
     state: State<'_, SoundPanelState>,
 ) -> Result<(), String> {
     info!(set_id = %id, "Setting active set");
-    state.set_active_set(&id);
-    save_sets(&state)?;
+    state.set_active_set(&id)?;
 
     let _ = emit_soundpanel_bindings_changed(&app_handle);
     let _ = app_handle.emit("soundpanel-active-set-changed", &id);
@@ -542,6 +576,9 @@ pub fn sp_set_active_set(
 }
 
 /// Создать новый набор
+///
+/// Persist-first: state-метод сохраняет кандидатный снимок на диск и только
+/// затем публикует его в runtime.
 #[tauri::command]
 pub fn sp_add_set(
     name: String,
@@ -550,7 +587,6 @@ pub fn sp_add_set(
 ) -> Result<SoundSet, String> {
     info!(name, "Adding set");
     let set = state.add_set(&name)?;
-    save_sets(&state)?;
 
     let _ = emit_soundpanel_bindings_changed(&app_handle);
     let _ = app_handle.emit("soundpanel-active-set-changed", &set.id);
@@ -559,6 +595,9 @@ pub fn sp_add_set(
 }
 
 /// Переименовать набор
+///
+/// Persist-first: state-метод сохраняет кандидатный снимок на диск и только
+/// затем публикует его в runtime.
 #[tauri::command]
 pub fn sp_rename_set(
     id: String,
@@ -568,7 +607,6 @@ pub fn sp_rename_set(
 ) -> Result<(), String> {
     info!(set_id = %id, name, "Renaming set");
     state.rename_set(&id, &name)?;
-    save_sets(&state)?;
 
     let _ = emit_soundpanel_bindings_changed(&app_handle);
 
@@ -576,6 +614,9 @@ pub fn sp_rename_set(
 }
 
 /// Удалить набор
+///
+/// Persist-first: state-метод сохраняет кандидатный снимок на диск и только
+/// затем публикует его в runtime.
 #[tauri::command]
 pub fn sp_remove_set(
     id: String,
@@ -584,7 +625,6 @@ pub fn sp_remove_set(
 ) -> Result<(), String> {
     info!(set_id = %id, "Removing set");
     state.remove_set(&id)?;
-    save_sets(&state)?;
 
     let _ = emit_soundpanel_bindings_changed(&app_handle);
     let _ = app_handle.emit("soundpanel-active-set-changed", "");

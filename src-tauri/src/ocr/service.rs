@@ -7,6 +7,7 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use image::{RgbImage, RgbaImage};
@@ -148,8 +149,10 @@ pub fn decide_ocr_refresh_reconcile(
 #[derive(Debug)]
 pub enum BeginOutcome {
     /// The frame is saved, `SelectingArea` is published and the show-overlay
-    /// callback has already run.
-    Started,
+    /// callback has already run. Carries the identity of the freshly created
+    /// session so the caller can arm its guards (preview timeout, ready,
+    /// submit) without another `selection_snapshot` round trip.
+    Started { session_id: String },
     /// The status was not `Ready`; nothing was captured or shown.
     Ignored,
     /// The injected capture failed; no overlay was shown and status stays
@@ -187,9 +190,34 @@ pub enum FinishOutcome {
 /// [`OcrService::present_selection`] only once the overlay is ready for it.
 struct CaptureSession {
     id: String,
+    /// Capture epoch this session belongs to (see
+    /// [`OcrService::session_generation`]). A finished recognition publishes
+    /// `Ready` only while this value is still current.
+    generation: u64,
     geometry: VirtualScreenGeometry,
     frame: Arc<RgbaImage>,
     presented: bool,
+}
+
+/// RAII marker for an in-flight recognition (frame crop + runtime call).
+///
+/// [`OcrService::finish_session_locked`] releases the transition lock before that
+/// phase, so a shutdown stop can no longer notice it through a failed
+/// `try_lock`; [`OcrService::stop_for_shutdown`] reads this counter instead of
+/// blocking app exit for up to the recognition timeout.
+struct RecognitionInFlight<'a>(&'a AtomicUsize);
+
+impl<'a> RecognitionInFlight<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for RecognitionInFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Read-only snapshot of the in-flight `SelectingArea` session for the overlay.
@@ -273,7 +301,21 @@ pub struct OcrService {
     session: tokio::sync::Mutex<Option<CaptureSession>>,
     /// Serialises transitions so only one start/stop runs at a time. Held across
     /// the async ONNX load; a concurrent stop waits instead of deadlocking.
+    /// Deliberately NOT held across the crop/recognize phase of a submitted
+    /// selection (see [`Self::finish_session_locked`]), which can take up to the
+    /// recognition timeout.
     transition_lock: tokio::sync::Mutex<()>,
+    /// Monotonic capture epoch. Bumped when a session begins and when the
+    /// runtime is stopped, so a recognition that finishes late can never publish
+    /// `Ready` over a newer session or a disabled runtime.
+    session_generation: Mutex<u64>,
+    /// Number of recognitions currently in flight (see [`RecognitionInFlight`]).
+    recognition_in_flight: AtomicUsize,
+    /// Serialises the settings-writing commands (`save_ocr_settings` and
+    /// `refresh_ocr_packs`): both read the persisted OCR section, persist a
+    /// reconcile result and drive a lifecycle transition, so their
+    /// read-modify-write sequences must not interleave.
+    settings_write_lock: tokio::sync::Mutex<()>,
 }
 
 impl OcrService {
@@ -306,6 +348,9 @@ impl OcrService {
             runtime_active: Mutex::new(false),
             session: tokio::sync::Mutex::new(None),
             transition_lock: tokio::sync::Mutex::new(()),
+            session_generation: Mutex::new(0),
+            recognition_in_flight: AtomicUsize::new(0),
+            settings_write_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -321,6 +366,60 @@ impl OcrService {
     /// saw, including a model that only exists in the cwd.
     pub fn discover_packs(&self) -> Vec<OcrPackDescriptor> {
         scan_ocr_packs_across_roots(&self.search_roots)
+    }
+
+    /// [`Self::discover_packs`] on the blocking pool.
+    ///
+    /// Scanning the pack roots is blocking file-system I/O, so the async paths
+    /// (`start`, `refresh_ocr_packs`) must not run it on a Tokio worker. A
+    /// panicking scan worker yields an empty list: callers then behave exactly
+    /// like "no packs found" — an `Error` status for `start`, an empty list for
+    /// a refresh — instead of surfacing a panic payload.
+    pub async fn discover_packs_blocking(&self) -> Vec<OcrPackDescriptor> {
+        let roots = self.search_roots.clone();
+        match tokio::task::spawn_blocking(move || scan_ocr_packs_across_roots(&roots)).await {
+            Ok(packs) => packs,
+            Err(join_error) => {
+                tracing::warn!(error = %join_error, "OCR pack discovery worker panicked");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Serialisation seam for the OCR settings-writing commands.
+    ///
+    /// `save_ocr_settings` and `refresh_ocr_packs` both read the persisted OCR
+    /// section, persist a reconcile result and drive a lifecycle transition;
+    /// holding this lock across that whole sequence keeps those
+    /// read-modify-write pairs from interleaving and makes an
+    /// [`OcrTransition::Restart`] stop+start atomic with respect to the other
+    /// command.
+    pub fn settings_write_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.settings_write_lock
+    }
+
+    /// Advance the capture epoch, invalidating every in-flight finish.
+    fn bump_session_generation(&self) -> u64 {
+        let mut generation = self.session_generation.lock();
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
+    /// Publish `Ready` after a finished recognition only when `generation` still
+    /// identifies the current capture epoch and the runtime is still installed.
+    ///
+    /// The epoch guard stays held across the status write: a concurrent stop
+    /// bumps the epoch before publishing `Disabled`, so the check and the
+    /// `Ready` write are ordered against that stop.
+    fn publish_ready_if_generation_current<E>(&self, generation: u64, mut emit: E)
+    where
+        E: FnMut(&OcrStatus),
+    {
+        let current = self.session_generation.lock();
+        if *current != generation || !self.is_runtime_active() {
+            return;
+        }
+        self.publish_status(OcrStatus::Ready, &mut emit);
     }
 
     pub fn status(&self) -> OcrStatus {
@@ -407,7 +506,7 @@ impl OcrService {
             return;
         };
 
-        let packs = self.discover_packs();
+        let packs = self.discover_packs_blocking().await;
         let Some(descriptor) = packs.into_iter().find(|p| p.id == model_id) else {
             self.publish_status(
                 OcrStatus::Error {
@@ -460,27 +559,38 @@ impl OcrService {
     /// Stop the runtime for app shutdown without blocking on an in-flight
     /// recognition.
     ///
-    /// Uses `try_lock` on the transition lock: when a running session holds it
-    /// (recognition in flight, up to 15 s), the stop is detached to a
-    /// background task and this returns immediately, so app exit is not delayed
-    /// by OCR — the process exit reclaims the runtime thread. When the lock is
-    /// free, the stop runs inline.
+    /// A recognition (frame crop + ONNX call, up to 15 s) runs with the
+    /// transition lock released but registers itself in
+    /// [`Self::recognition_in_flight`]; when either a transition or a recognition
+    /// is in flight the stop is detached to a background task and this returns
+    /// immediately, so app exit is not delayed by OCR — the process exit reclaims
+    /// the runtime thread. Otherwise the stop runs inline under the transition
+    /// lock.
     pub async fn stop_for_shutdown<E, U>(self: Arc<Self>, emit: E, unregister: U)
     where
         E: FnMut(&OcrStatus) + Send + 'static,
         U: Fn(&Hotkey) -> Result<(), String> + Send + 'static,
     {
         match self.transition_lock.try_lock() {
-            Ok(_guard) => {
+            Ok(_guard) if self.recognition_in_flight.load(Ordering::SeqCst) == 0 => {
                 self.stop_locked(emit, unregister).await;
             }
-            Err(_) => {
-                let this = Arc::clone(&self);
-                tokio::spawn(async move {
-                    this.stop(emit, unregister).await;
-                });
-            }
+            // Either another transition owns the lock or a recognition is
+            // awaiting the runtime slot: both would make an inline stop wait.
+            _ => self.spawn_stop(emit, unregister),
         }
+    }
+
+    /// Run a deferred [`Self::stop`] on the app runtime.
+    fn spawn_stop<E, U>(self: &Arc<Self>, emit: E, unregister: U)
+    where
+        E: FnMut(&OcrStatus) + Send + 'static,
+        U: Fn(&Hotkey) -> Result<(), String> + Send + 'static,
+    {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.stop(emit, unregister).await;
+        });
     }
 
     async fn stop_locked<E, U>(&self, mut emit: E, unregister: U)
@@ -507,6 +617,10 @@ impl OcrService {
             }
         }
 
+        // Invalidate any recognition still in flight: its guarded
+        // `Recognizing -> Ready` transition must not resurrect `Ready` from the
+        // disabled state.
+        self.bump_session_generation();
         self.publish_status(OcrStatus::Disabled, &mut emit);
     }
 
@@ -687,12 +801,15 @@ impl OcrService {
             }
         };
 
-        *self.session.lock().await = Some(CaptureSession {
+        let session = CaptureSession {
             id: Uuid::new_v4().to_string(),
+            generation: self.bump_session_generation(),
             geometry: geometry.clone(),
             frame: Arc::new(frame),
             presented: false,
-        });
+        };
+        let session_id = session.id.clone();
+        *self.session.lock().await = Some(session);
 
         self.publish_status(OcrStatus::SelectingArea, &mut emit);
 
@@ -705,7 +822,7 @@ impl OcrService {
             return BeginOutcome::OverlayFailed(reason);
         }
 
-        BeginOutcome::Started
+        BeginOutcome::Started { session_id }
     }
 
     /// Snapshot of the current `SelectingArea` session for the overlay to
@@ -823,14 +940,14 @@ impl OcrService {
         F: FnOnce(Arc<RgbImage>) -> Fut,
         Fut: Future<Output = Result<OcrResult, String>>,
     {
-        let _guard = self.transition_lock.lock().await;
+        let guard = self.transition_lock.lock().await;
 
         let Some(session) = self.session.lock().await.take() else {
             return FinishOutcome::NoSession;
         };
 
         let selection = SelectionCorners { x1, y1, x2, y2 };
-        self.finish_session_locked(session, selection, emit, recognize)
+        self.finish_session_locked(guard, session, selection, emit, recognize)
             .await
     }
 
@@ -861,7 +978,7 @@ impl OcrService {
         F: FnOnce(Arc<RgbImage>) -> Fut,
         Fut: Future<Output = Result<OcrResult, String>>,
     {
-        let _guard = self.transition_lock.lock().await;
+        let guard = self.transition_lock.lock().await;
 
         // Identity + presentation guard: only the current presented session may
         // submit. The session is checked in place (and only then taken) so a
@@ -888,14 +1005,15 @@ impl OcrService {
         }
 
         Ok(self
-            .finish_session_locked(session, selection, emit, recognize)
+            .finish_session_locked(guard, session, selection, emit, recognize)
             .await)
     }
 
     /// Shared selection-processing body for a submitted selection; the caller
-    /// already holds the transition lock and has removed the session from the
-    /// slot. Reached through [`Self::finish_selection_for_session`] and the
-    /// test-only legacy `Self::finish_selection` (`#[cfg(test)]`).
+    /// hands over the transition lock it already holds and has removed the
+    /// session from the slot. Reached through
+    /// [`Self::finish_selection_for_session`] and the test-only legacy
+    /// `Self::finish_selection` (`#[cfg(test)]`).
     ///
     /// `selection` carries the two overlay-local corners in physical px relative
     /// to the overlay's own client area; the saved frame lives in
@@ -903,12 +1021,20 @@ impl OcrService {
     /// session geometry origin. A representational overflow, an empty/outside
     /// rectangle or a selection below [`capture::MIN_SELECTION_SIDE`] is
     /// retryable: the session is put back (keeping its id/frame/`presented`)
-    /// and `TooSmall` is returned. A valid selection publishes `Recognizing`,
-    /// crops the SAVED frame on the blocking pool and runs recognition; `Ready`
-    /// is restored while the runtime is active either way. No pixel work happens
+    /// and `TooSmall` is returned. A valid selection publishes `Recognizing` and
+    /// then RELEASES the transition lock before cropping the SAVED frame on the
+    /// blocking pool and running recognition (up to the recognition timeout), so
+    /// a concurrent stop/restart is never blocked by it. No pixel work happens
     /// under any lock.
+    ///
+    /// Because the lock is gone by then, the final `Recognizing -> Ready`
+    /// transition is guarded by the session's capture epoch
+    /// ([`Self::publish_ready_if_generation_current`]): a result that lands after
+    /// the runtime was stopped, or after a newer capture session began, is
+    /// dropped instead of resurrecting `Ready`.
     async fn finish_session_locked<E, F, Fut>(
         &self,
+        transition: tokio::sync::MutexGuard<'_, ()>,
         session: CaptureSession,
         selection: SelectionCorners,
         mut emit: E,
@@ -953,6 +1079,16 @@ impl OcrService {
 
         self.publish_status(OcrStatus::Recognizing, &mut emit);
 
+        // The crop + recognition phase below can take up to the recognition
+        // timeout. Drop the transition lock for it: a stop, a restart or a
+        // shutdown must not wait for OCR. The session's capture epoch is kept so
+        // the final `Ready` can be validated once the lock is gone, and the
+        // in-flight counter tells `stop_for_shutdown` to defer instead of
+        // waiting for the runtime slot.
+        let generation = session.generation;
+        let _in_flight = RecognitionInFlight::new(&self.recognition_in_flight);
+        drop(transition);
+
         // The RGBA→RGB crop is a pixel conversion (up to ~100 MB) and must not
         // occupy a Tokio worker: run it on the blocking pool. A panicking crop
         // worker surfaces as a safe RecognizeFailed (recognition path), never a
@@ -964,11 +1100,8 @@ impl OcrService {
                 Ok(cropped) => Arc::new(cropped),
                 Err(join_error) => {
                     tracing::warn!(error = %join_error, "OCR crop worker panicked");
-                    let outcome = FinishOutcome::RecognizeFailed("recognitionFailed".to_string());
-                    if self.is_runtime_active() {
-                        self.publish_status(OcrStatus::Ready, &mut emit);
-                    }
-                    return outcome;
+                    self.publish_ready_if_generation_current(generation, &mut emit);
+                    return FinishOutcome::RecognizeFailed("recognitionFailed".to_string());
                 }
             };
 
@@ -977,12 +1110,10 @@ impl OcrService {
             Err(reason) => FinishOutcome::RecognizeFailed(reason),
         };
 
-        // Return to `Ready` only while the runtime is still installed. After a
-        // stop the session is already gone, but this guard keeps a defensive
-        // finish from ever publishing `Ready` out of a disabled state.
-        if self.is_runtime_active() {
-            self.publish_status(OcrStatus::Ready, &mut emit);
-        }
+        // Return to `Ready` only while this exact capture epoch is still current
+        // and the runtime is still installed. A stop (or a newer session) that
+        // happened during recognition wins over this late result.
+        self.publish_ready_if_generation_current(generation, &mut emit);
 
         outcome
     }
@@ -1389,6 +1520,29 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
+    /// The blocking-pool discovery used by the async paths must report exactly
+    /// what the synchronous seam reports, so `start` and `refresh_ocr_packs`
+    /// never disagree with the pack list about the same roots.
+    #[tokio::test]
+    async fn discover_packs_blocking_matches_sync_discovery() {
+        let root = unique_test_root("svc-blocking-discovery");
+        write_valid_pack(&root, "shared-pack");
+
+        let service = OcrService::with_packs_root(root.clone());
+
+        let blocking = service.discover_packs_blocking().await;
+        let inline = service.discover_packs();
+
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(
+            blocking.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+            inline.iter().map(|p| p.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(blocking[0].id, "shared-pack");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn stop_from_starting_without_shortcut_lands_disabled_without_ready() {
         let service = OcrService::with_packs_root(PathBuf::new());
@@ -1748,8 +1902,20 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(outcome, BeginOutcome::Started));
+        let session_id = match outcome {
+            BeginOutcome::Started { session_id } => session_id,
+            other => panic!("expected Started, got {other:?}"),
+        };
         assert_eq!(service.status(), OcrStatus::SelectingArea);
+        assert_eq!(
+            service
+                .selection_snapshot()
+                .await
+                .expect("session started")
+                .id,
+            session_id,
+            "Started must report the stored session identity"
+        );
         assert_eq!(
             *order.lock().unwrap(),
             vec!["capture", "show"],
@@ -1788,7 +1954,7 @@ mod tests {
         let first = service
             .begin_capture_session(|_| {}, || Ok((test_geometry(), test_frame())), |_| Ok(()))
             .await;
-        assert!(matches!(first, BeginOutcome::Started));
+        assert!(matches!(first, BeginOutcome::Started { .. }));
 
         let second_capture = Arc::new(std::sync::Mutex::new(false));
         let capture_flag = Arc::clone(&second_capture);
@@ -1878,7 +2044,7 @@ mod tests {
         let outcome = service
             .begin_capture_session(|_| {}, || Ok((test_geometry(), test_frame())), |_| Ok(()))
             .await;
-        assert!(matches!(outcome, BeginOutcome::Started));
+        assert!(matches!(outcome, BeginOutcome::Started { .. }));
         assert_eq!(service.status(), OcrStatus::SelectingArea);
     }
 
@@ -2210,38 +2376,72 @@ mod tests {
         assert_eq!(service.status(), OcrStatus::Disabled);
     }
 
+    /// Spawn a fully submitted selection whose recognition blocks until the
+    /// returned release sender fires.
+    ///
+    /// Returns the finish task, a signal that the recognition phase is running
+    /// (so the transition lock is already released) and the release sender. Every
+    /// status published by the finish flow is collected in `published`.
+    fn spawn_paused_recognition(
+        service: &Arc<OcrService>,
+        published: Arc<std::sync::Mutex<Vec<OcrStatus>>>,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (recognizing_tx, recognizing_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let service = Arc::clone(service);
+        let handle = tokio::spawn(async move {
+            let id = begin_test_session(&service, test_frame()).await;
+            assert!(
+                service
+                    .present_selection(&id, |_| {}, |_| Ok(()))
+                    .await
+                    .expect("reveal ran"),
+                "the submitted session must be presented"
+            );
+            service
+                .finish_selection_for_session(
+                    &id,
+                    corners(0, 0, 40, 40),
+                    move |status: &OcrStatus| published.lock().unwrap().push(status.clone()),
+                    || Ok(()),
+                    move |_image| {
+                        let _ = recognizing_tx.send(());
+                        async move {
+                            let _ = release_rx.await;
+                            Ok(fake_ocr_result("late"))
+                        }
+                    },
+                )
+                .await
+                .expect("finish ran");
+        });
+        (handle, recognizing_rx, release_tx)
+    }
+
+    /// Wait (bounded) for a deferred stop to land the terminal `Disabled`.
+    async fn await_disabled(service: &OcrService) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while service.status() != OcrStatus::Disabled {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("deferred stop must publish Disabled");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn stop_for_shutdown_returns_quickly_while_transition_lock_is_held() {
+    async fn stop_for_shutdown_returns_quickly_while_recognition_is_in_flight() {
         let service = Arc::new(ready_service());
+        let published = Arc::new(std::sync::Mutex::new(Vec::<OcrStatus>::new()));
+        let (finish, recognizing, release) =
+            spawn_paused_recognition(&service, Arc::clone(&published));
 
-        // Simulate in-flight recognition holding the transition lock with a
-        // recognize future that never resolves.
-        let finish = {
-            let service = Arc::clone(&service);
-            tokio::spawn(async move {
-                service
-                    .begin_capture_session(
-                        |_| {},
-                        || Ok((test_geometry(), test_frame())),
-                        |_| Ok(()),
-                    )
-                    .await;
-                service
-                    .finish_selection(
-                        0,
-                        0,
-                        40,
-                        40,
-                        |_| {},
-                        |_image| std::future::pending::<Result<OcrResult, String>>(),
-                    )
-                    .await;
-            })
-        };
-
-        // Let finish_selection acquire the transition lock and block on
-        // recognition.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The recognition phase is running with the transition lock released.
+        recognizing.await.expect("recognition started");
 
         let started = std::time::Instant::now();
         service
@@ -2253,8 +2453,45 @@ mod tests {
             "shutdown stop must not block on in-flight recognition"
         );
 
-        finish.abort();
-        let _ = finish.await;
+        await_disabled(&service).await;
+
+        // A result landing after the stop must never resurrect `Ready`.
+        let _ = release.send(());
+        finish.await.expect("finish task");
+        assert_eq!(
+            *published.lock().unwrap(),
+            vec![OcrStatus::Recognizing],
+            "a late recognition must not publish Ready after a shutdown stop"
+        );
+        assert_eq!(service.status(), OcrStatus::Disabled);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_during_recognition_does_not_wait_for_it_or_publish_ready_afterwards() {
+        let service = Arc::new(ready_service());
+        let published = Arc::new(std::sync::Mutex::new(Vec::<OcrStatus>::new()));
+        let (finish, recognizing, release) =
+            spawn_paused_recognition(&service, Arc::clone(&published));
+        recognizing.await.expect("recognition started");
+
+        // Recognition no longer holds the transition lock, so a plain stop
+        // completes instead of waiting up to the recognition timeout.
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            service.stop(|_| {}, noop_unregister()),
+        )
+        .await
+        .expect("stop must not wait for the in-flight recognition");
+        assert_eq!(service.status(), OcrStatus::Disabled);
+
+        let _ = release.send(());
+        finish.await.expect("finish task");
+        assert_eq!(
+            *published.lock().unwrap(),
+            vec![OcrStatus::Recognizing],
+            "a late recognition must not publish Ready after a stop"
+        );
+        assert_eq!(service.status(), OcrStatus::Disabled);
     }
 
     // --- Hotkey rebind during an active session ---
@@ -2502,12 +2739,22 @@ mod tests {
         let outcome = service
             .begin_capture_session(|_| {}, move || Ok((test_geometry(), frame)), |_| Ok(()))
             .await;
-        assert!(matches!(outcome, BeginOutcome::Started));
-        service
-            .selection_snapshot()
-            .await
-            .expect("session started")
-            .id
+        match outcome {
+            // The start must report the identity of the session it stored.
+            BeginOutcome::Started { session_id } => {
+                assert_eq!(
+                    service
+                        .selection_snapshot()
+                        .await
+                        .expect("session started")
+                        .id,
+                    session_id,
+                    "Started must carry the stored session identity"
+                );
+                session_id
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
     }
 
     #[tokio::test]
