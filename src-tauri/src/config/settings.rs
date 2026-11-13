@@ -1839,6 +1839,16 @@ impl AppSettings {
 
 // ==================== Settings Manager ====================
 
+/// Editor actions that now ship switched off but whose bindings legacy
+/// `settings.json` files (written before per-hotkey `enabled` existed) still
+/// store as active.
+///
+/// These are the actions the normal load path must migrate to an explicit
+/// `false`: `Hotkey::enabled` deserializes to `true` when the flag is absent, so
+/// an upgraded file would otherwise keep registering their combinations.
+const LEGACY_DISABLED_EDITOR_HOTKEYS: [&str; 3] =
+    ["cycle_route", "toggle_typing", "cycle_quick_mode"];
+
 /// Manager for application settings with in-memory caching
 ///
 /// This implementation uses RwLock for efficient read-heavy workloads.
@@ -1906,6 +1916,26 @@ impl SettingsManager {
     #[allow(dead_code)] // Ready for integration when the locale catalog lands
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    /// Editor actions from [`LEGACY_DISABLED_EDITOR_HOTKEYS`] whose stored
+    /// binding object exists but has no `enabled` flag.
+    ///
+    /// Only the raw JSON can tell a missing flag from an explicit one, because
+    /// `Hotkey::enabled` deserializes to `true` when absent. An absent action
+    /// object is not reported: it already deserializes to the current defaults
+    /// (which ship the same three actions switched off).
+    fn legacy_editor_hotkeys_missing_enabled(json_value: &Value) -> Vec<&'static str> {
+        LEGACY_DISABLED_EDITOR_HOTKEYS
+            .iter()
+            .copied()
+            .filter(|action_id| {
+                json_value
+                    .pointer(&format!("/hotkeys/editor/{action_id}"))
+                    .and_then(Value::as_object)
+                    .is_some_and(|binding| !binding.contains_key("enabled"))
+            })
+            .collect()
     }
 
     /// Ensure the input server has a LAN access token, generating one when the
@@ -2002,6 +2032,26 @@ impl SettingsManager {
                 settings.hotkeys = HotkeySettings::default();
             }
 
+            // Migrate legacy editor bindings that predate the per-hotkey
+            // `enabled` flag. `Hotkey::enabled` deserializes to `true` when the
+            // flag is missing, so an upgraded file would keep Ctrl+R, Ctrl+T and
+            // Ctrl+W registered even though those actions now ship switched off.
+            // Only the affected actions are rewritten to an explicit `false`:
+            // keys, modifiers and explicit flags stay untouched, and actions
+            // absent from the legacy payload keep their current defaults.
+            let mut needs_legacy_editor_hotkey_migration = false;
+            for action_id in Self::legacy_editor_hotkeys_missing_enabled(&json_value) {
+                if let Some(binding) = settings.hotkeys.editor.get_mut_by_id(action_id) {
+                    if binding.enabled {
+                        binding.enabled = false;
+                        needs_legacy_editor_hotkey_migration = true;
+                    }
+                }
+            }
+            if needs_legacy_editor_hotkey_migration {
+                info!("Migrating legacy editor hotkeys to the explicit disabled state");
+            }
+
             // Migrate legacy `input_server.auto_play` into the source-neutral
             // top-level `incoming` section when the latter is absent. A boolean
             // legacy value is preserved exactly; a missing/invalid value uses the
@@ -2037,9 +2087,10 @@ impl SettingsManager {
             let needs_input_token_migration = Self::ensure_input_server_access_token(&mut settings);
 
             // Persist the migrated canonical file at most once: a single atomic
-            // write covers the hotkey, incoming, ui_language and input-server
-            // token migrations.
+            // write covers the hotkey, legacy editor hotkey, incoming,
+            // ui_language and input-server token migrations.
             if needs_hotkey_migration
+                || needs_legacy_editor_hotkey_migration
                 || needs_incoming_migration
                 || needs_ui_language_migration
                 || needs_input_token_migration
@@ -8641,6 +8692,295 @@ mod tests {
         assert!(
             disk.audio_effects.enabled,
             "voice removal keeps the effects section"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Legacy editor hotkey migration ====================
+
+    /// Serialize a legacy `settings.json`: canonical defaults (the input-server
+    /// token is already provisioned, so no unrelated migration fires) with the
+    /// `hotkeys.editor` group replaced by `editor`, or removed for `None`.
+    fn legacy_editor_hotkey_settings_json(editor: Option<serde_json::Value>) -> String {
+        let mut value = serde_json::to_value(fresh_default_settings()).unwrap();
+        let hotkeys = value
+            .get_mut("hotkeys")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("canonical defaults always contain hotkeys");
+        match editor {
+            Some(editor) => {
+                hotkeys.insert("editor".to_string(), editor);
+            }
+            None => {
+                hotkeys.remove("editor");
+            }
+        }
+        serde_json::to_string_pretty(&value).unwrap()
+    }
+
+    /// Write `json` as `settings.json` into a fresh unique temp config dir.
+    fn legacy_editor_hotkey_tmp_dir(label: &str, json: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-legacy-editor-hotkey-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), json).unwrap();
+        dir
+    }
+
+    /// Upgrade: existing editor entries without `enabled` for the three
+    /// ship-off actions become explicit `false` in the cache and on disk,
+    /// while their keys/modifiers and an explicit flag elsewhere survive.
+    #[test]
+    fn legacy_editor_hotkey_migration_disables_missing_enabled_flags() {
+        use crate::config::HotkeyModifier;
+
+        let editor = serde_json::json!({
+            "cycle_route": { "modifiers": ["ctrl", "alt"], "key": "R" },
+            "toggle_typing": { "modifiers": ["ctrl"], "key": "T", "enabled": true },
+            "cycle_quick_mode": { "modifiers": ["shift"], "key": "Q" },
+            "edit_word": { "modifiers": ["ctrl"], "key": "E" }
+        });
+        let dir = legacy_editor_hotkey_tmp_dir(
+            "upgrade",
+            &legacy_editor_hotkey_settings_json(Some(editor)),
+        );
+
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = manager.load().unwrap().hotkeys.editor;
+
+        assert!(
+            !editor.cycle_route.enabled,
+            "a legacy binding without the flag must migrate to disabled"
+        );
+        assert_eq!(editor.cycle_route.key, "R", "key must be preserved");
+        assert_eq!(
+            editor.cycle_route.modifiers,
+            vec![HotkeyModifier::Ctrl, HotkeyModifier::Alt],
+            "modifiers must be preserved"
+        );
+        assert!(
+            editor.toggle_typing.enabled,
+            "an explicit true flag must never be overridden"
+        );
+        assert!(
+            !editor.cycle_quick_mode.enabled,
+            "the stored custom binding must stay assigned but disabled"
+        );
+        assert_eq!(editor.cycle_quick_mode.format_display(), "Shift+Q");
+        assert!(
+            editor.edit_word.enabled,
+            "other missing flags keep their prior behavior"
+        );
+
+        let disk = read_disk_value(&dir);
+        let disk_editor = &disk["hotkeys"]["editor"];
+        assert_eq!(
+            disk_editor["cycle_route"]["enabled"],
+            serde_json::json!(false),
+            "the explicit false must be persisted"
+        );
+        assert_eq!(
+            disk_editor["toggle_typing"]["enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            disk_editor["cycle_quick_mode"]["enabled"],
+            serde_json::json!(false)
+        );
+        assert_eq!(disk_editor["cycle_route"]["key"], serde_json::json!("R"));
+        assert_eq!(
+            disk_editor["cycle_route"]["modifiers"],
+            serde_json::json!(["ctrl", "alt"])
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Explicit flags and custom combinations survive the migration write:
+    /// the one missing flag triggers it, the explicit ones are left alone.
+    #[test]
+    fn legacy_editor_hotkey_migration_preserves_explicit_flags_and_bindings() {
+        let editor = serde_json::json!({
+            "cycle_route": { "modifiers": ["ctrl"], "key": "R", "enabled": true },
+            "toggle_typing": { "modifiers": ["ctrl"], "key": "T", "enabled": false },
+            "cycle_quick_mode": { "modifiers": ["ctrl", "shift"], "key": "W" }
+        });
+        let dir = legacy_editor_hotkey_tmp_dir(
+            "explicit",
+            &legacy_editor_hotkey_settings_json(Some(editor)),
+        );
+
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = manager.load().unwrap().hotkeys.editor;
+        assert!(editor.cycle_route.enabled, "explicit true must stay true");
+        assert!(
+            !editor.toggle_typing.enabled,
+            "explicit false must stay false"
+        );
+        assert!(!editor.cycle_quick_mode.enabled);
+        assert_eq!(editor.cycle_quick_mode.format_display(), "Ctrl+Shift+W");
+
+        let disk = read_disk_value(&dir);
+        let disk_editor = &disk["hotkeys"]["editor"];
+        assert_eq!(
+            disk_editor["cycle_route"]["enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            disk_editor["toggle_typing"]["enabled"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            disk_editor["cycle_quick_mode"]["enabled"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            disk_editor["cycle_route"]["modifiers"],
+            serde_json::json!(["ctrl"])
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Absent entries fall back to the existing defaults, and the detector only
+    /// reports stored binding objects that lack the flag.
+    #[test]
+    fn legacy_editor_hotkey_migration_absent_entries_use_defaults() {
+        // Only an unrelated action is stored: the three ship-off actions are
+        // absent, so they must keep their default bindings.
+        let dir = legacy_editor_hotkey_tmp_dir(
+            "absent-entries",
+            &legacy_editor_hotkey_settings_json(Some(serde_json::json!({
+                "edit_word": { "modifiers": ["ctrl"], "key": "E" }
+            }))),
+        );
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = manager.load().unwrap().hotkeys.editor;
+        assert!(!editor.cycle_route.enabled);
+        assert_eq!(editor.cycle_route.format_display(), "Ctrl+R");
+        assert!(!editor.toggle_typing.enabled);
+        assert_eq!(editor.toggle_typing.format_display(), "Ctrl+T");
+        assert!(!editor.cycle_quick_mode.enabled);
+        assert_eq!(editor.cycle_quick_mode.format_display(), "Ctrl+W");
+        assert!(editor.edit_word.enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // No editor group at all behaves the same way.
+        let dir =
+            legacy_editor_hotkey_tmp_dir("absent-group", &legacy_editor_hotkey_settings_json(None));
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = manager.load().unwrap().hotkeys.editor;
+        for (action_id, display) in [
+            ("cycle_route", "Ctrl+R"),
+            ("toggle_typing", "Ctrl+T"),
+            ("cycle_quick_mode", "Ctrl+W"),
+        ] {
+            let binding = editor.get_by_id(action_id).unwrap();
+            assert!(!binding.enabled, "{action_id} keeps its default switch");
+            assert_eq!(
+                binding.format_display(),
+                display,
+                "{action_id} keeps its default combination"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Detection is driven by the stored JSON, not by the action list alone.
+        let detected = SettingsManager::legacy_editor_hotkeys_missing_enabled(&serde_json::json!({
+            "hotkeys": { "editor": {
+                "cycle_route": { "modifiers": ["ctrl"], "key": "R" },
+                "toggle_typing": { "modifiers": ["ctrl"], "key": "T", "enabled": true },
+                "cycle_quick_mode": { "modifiers": ["ctrl"], "key": "W" },
+                "edit_word": { "modifiers": ["ctrl"], "key": "E" }
+            }}
+        }));
+        assert_eq!(
+            detected,
+            vec!["cycle_route", "cycle_quick_mode"],
+            "only stored bindings without the flag are migration targets"
+        );
+        assert!(SettingsManager::legacy_editor_hotkeys_missing_enabled(
+            &serde_json::json!({ "hotkeys": { "editor": {} } })
+        )
+        .is_empty());
+        assert!(
+            SettingsManager::legacy_editor_hotkeys_missing_enabled(&serde_json::json!({}))
+                .is_empty()
+        );
+    }
+
+    /// The migration persists the explicit flags once: reloading the migrated
+    /// file changes nothing, and a later deliberate enable is not undone.
+    #[test]
+    fn legacy_editor_hotkey_migration_persists_once_and_is_idempotent() {
+        let editor = serde_json::json!({
+            "cycle_route": { "modifiers": ["ctrl", "shift"], "key": "R" },
+            "toggle_typing": { "modifiers": ["ctrl"], "key": "T" },
+            "cycle_quick_mode": { "modifiers": ["ctrl", "alt"], "key": "W" }
+        });
+        let dir = legacy_editor_hotkey_tmp_dir(
+            "idempotent",
+            &legacy_editor_hotkey_settings_json(Some(editor)),
+        );
+
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = manager.load().unwrap().hotkeys.editor;
+        assert!(!editor.cycle_route.enabled);
+        assert!(!editor.toggle_typing.enabled);
+        assert!(!editor.cycle_quick_mode.enabled);
+
+        let migrated = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        let disk = read_disk_value(&dir);
+        for action_id in ["cycle_route", "toggle_typing", "cycle_quick_mode"] {
+            assert_eq!(
+                disk["hotkeys"]["editor"][action_id]["enabled"],
+                serde_json::json!(false),
+                "{action_id} must be persisted with an explicit false"
+            );
+        }
+        assert_eq!(
+            disk["hotkeys"]["editor"]["cycle_route"]["modifiers"],
+            serde_json::json!(["ctrl", "shift"]),
+            "the migration write must keep the custom combination"
+        );
+
+        // Reloading the migrated file must be a no-op: the flags are explicit
+        // now, so the migration neither runs nor rewrites the file.
+        let restarted = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let editor = restarted.load().unwrap().hotkeys.editor;
+        assert!(!editor.cycle_route.enabled);
+        assert_eq!(editor.cycle_route.format_display(), "Ctrl+Shift+R");
+        assert!(!editor.toggle_typing.enabled);
+        assert!(!editor.cycle_quick_mode.enabled);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+            migrated
+        );
+
+        // A later explicit enable is a different state: it survives a reload
+        // instead of being re-disabled by the migration.
+        let mut patched: serde_json::Value = serde_json::from_str(&migrated).unwrap();
+        patched["hotkeys"]["editor"]["cycle_route"]["enabled"] = serde_json::json!(true);
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_string_pretty(&patched).unwrap(),
+        )
+        .unwrap();
+        let reopened = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        assert!(
+            reopened.load().unwrap().hotkeys.editor.cycle_route.enabled,
+            "an explicitly enabled binding must not be re-disabled"
+        );
+        assert_eq!(
+            read_disk_value(&dir)["hotkeys"]["editor"]["cycle_route"]["enabled"],
+            serde_json::json!(true)
         );
 
         let _ = std::fs::remove_dir_all(&dir);

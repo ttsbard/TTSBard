@@ -1219,10 +1219,14 @@ mod tests {
     }
 
     /// A pre-`enabled` settings.json that already stores the Ctrl+R, Ctrl+T or
-    /// Ctrl+W binding objects must keep them active: the switch only becomes
-    /// opt-in for fields that are absent from the legacy payload.
+    /// Ctrl+W binding objects must keep them active **at this serde layer**: a
+    /// missing flag deserializes to `true` (`default_true`), so the raw bindings
+    /// are preserved verbatim. The settings load path then applies the legacy
+    /// editor hotkey migration, which writes the explicit `false` for exactly
+    /// these three actions (see `settings.rs`); explicit flags, keys and
+    /// modifiers are never touched by either step.
     #[test]
-    fn legacy_editor_binding_objects_without_enabled_stay_enabled() {
+    fn legacy_editor_hotkeys_without_enabled_keep_serde_default_true() {
         let old_json = r#"{
             "editor": {
                 "cycle_route": { "modifiers": ["ctrl"], "key": "R" },
