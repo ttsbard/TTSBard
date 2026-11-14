@@ -8,16 +8,40 @@ from an editor opened with a hotkey.
 ## First launch
 
 1. Install your version from the [project releases](https://github.com/ttsbard/TTSBard/releases) and start TTSBard.
-2. Open **TTS**, configure and select a [provider or local model](tts.md).
-   Cloud providers require credentials. Add Piper voice files to the models
-   folder or install a Pocket TTS package under **Settings → Models**.
-3. In **Audio**, select your speakers and use the playback test button to check
-   the volume. To send speech to Discord, OBS, VTube Studio, a game or another
-   application, install and configure a [virtual audio cable](virtual-audio-cable.md).
-4. Return to **Text**, select **Voice only**, type “Voice test” and press
-   **Speak** or `Enter`.
+2. Open **Audio → Devices**. Turn on **Speaker**, select your headphones or
+   speakers by name under **Device**, and click ▶ **Test playback**. Check that
+   you hear the test sound on the intended output.
+
+   Selecting a device by name keeps speech on that output and lets TTSBard
+   reuse the audio stream between phrases. With **(default)**, TTSBard checks
+   the Windows output and opens a new stream for each phrase. Selecting a device
+   by name is especially useful if you use multichannel audio such as 5.1 or 7.1
+   surround sound and want to keep speech on a dedicated output.
+
+   To send speech to Discord, OBS, or a game, enable **Virtual microphone** and
+   select the cable's playback device in TTSBard. For VB-CABLE, select
+   **CABLE Input**. In the receiving app, select **CABLE Output** as the microphone.
+   Click ▶ next to the virtual microphone in TTSBard and check that the meter in
+   the receiving app responds. [Set up a virtual audio cable](virtual-audio-cable.md).
+3. Set up a voice using one of these options.
+   - **Silero via Telegram.** Open **TTS → Silero**, sign in to Telegram, choose
+     a voice, and set Silero as the active provider. [Set up Silero](tts.md#silero-bot-telegram).
+   - **Local model.** Open **Settings → Models**. If the list is empty, click
+     **Download catalog from repository**. Download a **Pocket TTS** package,
+     return to **TTS**, and select the installed model. Depending on the model,
+     choose a ready voice or provide a WAV reference. Activate the model for speech.
+     [Set up Pocket TTS](tts.md#pocket-tts) · [Other options, including Piper](tts.md).
+4. Open **Text**, select **Voice only**, type “Voice test”, and press **Speak**
+   or `Enter`. Check that you hear the phrase on the selected output or in the
+   receiving app.
 5. From another application, press `Ctrl+Shift+F3` and type your next phrase.
    For window or focus problems, see the [FAQ](../faq.md).
+
+After your first phrase, you can set up [OCR to read text from the screen](ocr.md#enable-and-test)
+and assign shortcuts in **Hotkeys**. With [Key interception](#key-interception),
+you can assign an action such as OCR capture to a single key. Press `Ctrl+M` for
+a smaller window. To keep just the text field, select **Switch to Mono mode**
+from the editor's **…** menu.
 
 ## Daily use
 

@@ -17,7 +17,9 @@ After sending, keep typing, hide the window or return focus to the previous app.
 
 ### Quick start
 
-Configure a [TTS provider and audio output](docs/en/user/guide.md#first-launch) first.
+Choose and test your audio device in **Audio → Devices**, then set up a voice.
+Follow the [first launch guide](docs/en/user/guide.md#first-launch) through your
+first spoken phrase.
 
 1. Press `Ctrl+Shift+F3` to open the editor above other windows.
 2. Type a phrase and press `Enter`.
@@ -130,10 +132,11 @@ TTSBard — Windows-приложение для общения с помощью
 [Первый запуск](docs/ru/user/guide.md#первый-запуск) ·
 [Краткий обзор в PDF](docs/ru/ttsbard-overview.pdf)
 
-### Быстрый сценарий
+### Быстрый старт
 
-Перед первой озвучкой настройте TTS-провайдер и аудиовыход по
-[руководству первого запуска](docs/ru/user/guide.md#первый-запуск).
+Выберите и проверьте аудиоустройство в **Аудио → Устройства**, затем настройте
+голос. [Руководство первого запуска](docs/ru/user/guide.md#первый-запуск) проведёт
+вас до первой озвученной фразы.
 
 1. Нажмите `Ctrl+Shift+F3`, чтобы открыть редактор поверх других окон.
 2. Введите фразу и отправьте её клавишей `Enter`.
