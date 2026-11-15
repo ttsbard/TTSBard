@@ -5,15 +5,17 @@
 Codex investigates code, implements changes and verifies the result. Implementation
 may be performed directly or delegated at the user's choice:
 - **Direct mode:** Codex investigates and implements changes itself.
-- **OpenCode mode:** Delegated to DeepSeek Flash via OpenCode CLI following the [AI workflow](docs/development/ai-workflow.md).
-- **DSH mode:** Delegated to DeepSeek Harness via the `dsh_subagent` MCP server (DSH Web session on port 3080).
+- **DSH mode:** Delegate to DeepSeek Harness via the `dsh_subagent` MCP server
+  managed by Agent Bridge Launcher.
+- **ZCode Bridge mode:** Delegate to ZCode Desktop via the `zcode-bridge` MCP
+  server. Codex starts the bridge's `mcp-server.cjs` over stdio.
 
 Before first implementing changes in a new session, ask the user which mode to use
 if not already chosen, and keep the chosen mode until instructed otherwise.
 
-Delegated tasks belong in `.work/ai/<work-id>/`, not tracked prompts in `docs/`.
-In OpenCode mode, the lead agent may directly handle minor documentation,
-configuration, typo and local build-error fixes.
+Keep delegated task files in `.work/ai/<work-id>/tasks/`. See the
+[AI workflow](docs/development/ai-workflow.md#подключение-и-запуск) for bridge
+setup and the delegation procedure.
 
 ### DSH (DeepSeek Harness) Delegation Rules
 
@@ -32,8 +34,8 @@ When **DSH mode** is selected:
    two completed, unsuccessful attempts by DeepSeek (verified defects in output/diff), NEVER
    because DSH was waiting for approval or needed more time.
 
-After two unsuccessful DeepSeek attempts across any delegation mode, Codex finishes
-the task directly under the [attempt-limit rule](docs/development/ai-workflow.md#лимит-попыток).
+After two unsuccessful DeepSeek attempts, Codex finishes the task directly
+under the [attempt-limit rule](docs/development/ai-workflow.md#лимит-попыток).
 
 ## Repository work
 

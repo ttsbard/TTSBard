@@ -237,7 +237,7 @@ python scripts/build-overview.py --release-dir .work/ai/pdf-release
   артефакты прогона и статус визуальных ориентиров.
 
 - [AI-assisted development workflow](./ai-workflow.md) — постановка локальных
-  задач DeepSeek, запуск OpenCode и независимая проверка результата.
+  задач, делегирование через DSH и ZCode Bridge, независимая проверка результата.
 - [AI-ready: принципы](./ai-ready-principles.md) — норматив наблюдаемой стоимости
   безопасного малого изменения для агента без памяти о прошлых сессиях.
 - [Шаблон code review](./templates/code-review.md) и
