@@ -17,6 +17,7 @@
     {"kind":"section","title":"Voices and audio processing","lead":"Cloud and local options in one application","bullets":[
       "Silero Bot works through your Telegram account, shows remaining speech quota and supports SOCKS5 and MTProxy connections.",
       "Piper uses ready-made voice models installed on your computer. Each model is a separate voice.",
+      "Pocket TTS clones a voice from a WAV clip up to 12 seconds long. It runs offline once installed and works best with short phrases (each model supports only one language, Russian or English).",
       "OpenAI, ElevenLabs, Fish Audio and a local HTTP server compatible with TTS Voice Wizard are also supported.",
       "Adjust pitch, tempo and volume; remove noise with DeepFilterNet and process speech with an equalizer, compressor and limiter.",
       "Audio cache retains synthesized phrases: matching repeats need no synthesis wait and consume no additional TTS-service quota."
@@ -43,10 +44,14 @@
       "Exclude TTSBard windows from OBS and Discord capture.",
       "In VTube Studio, make the avatar react or show a scene item while you type."
     ]},
-    {"kind":"section","title":"Playback and Sound panel","lead":"Use key actions without returning to the main window","bullets":[
-      "A separate playback window stops, pauses or repeats speech.",
-      "Assign sounds to Sound panel keys and organize reactions into sets.",
-      "Assign individual keys to opening TTSBard windows, controlling playback or capturing screen text. NumPad, F1-F24 and navigation keys are available by default; optionally allow any key."
+    {"kind":"section","title":"Controls","lead":"Use key actions without returning to the main window","bullets":[
+      "A separate playback window stops, pauses or repeats speech."
+    ]},
+    {"kind":"section","title":"Key interception","lead":"While interception is enabled, assigned keys work only in TTSBard","bullets":[
+      "Assign individual keys to open the editor, control speech playback or capture text from the screen."
+    ]},
+    {"kind":"section","title":"Sound panel","lead":"Sounds for quick reactions","bullets":[
+      "Assign sounds to keys and organize them into sets."
     ]},
     {"kind":"section","title":"Text from other sources","lead":"Speak more than manually typed text","bullets":[
       "Web input form. Open it in a browser, Steam Overlay during a game, or another device on the same local network.",
