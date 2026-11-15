@@ -9,6 +9,7 @@ mod device;
 pub mod dsp;
 pub mod effects;
 mod player;
+pub mod vban;
 
 pub(crate) use player::{
     effective_output_format, init_output_settings, open_output_sink, output_format_pending,
@@ -23,3 +24,4 @@ pub use player::{
     open_sink_on_device, open_sink_on_device_pcm, resolve_output_device, AudioPlayer, OutputConfig,
     OutputDeviceStream,
 };
+pub use vban::{VbanOutput, VbanPlayback, VbanPlaybackStatus, VbanSource, VbanTarget};

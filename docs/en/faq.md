@@ -83,6 +83,27 @@ sound settings. If the local test works, verify the receiver selects CABLE Outpu
 For i32 errors, try Default under Audio → Devices → Output format; it is shared
 by both outputs.
 
+## VBAN says sent, but the other PC is silent
+
+The send result and VBAN tab status describe the sender; they do not confirm
+UDP reception. Start **Test** on the VBAN tab, then click **Stream Name** in Receptor on the
+receiving PC and select **TTSBard** (or your custom stream name).
+**The stream appears in the list while audio is being sent**; repeat the test
+and selection if needed.
+
+Check the receiving PC's IPv4, matching UDP port (usually `6980`), Receptor's
+firewall permission and **A1** output. For application microphone input, use
+**Receptor → CABLE Input → CABLE Output → OBS/Discord**. If the test works but
+speech does not, save the receiver settings, then enable VBAN. See the [VBAN guide](user/vban.md).
+
+## How to hear the virtual cable through headphones
+
+Press `Win+R`, run `mmsys.cpl` and open **Recording → CABLE Output → Properties →
+Listen**. Enable **Listen to this device**, select headphones under **Playback
+through this device** and apply. Do not select the same cable's **CABLE Input**,
+which would feed audio back into itself. This also works on the PC receiving
+VBAN. See [monitoring and duplicate audio](user/virtual-audio-cable.md#listen-to-the-cable-through-windows).
+
 ## A hotkey does not trigger
 
 Check **Hotkeys** and conflicts with other applications. Local editor bindings

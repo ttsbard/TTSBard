@@ -146,6 +146,9 @@ pub fn replay_phrase_from_cache(
         &settings.audio,
         &settings.audio_effects,
     );
+    let vban_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
+        &settings.audio_effects,
+    ));
 
     let replay_id = format!("hist_{}", entry.cache_key);
     let enqueued = pb.enqueue_with_outputs(
@@ -154,6 +157,7 @@ pub fn replay_phrase_from_cache(
         pcm,
         speaker_config,
         mic_config,
+        vban_gain,
     );
 
     if !enqueued {

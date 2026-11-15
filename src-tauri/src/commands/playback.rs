@@ -88,12 +88,16 @@ pub fn replay_phrase(
         &settings.audio,
         &settings.audio_effects,
     );
+    let vban_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
+        &settings.audio_effects,
+    ));
 
     let pb = &playback.inner().0;
-    pb.replay_from_cache(&id, speaker, mic).map_err(|e| {
-        debug!(target: "playback", error = %e, "replay_phrase cache miss");
-        e
-    })?;
+    pb.replay_from_cache(&id, speaker, mic, vban_gain)
+        .map_err(|e| {
+            debug!(target: "playback", error = %e, "replay_phrase cache miss");
+            e
+        })?;
     if let Ok(job_id) = uuid::Uuid::parse_str(&id) {
         let mut q = queue.lock();
         q.touch_activity(job_id);

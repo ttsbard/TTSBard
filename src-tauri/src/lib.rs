@@ -838,6 +838,13 @@ pub fn run() {
             commands::speech_queue::cancel_speech_job,
             commands::speech_queue::skip_speech_job,
             commands::speech_queue::restore_cancelled_speech_job,
+            // VBAN network output commands
+            commands::vban::set_vban_settings,
+            commands::vban::set_vban_connection_settings,
+            commands::vban::set_vban_volume,
+            commands::vban::set_vban_enabled,
+            commands::vban::test_vban_output,
+            commands::vban::get_vban_status,
         ])
         .setup({
             let settings_clone = settings.clone();

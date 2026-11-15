@@ -4,6 +4,7 @@
 //! These structures serialize all application settings into a single response.
 
 use crate::config::settings::AudioEffectsSettings;
+use crate::config::settings::VbanSettings;
 use crate::config::settings::{
     ElevenLabsSettings, FishAudioSettings, LocalTtsSettings, MtProxySettings, NetworkSettings,
     OpenAiSettings, ProxyMode, ProxySettings, ProxyType, Socks5Settings, TelegramTtsSettings,
@@ -678,6 +679,11 @@ pub type TwitchSettingsDto = TwitchSettings;
 
 /// Audio settings DTO (same as AudioSettings, already has Serialize/Deserialize)
 pub type AudioSettingsDto = AudioSettings;
+
+/// VBAN network output settings DTO (same as VbanSettings, already has
+/// Serialize/Deserialize); a missing section in old snapshots/mocks yields
+/// defaults on the Rust side.
+pub type VbanSettingsDto = VbanSettings;
 
 // ============================================================================
 // Audio Effects Settings DTO
@@ -1867,6 +1873,7 @@ mod tests {
             speaker_volume: 80,
             virtual_mic_device: Some("CABLE Input".into()),
             virtual_mic_volume: 100,
+            vban: Default::default(),
         };
 
         let audio_effects = AudioEffectsSettingsDto {
@@ -2305,6 +2312,7 @@ mod tests {
             speaker_volume: 0,
             virtual_mic_device: None,
             virtual_mic_volume: 0,
+            vban: Default::default(),
         };
 
         let audio_effects = AudioEffectsSettingsDto {

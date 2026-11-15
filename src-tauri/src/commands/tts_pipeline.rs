@@ -606,32 +606,35 @@ pub async fn synthesize_audio(state: &AppState, text: &str) -> Result<Vec<u8>, S
     synthesize_with_provider(&provider, &text).await
 }
 
+/// Единый расчёт DSP-gain речи по общим правилам речи (громкость из
+/// «Эффектов и DSP»). Один и тот же множитель применяется к локальным
+/// выходам и к VBAN-источнику речи; уровень сетевого выхода (VbanTarget)
+/// накладывается отдельно на сетевой микс.
+pub(crate) fn speech_dsp_gain(effects_settings: &AudioEffectsSettings) -> f32 {
+    if effects_settings.enabled {
+        AudioEffects::new(
+            effects_settings.pitch,
+            effects_settings.speed,
+            effects_settings.volume,
+        )
+        .volume_factor()
+    } else {
+        1.0
+    }
+}
+
 /// Build the per-phrase output configuration captured by the speech worker.
 pub(crate) fn compute_output_configs(
     audio_settings: &AudioSettings,
     effects_settings: &AudioEffectsSettings,
 ) -> (Option<OutputConfig>, Option<OutputConfig>) {
-    let effects_volume = if effects_settings.enabled {
-        Some(
-            AudioEffects::new(
-                effects_settings.pitch,
-                effects_settings.speed,
-                effects_settings.volume,
-            )
-            .volume_factor(),
-        )
-    } else {
-        None
-    };
+    let dsp_gain = speech_dsp_gain(effects_settings);
 
     let speaker_config = if audio_settings.speaker_enabled {
         let base_volume = audio_settings.speaker_volume as f32 / 100.0;
-        let final_volume = effects_volume
-            .map(|ev| base_volume * ev)
-            .unwrap_or(base_volume);
         Some(OutputConfig {
             device_id: audio_settings.speaker_device.clone(),
-            volume: final_volume,
+            volume: base_volume * dsp_gain,
         })
     } else {
         None
@@ -639,12 +642,9 @@ pub(crate) fn compute_output_configs(
 
     let virtual_mic_config = audio_settings.virtual_mic_device.as_ref().map(|device_id| {
         let base_volume = audio_settings.virtual_mic_volume as f32 / 100.0;
-        let final_volume = effects_volume
-            .map(|ev| base_volume * ev)
-            .unwrap_or(base_volume);
         OutputConfig {
             device_id: Some(device_id.clone()),
-            volume: final_volume,
+            volume: base_volume * dsp_gain,
         }
     });
 
@@ -681,6 +681,7 @@ pub async fn synthesize_and_export(state: &AppState, text: &str, path: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::VbanSettings;
     use crate::speech_queue::SubmissionSource;
 
     fn make_settings(boundary_cleanup: bool) -> AppSettings {
@@ -1098,6 +1099,7 @@ mod tests {
             speaker_volume: 80,
             virtual_mic_device: mic_device.map(str::to_string),
             virtual_mic_volume: 60,
+            vban: VbanSettings::default(),
         }
     }
 
@@ -1154,6 +1156,24 @@ mod tests {
         let expected = 0.8 * (50.0f32 / 100.0);
 
         assert!((speaker.unwrap().volume - expected).abs() < 0.0001);
+    }
+
+    // ── VBAN speech gain (ROADMAP-138) ──
+
+    #[test]
+    fn speech_dsp_gain_is_one_without_effects() {
+        let effects = AudioEffectsSettings::default();
+        assert!((speech_dsp_gain(&effects) - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn speech_dsp_gain_follows_effects_volume() {
+        let effects = AudioEffectsSettings {
+            enabled: true,
+            volume: 150,
+            ..Default::default()
+        };
+        assert!((speech_dsp_gain(&effects) - 1.5).abs() < 0.0001);
     }
 
     // ── Snapshot identity / cache key separation tests ──

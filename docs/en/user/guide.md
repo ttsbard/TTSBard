@@ -23,6 +23,11 @@ from an editor opened with a hotkey.
    **CABLE Input**. In the receiving app, select **CABLE Output** as the microphone.
    Click ▶ next to the virtual microphone in TTSBard and check that the meter in
    the receiving app responds. [Set up a virtual audio cable](virtual-audio-cable.md).
+
+   To send speech and Sound panel clips to another PC, open **Audio → VBAN**,
+   enter the receiver's IP and run the test. In Receptor on the receiving PC,
+   select the stream under **Stream Name** while audio is being sent: that is
+   when it appears in the list. Then save the receiver settings and enable VBAN. [VBAN setup](vban.md).
 3. Set up a voice using one of these options.
    - **Silero via Telegram.** Open **TTS → Silero**, sign in to Telegram, choose
      a voice, and set Silero as the active provider. [Set up Silero](tts.md#silero-bot-telegram).
@@ -139,6 +144,7 @@ again yourself after repairing or resetting the file.
 | Configure a voice or set up Piper or Pocket TTS | [TTS providers](tts.md) |
 | Send speech to Discord, OBS, VTube Studio or games | [Virtual audio cable](virtual-audio-cable.md) |
 | Select outputs or troubleshoot THX distortion | [Audio devices and output format](audio-devices.md) |
+| Send speech and Sound panel clips to another PC | [VBAN](vban.md) |
 | Change the interface language or add a translation | [Language packs](language-packs.md) |
 | Configure or disable suggestions | [Autocomplete](editor.md#autocomplete) |
 | Send phrases to different destinations | [Phrase routes](editor.md#phrase-route) |

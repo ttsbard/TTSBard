@@ -795,12 +795,15 @@ pub(crate) async fn speech_worker(
             Ok(prepared) => {
                 let (speaker, mic) =
                     tts_pipeline::compute_output_configs(&snapshot.audio, &snapshot.audio_effects);
+                // Capture speech gain even while VBAN is disabled so a queued
+                // phrase can use the output if it is enabled before playback.
+                let vban_gain = Some(tts_pipeline::speech_dsp_gain(&snapshot.audio_effects));
 
-                if speaker.is_none() && mic.is_none() {
+                if speaker.is_none() && mic.is_none() && !snapshot.audio.vban.enabled {
                     let mut q = queue.lock();
                     let _ = q.fail_generation(
                         job_id,
-                        "All outputs disabled (speaker and mic both off)".to_string(),
+                        "All outputs disabled (speaker, virtual mic and VBAN are off)".to_string(),
                     );
                     let dto = q.state();
                     drop(q);
@@ -850,6 +853,7 @@ pub(crate) async fn speech_worker(
                                     prepared.audio,
                                     speaker,
                                     mic,
+                                    vban_gain,
                                 )
                             } else {
                                 false

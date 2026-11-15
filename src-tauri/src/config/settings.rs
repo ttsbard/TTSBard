@@ -45,6 +45,10 @@ pub struct AudioSettings {
     pub virtual_mic_device: Option<String>,
     #[serde(default = "default_virtual_mic_volume")]
     pub virtual_mic_volume: u8,
+    /// Сетевой выход VBAN. Отсутствующая секция в старом конфиге даёт
+    /// выключенный VBAN с дефолтными полями.
+    #[serde(default)]
+    pub vban: VbanSettings,
 }
 
 fn default_speaker_enabled() -> bool {
@@ -66,9 +70,132 @@ impl Default for AudioSettings {
             speaker_volume: 80,
             virtual_mic_device: None,
             virtual_mic_volume: 100,
+            vban: VbanSettings::default(),
         }
     }
 }
+
+// ==================== VBAN Network Output Settings (ROADMAP-138) ====================
+
+/// UDP-порт VBAN по умолчанию (стандартный порт VBAN Audio).
+pub const DEFAULT_VBAN_PORT: u16 = 6980;
+/// Имя потока VBAN по умолчанию.
+pub const DEFAULT_VBAN_STREAM_NAME: &str = "TTSBard";
+
+/// Настройки сетевого аудиовыхода VBAN.
+///
+/// Старые `settings.json` без секции `vban` загружаются выключенными
+/// (`#[serde(default)]` на поле `AudioSettings::vban`), частично заполненная
+/// секция добирает отсутствующие поля индивидуальными дефолтами.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VbanSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// IPv4-адрес назначения (получателя). Пуст при выключенном VBAN.
+    #[serde(default)]
+    pub address: String,
+    #[serde(default = "default_vban_port")]
+    pub port: u16,
+    #[serde(default = "default_vban_stream_name")]
+    pub stream_name: String,
+    /// Громкость сетевого выхода в процентах, применяется к сетевому миксу.
+    #[serde(default = "default_vban_volume")]
+    pub volume: u8,
+}
+
+fn default_vban_port() -> u16 {
+    DEFAULT_VBAN_PORT
+}
+fn default_vban_stream_name() -> String {
+    DEFAULT_VBAN_STREAM_NAME.to_string()
+}
+fn default_vban_volume() -> u8 {
+    100
+}
+
+impl Default for VbanSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            address: String::new(),
+            port: DEFAULT_VBAN_PORT,
+            stream_name: DEFAULT_VBAN_STREAM_NAME.to_string(),
+            volume: 100,
+        }
+    }
+}
+
+impl VbanSettings {
+    /// Разобрать адрес назначения как IPv4.
+    pub fn parse_address(&self) -> Result<std::net::Ipv4Addr, String> {
+        self.address
+            .trim()
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(|_| {
+                format!(
+                    "address: '{}' is not a valid IPv4 address",
+                    self.address.trim()
+                )
+            })
+    }
+
+    /// Проверить порт назначения: 1–65535.
+    pub fn validate_port(&self) -> Result<u16, String> {
+        if (1..=u16::MAX).contains(&self.port) {
+            Ok(self.port)
+        } else {
+            Err(format!("port: {} must be in range 1–65535", self.port))
+        }
+    }
+
+    /// Проверить имя потока: 1–16 печатных ASCII символов.
+    pub fn validate_stream_name(&self) -> Result<String, String> {
+        let name = &self.stream_name;
+        if name.is_empty() {
+            return Err("stream_name: must not be empty".to_string());
+        }
+        if name.len() > 16 {
+            return Err(format!(
+                "stream_name: '{}' is longer than 16 characters",
+                name
+            ));
+        }
+        if !name.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+            return Err(format!(
+                "stream_name: '{}' must contain only printable ASCII characters",
+                name
+            ));
+        }
+        Ok(name.clone())
+    }
+
+    /// Проверить громкость выхода: 0–100.
+    pub fn validate_volume(&self) -> Result<u8, String> {
+        if self.volume <= 100 {
+            Ok(self.volume)
+        } else {
+            Err(format!("volume: {} must be in range 0–100", self.volume))
+        }
+    }
+
+    /// Полная валидация перед применением (field-specific ошибки).
+    ///
+    /// `require_address` включает проверку IPv4 назначения: она обязательна
+    /// для теста и для включённого VBAN, а при выключенном VBAN адрес может
+    /// оставаться пустым.
+    pub fn validate(&self, require_address: bool) -> Result<(), String> {
+        if require_address {
+            self.parse_address()?;
+        }
+        self.validate_port()?;
+        self.validate_stream_name()?;
+        self.validate_volume()?;
+        Ok(())
+    }
+}
+
+// Построение `VbanTarget` из настроек и цель для старта runtime живут
+// в `commands::vban` (IPC-слой ROADMAP-138).
 
 // ==================== Audio Effects Settings ====================
 
@@ -1784,6 +1911,39 @@ impl AppSettings {
         self.audio.speaker_volume = validate_volume(self.audio.speaker_volume);
         self.audio.virtual_mic_volume = validate_volume(self.audio.virtual_mic_volume);
 
+        // Validate VBAN output settings (ROADMAP-138): загрузочный путь
+        // нормализует повреждённые значения вместо отклонения файла.
+        {
+            let vban = &mut self.audio.vban;
+            if !(1..=u16::MAX).contains(&vban.port) {
+                warn!(port = vban.port, "Invalid VBAN port, using default");
+                vban.port = DEFAULT_VBAN_PORT;
+            }
+            vban.volume = validate_volume(vban.volume);
+            let sanitized: String = vban
+                .stream_name
+                .chars()
+                .filter(|c| c.is_ascii() && !c.is_control())
+                .take(16)
+                .collect();
+            if sanitized.is_empty() {
+                warn!("Invalid VBAN stream name, using default");
+                vban.stream_name = DEFAULT_VBAN_STREAM_NAME.to_string();
+            } else if sanitized != vban.stream_name {
+                warn!(
+                    length = vban.stream_name.chars().count(),
+                    "VBAN stream name sanitized to printable ASCII (max 16 characters)"
+                );
+                vban.stream_name = sanitized;
+            }
+            if vban.enabled {
+                if let Err(e) = vban.parse_address() {
+                    warn!(error = %e, "Invalid VBAN address, disabling network output");
+                    vban.enabled = false;
+                }
+            }
+        }
+
         // Validate webview port
         if let Err(e) = validate_port(self.webview.port) {
             warn!(error = %e, "Invalid webview port, using default");
@@ -2323,6 +2483,44 @@ impl SettingsManager {
     pub fn set_virtual_mic_volume(&self, volume: u8) -> Result<()> {
         let validated = validate_volume(volume);
         self.update_field("/audio/virtual_mic_volume", &validated)
+    }
+
+    /// Сохранить секцию сетевого выхода VBAN целиком (persist-first).
+    ///
+    /// Вызывается после валидации команды: метод применяет значения как есть.
+    pub fn set_vban_settings(&self, settings: VbanSettings) -> Result<()> {
+        self.update_field("/audio/vban", &settings)
+    }
+
+    /// Persist only the connection draft; live controls remain independent.
+    pub fn set_vban_connection_settings(&self, connection: VbanSettings) -> Result<()> {
+        self.update_settings_atomically(move |settings| {
+            let vban = &mut settings.audio.vban;
+            vban.address = connection.address;
+            vban.port = connection.port;
+            vban.stream_name = connection.stream_name;
+            vban.validate(vban.enabled).map_err(anyhow::Error::msg)?;
+            Ok(())
+        })
+    }
+
+    pub fn set_vban_volume(&self, volume: u8) -> Result<()> {
+        if volume > 100 {
+            anyhow::bail!("VBAN volume must be between 0 and 100");
+        }
+        self.update_field("/audio/vban/volume", &volume)
+    }
+
+    pub fn set_vban_enabled(&self, enabled: bool) -> Result<()> {
+        self.update_settings_atomically(move |settings| {
+            settings.audio.vban.enabled = enabled;
+            settings
+                .audio
+                .vban
+                .validate(enabled)
+                .map_err(anyhow::Error::msg)?;
+            Ok(())
+        })
     }
 
     // ========== TTS Settings ==========
@@ -3821,6 +4019,248 @@ mod tests {
             .set_audio_output_format(AudioOutputFormat::Default)
             .unwrap();
         assert_eq!(cache.read().audio.output_format, AudioOutputFormat::Default);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ── VBAN settings (ROADMAP-138) ──
+
+    fn valid_vban() -> VbanSettings {
+        VbanSettings {
+            enabled: true,
+            address: "192.168.1.50".to_string(),
+            port: 6980,
+            stream_name: "TTSBard".to_string(),
+            volume: 100,
+        }
+    }
+
+    #[test]
+    fn vban_section_missing_in_old_config_loads_disabled_with_defaults() {
+        // Old settings.json without a `vban` section (and an old audio section
+        // without the field at all) must load with VBAN disabled.
+        let old_audio = r#"{
+            "speaker_device": null,
+            "speaker_enabled": true,
+            "speaker_volume": 80,
+            "virtual_mic_device": null,
+            "virtual_mic_volume": 100
+        }"#;
+        let audio: AudioSettings = serde_json::from_str(old_audio).unwrap();
+        assert_eq!(audio.vban, VbanSettings::default());
+        assert!(!audio.vban.enabled);
+        assert_eq!(audio.vban.port, DEFAULT_VBAN_PORT);
+        assert_eq!(audio.vban.stream_name, "TTSBard");
+        assert_eq!(audio.vban.volume, 100);
+    }
+
+    #[test]
+    fn vban_partial_section_fills_missing_fields_with_defaults() {
+        let partial = r#"{"enabled": true, "address": "10.0.0.2"}"#;
+        let vban: VbanSettings = serde_json::from_str(partial).unwrap();
+        assert!(vban.enabled);
+        assert_eq!(vban.address, "10.0.0.2");
+        assert_eq!(vban.port, DEFAULT_VBAN_PORT);
+        assert_eq!(vban.stream_name, "TTSBard");
+        assert_eq!(vban.volume, 100);
+    }
+
+    #[test]
+    fn vban_settings_roundtrip_preserves_fields() {
+        let settings = valid_vban();
+        let json = serde_json::to_string(&settings).unwrap();
+        let parsed: VbanSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, settings);
+        // Wire names match the IPC contract.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for key in ["enabled", "address", "port", "stream_name", "volume"] {
+            assert!(value.get(key).is_some(), "missing wire field {key}");
+        }
+    }
+
+    #[test]
+    fn vban_validate_accepts_valid_enabled_settings() {
+        valid_vban().validate(true).unwrap();
+        valid_vban().validate(false).unwrap();
+        // Disabled settings may keep an empty address.
+        let disabled = VbanSettings {
+            enabled: false,
+            address: String::new(),
+            ..valid_vban()
+        };
+        disabled.validate(false).unwrap();
+    }
+
+    #[test]
+    fn vban_validate_rejects_invalid_address_with_field_error() {
+        let mut settings = valid_vban();
+        settings.address = "not-an-ip".to_string();
+        let err = settings.validate(true).unwrap_err();
+        assert!(err.starts_with("address:"), "field-specific error: {err}");
+
+        settings.address = "  ".to_string();
+        assert!(settings.validate(true).unwrap_err().starts_with("address:"));
+
+        // A disabled payload with an invalid address still passes save
+        // validation but must fail the test validation.
+        settings.enabled = false;
+        assert!(settings.validate(false).is_ok());
+        assert!(settings.validate(true).unwrap_err().starts_with("address:"));
+    }
+
+    #[test]
+    fn vban_validate_rejects_out_of_range_port() {
+        let mut settings = valid_vban();
+        settings.port = 0;
+        let err = settings.validate(true).unwrap_err();
+        assert!(err.starts_with("port:"), "field-specific error: {err}");
+
+        let mut settings = valid_vban();
+        settings.port = 65535;
+        settings.validate(true).unwrap();
+        settings.port = 1;
+        settings.validate(true).unwrap();
+    }
+
+    #[test]
+    fn vban_validate_rejects_invalid_stream_name() {
+        let mut settings = valid_vban();
+        settings.stream_name = String::new();
+        assert!(settings
+            .validate(true)
+            .unwrap_err()
+            .starts_with("stream_name:"));
+
+        settings.stream_name = "sixteen_chars_ok".to_string(); // 16 chars
+        settings.validate(true).unwrap();
+
+        settings.stream_name = "x".repeat(17); // 17 chars
+        assert!(settings
+            .validate(true)
+            .unwrap_err()
+            .starts_with("stream_name:"));
+
+        settings.stream_name = "с кириллицей".to_string();
+        assert!(settings
+            .validate(true)
+            .unwrap_err()
+            .starts_with("stream_name:"));
+
+        settings.stream_name = "tab\tchar".to_string();
+        assert!(settings
+            .validate(true)
+            .unwrap_err()
+            .starts_with("stream_name:"));
+    }
+
+    #[test]
+    fn vban_validate_rejects_out_of_range_volume() {
+        let mut settings = valid_vban();
+        settings.volume = 101;
+        assert!(settings.validate(true).unwrap_err().starts_with("volume:"));
+        settings.volume = 0;
+        settings.validate(true).unwrap();
+        settings.volume = 100;
+        settings.validate(true).unwrap();
+    }
+
+    #[test]
+    fn appsettings_validate_normalizes_damaged_vban_section() {
+        let mut settings = AppSettings::default();
+        settings.audio.vban = VbanSettings {
+            enabled: true,
+            address: "999.1.2.3".to_string(),
+            port: 0,
+            stream_name: "bad\tname".to_string(),
+            volume: 250,
+        };
+
+        settings.validate();
+
+        let vban = &settings.audio.vban;
+        assert!(
+            !vban.enabled,
+            "enabled + invalid address must load disabled"
+        );
+        assert_eq!(vban.port, DEFAULT_VBAN_PORT);
+        assert_eq!(vban.volume, 100);
+        assert!(
+            vban.stream_name.bytes().all(|b| (0x20..=0x7e).contains(&b)),
+            "stream name must be printable ASCII: {:?}",
+            vban.stream_name
+        );
+        assert!(vban.stream_name.len() <= 16);
+    }
+
+    #[test]
+    fn appsettings_validate_keeps_disabled_vban_address_as_is() {
+        let mut settings = AppSettings::default();
+        settings.audio.vban = VbanSettings {
+            enabled: false,
+            address: "not-yet-an-address".to_string(),
+            ..valid_vban()
+        };
+        settings.validate();
+        assert_eq!(settings.audio.vban.address, "not-yet-an-address");
+        // The draft address survives so the user can fix and enable it later.
+        assert!(!settings.audio.vban.enabled);
+    }
+
+    #[test]
+    fn vban_settings_persist_updates_disk_and_cache() {
+        let (manager, dir) = webview_section_tmp_manager("vban-settings");
+        let settings = valid_vban();
+        manager.set_vban_settings(settings.clone()).unwrap();
+
+        let disk = read_disk_settings(&dir);
+        assert_eq!(disk.audio.vban, settings);
+        let cache = manager.load().unwrap();
+        assert_eq!(cache.audio.vban, settings, "cache must follow the persist");
+
+        let restarted = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        assert_eq!(restarted.load().unwrap().audio.vban, settings);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn vban_live_controls_and_connection_save_preserve_each_other() {
+        let (manager, dir) = webview_section_tmp_manager("vban-independent-controls");
+        let original = valid_vban();
+        manager.set_vban_settings(original.clone()).unwrap();
+        manager.set_vban_volume(35).unwrap();
+        manager.set_vban_enabled(false).unwrap();
+
+        // A connection snapshot may carry old live values; they are ignored.
+        let mut connection = original;
+        connection.address = "192.168.1.99".into();
+        connection.port = 7001;
+        connection.stream_name = "OtherStream".into();
+        manager.set_vban_connection_settings(connection).unwrap();
+        let saved = read_disk_settings(&dir).audio.vban;
+        assert_eq!(saved.volume, 35);
+        assert!(!saved.enabled);
+        assert_eq!(saved.address, "192.168.1.99");
+        assert_eq!(saved.port, 7001);
+        assert_eq!(saved.stream_name, "OtherStream");
+
+        manager.set_vban_enabled(true).unwrap();
+        manager.set_vban_volume(20).unwrap();
+        let restarted = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let settings = restarted.load().unwrap().audio.vban;
+        assert_eq!(settings.address, saved.address);
+        assert_eq!(settings.port, 7001);
+        assert_eq!(settings.volume, 20);
+        assert!(settings.enabled);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn vban_invalid_live_controls_preserve_durable_settings() {
+        let (manager, dir) = webview_section_tmp_manager("vban-invalid-controls");
+        let original = read_disk_settings(&dir).audio.vban;
+        assert!(manager.set_vban_enabled(true).is_err());
+        assert!(manager.set_vban_volume(101).is_err());
+        assert_eq!(read_disk_settings(&dir).audio.vban, original);
+        assert_eq!(manager.load().unwrap().audio.vban, original);
         let _ = std::fs::remove_dir_all(dir);
     }
 

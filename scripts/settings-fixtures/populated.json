@@ -157,7 +157,14 @@
     "speaker_enabled": true,
     "speaker_volume": 80,
     "virtual_mic_device": "CABLE Input",
-    "virtual_mic_volume": 100
+    "virtual_mic_volume": 100,
+    "vban": {
+      "enabled": false,
+      "address": "",
+      "port": 6980,
+      "stream_name": "TTSBard",
+      "volume": 100
+    }
   },
   "audio_effects": {
     "enabled": true,

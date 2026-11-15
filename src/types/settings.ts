@@ -258,6 +258,32 @@ export interface AudioSettingsDto {
   speaker_volume: number
   virtual_mic_device: string | null
   virtual_mic_volume: number
+  /** Old persisted configs are normalized by the backend before serialization. */
+  vban: VbanSettingsDto
+}
+
+/**
+ * VBAN Audio output settings (ROADMAP-138). Defaults: `false`, `""`, `6980`,
+ * `"TTSBard"`, `100`. The address may stay empty while VBAN is disabled;
+ * enabling or testing requires a valid destination IPv4.
+ */
+export interface VbanSettingsDto {
+  enabled: boolean
+  address: string
+  port: number
+  stream_name: string
+  volume: number
+}
+
+/**
+ * Runtime status of the local VBAN production sender. It reflects only sends
+ * from this PC and their errors; it never reports receiver availability.
+ */
+export type VbanState = 'disabled' | 'idle' | 'sending' | 'error'
+
+export interface VbanStatusDto {
+  state: VbanState
+  error: string | null
 }
 
 // ============================================================================

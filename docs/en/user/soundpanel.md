@@ -26,16 +26,24 @@ MP3, WAV, OGG, FLAC, M4A, AAC and WMA. Arrow keys move selection; Enter activate
 
 ## Playback and audio outputs
 
-The panel uses TTS's enabled Speaker and Virtual microphone outputs, each with
-its selected device/volume. See [virtual audio cable](virtual-audio-cable.md)
+The panel uses TTS's enabled Speaker, Virtual microphone and [VBAN](vban.md)
+outputs, each with its own volume. Local outputs use their selected devices;
+VBAN uses the saved **Audio → VBAN** settings.
+See [virtual audio cable](virtual-audio-cable.md)
 for delivery to Discord, OBS, VTube Studio or games.
 The shared [output format](audio-devices.md#output-format) under Audio → Devices
-also applies; stop and restart audio after changing it.
+also applies to local outputs; stop and restart audio after changing it.
+VBAN keeps its fixed 16-bit PCM, 48 kHz stereo format.
 
-Both available outputs start together; failure on one does not cancel the other.
+Enabled outputs work independently: preparing the network copy does not delay
+local playback. Failure on one output does not cancel another working output.
+VBAN can also be the only output.
 The panel has a separate sequential queue: rapid triggers do not overlap.
 This is independent of TTS, so sounds neither interrupt speech nor wait for it.
 A full queue rejects new triggers; retry after a queued sound finishes.
+
+VBAN mixes simultaneous speech and clips into one stream. Pausing or stopping
+speech does not stop the separate Sound panel queue.
 
 ## Sets
 

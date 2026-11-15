@@ -352,9 +352,12 @@ pub fn restore_cancelled_speech_job(
             &settings.audio,
             &settings.audio_effects,
         );
+        let vban_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
+            &settings.audio_effects,
+        ));
 
         let pb = &playback.inner().0;
-        match pb.replay_from_cache(&job_id.to_string(), speaker, mic) {
+        match pb.replay_from_cache(&job_id.to_string(), speaker, mic, vban_gain) {
             Ok(()) => {
                 let mut q = queue.lock();
                 q.touch_activity(job_id);

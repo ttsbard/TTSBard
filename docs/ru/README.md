@@ -5,6 +5,7 @@
 - [Скачать](https://github.com/ttsbard/TTSBard/releases)
 - [Первый запуск](user/guide.md)
 - [Пользовательские инструкции](user/README.md)
+- [VBAN: звук на другом ПК](user/vban.md)
 - [Интеграции](integrations/README.md)
 - [Частые вопросы](faq.md)
 - [Обзор продукта](ttsbard-overview.md) · [Краткий PDF](ttsbard-overview.pdf)

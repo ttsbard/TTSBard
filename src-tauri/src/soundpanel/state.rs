@@ -188,9 +188,20 @@ impl SoundQueue {
 ///
 /// Синхронно воспроизводит один элемент и только затем берёт следующий.
 /// Завершается при отмене `shutdown`, не начиная новый элемент после отмены.
-fn run_queue_worker(receiver: Receiver<QueueItem>, shutdown: CancellationToken) {
-    run_queue_worker_with(receiver, shutdown, |item| {
-        super::audio::play_audio_file(&item.path, &item.audio_settings);
+/// Общий runtime VBAN прокидывается в каждый клип для сетевого выхода.
+fn run_queue_worker(
+    receiver: Receiver<QueueItem>,
+    shutdown: CancellationToken,
+    vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+) {
+    let clip_shutdown = shutdown.clone();
+    run_queue_worker_with(receiver, shutdown, move |item| {
+        super::audio::play_audio_file(
+            &item.path,
+            &item.audio_settings,
+            vban.as_deref(),
+            Some(&clip_shutdown),
+        );
     });
 }
 
@@ -477,9 +488,14 @@ impl SoundPanelState {
     ///
     /// Worker забирает элементы FIFO и синхронно воспроизводит каждый через
     /// `soundpanel::audio::play_audio_file`, не создавая поток на каждый звук.
-    /// Завершается при отмене переданного `CancellationToken`. Вызывается ровно
-    /// один раз из `setup::init_app`.
-    pub fn start_queue_worker(&self, shutdown: CancellationToken) -> Result<(), String> {
+    /// Общий runtime VBAN передаётся для сетевого выхода клипов. Завершается
+    /// при отмене переданного `CancellationToken`. Вызывается ровно один раз
+    /// из `setup::init_app`.
+    pub fn start_queue_worker(
+        &self,
+        shutdown: CancellationToken,
+        vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+    ) -> Result<(), String> {
         let receiver = self
             .queue_receiver
             .lock()
@@ -488,7 +504,7 @@ impl SoundPanelState {
             .ok_or_else(|| "SoundPanel queue worker already started".to_string())?;
 
         std::thread::spawn(move || {
-            run_queue_worker(receiver, shutdown);
+            run_queue_worker(receiver, shutdown, vban);
         });
 
         info!(

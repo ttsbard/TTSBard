@@ -11,18 +11,21 @@ export interface TestResult {
 
 interface Props {
   result: TestResult | null;
+  successMessage?: string;
+  animate?: boolean;
 }
 
 defineProps<Props>();
 </script>
 
 <template>
-  <Transition name="fade">
+  <Transition name="fade" :css="animate !== false">
     <div v-if="result" class="test-result" :class="{ success: result.success, error: !result.success }">
       <Check v-if="result.success" :size="16" />
       <X v-else :size="16" />
       <span v-if="result.success">
-        <template v-if="result.latency_ms">{{ t('common.connection_success_latency', { latency_ms: result.latency_ms }) }}</template>
+        <template v-if="successMessage">{{ successMessage }}</template>
+        <template v-else-if="result.latency_ms">{{ t('common.connection_success_latency', { latency_ms: result.latency_ms }) }}</template>
         <template v-else>{{ t('common.connection_success') }}</template>
       </span>
       <span v-else>{{ result.error || t('common.connection_failed') }}</span>

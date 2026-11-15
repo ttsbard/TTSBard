@@ -33,6 +33,7 @@ pub mod tabs;
 pub mod telegram;
 pub mod tts_pipeline;
 pub mod twitch;
+pub mod vban;
 pub mod vrchat;
 pub mod vtube_studio;
 pub mod webview;

@@ -9,6 +9,7 @@
 - [TTS providers](tts.md): Silero, OpenAI, ElevenLabs, Fish Audio, local HTTP, Piper, and Pocket TTS.
 - [Virtual audio cable](virtual-audio-cable.md): Discord, OBS, VTube Studio and games.
 - [Audio devices/output format](audio-devices.md): output selection, tests and i32.
+- [VBAN: audio on another PC](vban.md): speech and Sound panel, Receptor stream selection and virtual cable routing.
 - [FAQ](../faq.md): voice, format and hotkey problems.
 
 ## Input and speech

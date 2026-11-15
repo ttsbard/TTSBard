@@ -2,7 +2,7 @@
 
 # Audio devices and output format
 
-**Audio → Devices** configures two outputs:
+**Audio → Devices** configures two local outputs:
 
 - **Speaker**: the speakers/headphones you listen through.
 - **Virtual microphone**: a virtual cable's playback device, forwarding sound
@@ -13,6 +13,11 @@ each device list plays a short test. The refresh button next to the tabs reloads
 available devices. It is available on Devices and disabled with a loading
 indicator while refreshing. Both TTS and [Sound panel](soundpanel.md) use these outputs.
 
+A third output, [VBAN](vban.md), has its own **Audio → VBAN** tab and sends
+speech and Sound panel clips to another PC. Use it alongside local outputs or
+on its own. Device test buttons only test local output; use **Test** on the
+VBAN tab for the network output.
+
 ## Output format
 
 The shared **Output format** selector sits below both cards:
@@ -22,8 +27,10 @@ The shared **Output format** selector sits below both cards:
 | **Default** | Uses each device's default configuration; the initial setting. |
 | **32-bit integer (i32)** | Requests integer samples at the default configuration's sample rate and channel count. |
 
-This applies to **all TTSBard outputs**: Speaker, Virtual microphone, TTS,
-preview, test audio and Sound panel. Support is checked per device. Windows
+This applies to **local TTSBard audio devices**: Speaker and Virtual microphone
+for TTS, previews, test audio and Sound panel. VBAN uses its own fixed 16-bit PCM,
+48 kHz stereo format; selecting i32 does not change it.
+Support is checked per device. Windows
 settings and other applications are unaffected. The choice persists across
 restarts; upgrading from a version without it selects Default.
 

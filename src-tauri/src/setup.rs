@@ -133,12 +133,37 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
 
     app_state_for_events.set_event_sender(event_tx.clone());
 
+    // Apply the saved VBAN target to the shared runtime before any playback
+    // path can start, and stop the worker (canceling every track) on shutdown.
+    // Disabling or retargeting later reconfigures the runtime from the save
+    // command; the values saved here are the ones the first tracks use.
+    {
+        let vban = app_state.inner().vban.clone();
+        let target = crate::commands::vban::saved_vban_target(&settings.audio.vban);
+        info!(
+            enabled = settings.audio.vban.enabled,
+            has_target = target.is_some(),
+            "Applying saved VBAN settings"
+        );
+        vban.configure(target);
+
+        let vban_for_shutdown = vban.clone();
+        let shutdown_token = app_state.inner().shutdown.clone();
+        app_state.inner().runtime.spawn(async move {
+            shutdown_token.cancelled().await;
+            info!("Shutdown token cancelled — stopping VBAN worker");
+            vban_for_shutdown.shutdown();
+        });
+    }
+
     // Initialize PlaybackManager
     let app_handle_pb = app.handle().clone();
     let pb_manager = Arc::new(crate::playback::PlaybackManager::new(
         app_handle_pb,
         event_tx.clone(),
         Some(app_state.inner().cached_devices.clone()),
+        Some(app_state.inner().vban.clone()),
+        app_state.inner().settings_cache.clone(),
     ));
     *app_state.inner().playback_manager.lock() = Some(pb_manager.clone());
     app.manage(PlaybackState(pb_manager));
@@ -257,9 +282,13 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
 
     // Start the single SoundPanel FIFO playback worker. It owns all SoundPanel
     // playback and stops cleanly when the shared shutdown token is cancelled.
+    // The shared VBAN runtime lets clips also reach the network output.
     {
         let sp_worker_shutdown = app_state.inner().shutdown.clone();
-        if let Err(error) = soundpanel_state.start_queue_worker(sp_worker_shutdown) {
+        let sp_worker_vban = app_state.inner().vban.clone();
+        if let Err(error) =
+            soundpanel_state.start_queue_worker(sp_worker_shutdown, Some(sp_worker_vban))
+        {
             error!(error = %error, "Failed to start SoundPanel queue worker");
         }
     }

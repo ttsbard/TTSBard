@@ -12,6 +12,7 @@ mod validation;
 mod windows;
 
 pub use constants::*;
+pub use dto::VbanSettingsDto;
 pub use dto::{
     AllSourcesParams, AppSettingsDto, TtsProviderInfoDto, VTubeStudioSettingsDto,
     VrchatSettingsDto, VtsHotkeyInfoDto,
@@ -30,7 +31,8 @@ pub use settings::{
     DspEqBandSettings, DspEqSettings, DspLimiterSettings, DspSettings, EditorRoute,
     HomographAccentorSettings, LoggingSettings, MtProxySettings, NetworkSettings, ProxyMode,
     ProxyType, QuickEditorMode, SettingsManager, SpellSource, Theme, TwitchMode, TwitchSettings,
-    VTubeStudioSettings, VTubeStudioTypingAction, VTubeStudioTypingMode, VrchatSettings,
+    VTubeStudioSettings, VTubeStudioTypingAction, VTubeStudioTypingMode, VbanSettings,
+    VrchatSettings,
 };
 pub use validation::{is_valid_hex_color, validate_port};
 pub use windows::{

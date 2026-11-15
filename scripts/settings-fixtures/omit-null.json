@@ -139,7 +139,14 @@
     "speaker_enabled": false,
     "speaker_volume": 0,
     "virtual_mic_device": null,
-    "virtual_mic_volume": 0
+    "virtual_mic_volume": 0,
+    "vban": {
+      "enabled": false,
+      "address": "",
+      "port": 6980,
+      "stream_name": "TTSBard",
+      "volume": 100
+    }
   },
   "audio_effects": {
     "enabled": false,

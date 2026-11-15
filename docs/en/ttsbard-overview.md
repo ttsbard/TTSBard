@@ -70,6 +70,13 @@ DeepFilterNet removes noise; EQ, compressor and safety limiter add independent
 processing. Listen locally while sending the same speech through a virtual
 microphone, using VB-CABLE or VoiceMeeter for Discord/games. Outputs have
 independent switches and volumes. Default devices follow Windows output changes.
+
+**Audio → VBAN** also sends speech and Sound panel clips to another PC on the
+local network. VBAN Receptor can route the audio into a virtual cable for OBS,
+Discord and VTube Studio. Select the incoming stream in Receptor's **Stream Name**
+field during the test transmission, then save the destination and enable VBAN in TTSBard.
+See [VBAN setup](user/vban.md).
+
 The separate Playback control window pauses/resumes/stops/repeats; history
 can replay older phrases.
 

@@ -37,7 +37,7 @@ hiding is optional. Starting it again restores the existing instance.
 | **TTS** | Local Piper voices and Pocket TTS voice cloning from a WAV sample, Silero Bot through Telegram, OpenAI, ElevenLabs, Fish Audio, and local HTTP servers compatible with TTS Voice Wizard’s Locally Hosted mode. |
 | **Local models** | Install and manage Pocket TTS, OCR and RUAccent packages in **Settings → Models**. |
 | **Audio cache** | Caches synthesized speech and replays phrases with the same settings without waiting for synthesis or using additional provider quota. |
-| **Audio outputs** | Listen through speakers/headphones while sending speech to a virtual microphone for games and chats. |
+| **Audio outputs** | Listen through speakers/headphones, send speech to a virtual microphone for games and chats, and send speech and Sound panel clips to another PC over VBAN. |
 | **Audio processing** | Pitch, tempo, volume, DeepFilterNet denoising, EQ, compressor and limiter. |
 | **Interface languages** | English and Russian; add your own translation with a language pack. |
 | **Screen OCR** | Extract text from a selected screen area for speech or editing. |
@@ -82,6 +82,7 @@ See the [product overview](docs/en/ttsbard-overview.md),
 ### Documentation
 
 - [User guide](docs/en/user/guide.md) · [All user instructions](docs/en/user/README.md)
+- [VBAN network audio](docs/en/user/vban.md) · [Virtual audio cable](docs/en/user/virtual-audio-cable.md)
 - [Integrations](docs/en/integrations/README.md)
 - [Product overview](docs/en/ttsbard-overview.md) · [PDF](docs/en/ttsbard-overview.pdf)
 - [FAQ](docs/en/faq.md) · [Documentation map](docs/en/README.md)
@@ -156,7 +157,7 @@ TTSBard — Windows-приложение для общения с помощью
 | **TTS** | Локальные голоса Piper и клонирование голоса по WAV в Pocket TTS, Silero Bot в Telegram, OpenAI, ElevenLabs, Fish Audio и локальные HTTP-серверы, совместимые с режимом Locally Hosted в TTS Voice Wizard. |
 | **Локальные модели** | Установка и управление пакетами Pocket TTS, OCR и RUAccent в разделе **Настройки → Модели**. |
 | **Аудиокэш** | Сохраняет готовую озвучку: повторяющиеся фразы с теми же настройками воспроизводятся без ожидания синтеза и расхода лимитов TTS-сервиса. |
-| **Аудиовыходы** | Одновременное воспроизведение в наушники или динамики и виртуальный микрофон для игр и голосовых чатов. |
+| **Аудиовыходы** | Наушники или динамики, виртуальный микрофон для игр и голосовых чатов, а также передача речи и звуков SoundPanel на другой ПК по VBAN. |
 | **Обработка звука** | Настройка высоты тона, темпа и громкости; шумоподавление DeepFilterNet, эквалайзер, компрессор и лимитер. |
 | **Язык интерфейса** | Русский и английский интерфейс; возможность создать и подключить собственный перевод. |
 | **OCR экрана** | Распознавание текста из выделенной области экрана для озвучивания или редактирования. |
@@ -208,6 +209,7 @@ TTSBard — Windows-приложение для общения с помощью
 
 - [Пользовательское руководство](docs/ru/user/guide.md) — настройка, горячие клавиши,
   провайдеры и интеграции.
+- [VBAN: звук на другом ПК](docs/ru/user/vban.md) · [Виртуальный аудиокабель](docs/ru/user/virtual-audio-cable.md).
 - [Язык интерфейса](docs/ru/user/language-packs.md) — выбор языка и подключение
   внешних пакетов перевода.
 - [Обзор продукта](docs/ru/ttsbard-overview.md) — возможности и сценарии для

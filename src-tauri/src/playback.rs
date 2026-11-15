@@ -33,6 +33,11 @@ pub struct QueuedPhrase {
     pub audio: Arc<AudioPcm>,
     pub speaker: Option<OutputConfig>,
     pub mic: Option<OutputConfig>,
+    /// DSP-gain сетевого источника речи — характеристика фразы, захватывается
+    /// при постановке безусловно. Включённость VBAN проверяется в момент
+    /// фактического старта по актуальным настройкам (vban_start_decision),
+    /// `None` явно отключает сетевую дорожку для этой фразы.
+    pub vban_gain: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -282,6 +287,7 @@ impl Shared {
         audio: Arc<AudioPcm>,
         speaker: Option<OutputConfig>,
         mic: Option<OutputConfig>,
+        vban_gain: Option<f32>,
     ) -> EnqueueState {
         let ts = Utc::now().timestamp_millis();
         self.audio_cache.retain(|c| c.id != id);
@@ -313,6 +319,7 @@ impl Shared {
                     audio,
                     speaker,
                     mic,
+                    vban_gain,
                 });
                 return EnqueueState::Queued;
             }
@@ -325,6 +332,7 @@ impl Shared {
             audio,
             speaker,
             mic,
+            vban_gain,
         };
         self.current = Some(phrase.clone());
         EnqueueState::SendToThread(phrase)
@@ -435,6 +443,7 @@ impl Shared {
         audio: Arc<AudioPcm>,
         speaker: Option<OutputConfig>,
         mic: Option<OutputConfig>,
+        vban_gain: Option<f32>,
     ) -> Result<EnqueueState, String> {
         let is_queued = self.queue.iter().any(|q| q.id == id);
         if is_queued {
@@ -483,6 +492,7 @@ impl Shared {
                 audio,
                 speaker,
                 mic,
+                vban_gain,
             });
             Ok(EnqueueState::Queued)
         } else {
@@ -492,6 +502,7 @@ impl Shared {
                 audio,
                 speaker,
                 mic,
+                vban_gain,
             };
             self.current = Some(phrase.clone());
             Ok(EnqueueState::SendToThread(phrase))
@@ -516,6 +527,65 @@ struct OutputKey {
 enum SinkDecision {
     Reuse,
     Reopen,
+}
+
+/// Решение о старте сетевой дорожки в момент фактического старта (testable
+/// без аудио). VBAN должен быть включён в актуальных сохранённых настройках,
+/// а фраза — нести свой DSP-gain; историческое состояние (что было в момент
+/// подготовки/постановки) не отбрасывает уже поставленную фразу.
+fn vban_start_decision(
+    vban: Option<&Arc<crate::audio::vban::VbanOutput>>,
+    settings_cache: &RwLock<crate::config::AppSettings>,
+    phrase_gain: Option<f32>,
+) -> Option<(Arc<crate::audio::vban::VbanOutput>, f32)> {
+    let vban = vban?;
+    if !settings_cache.read().audio.vban.enabled {
+        return None;
+    }
+    let gain = phrase_gain?;
+    Some((Arc::clone(vban), gain))
+}
+
+/// Pure network-track decision for the drain loop (testable without audio).
+///
+/// `done` — дорожка больше не звучит (Finished/Stopped/Failed или её нет),
+/// `paused` — дорожка на паузе, `failure` — текст ошибки Failed-дорожки.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VbanDrainInfo {
+    paused: bool,
+    done: bool,
+    failure: Option<String>,
+}
+
+fn vban_drain_info(status: Option<&crate::audio::vban::VbanPlaybackStatus>) -> VbanDrainInfo {
+    use crate::audio::vban::VbanPlaybackStatus;
+    match status {
+        None => VbanDrainInfo {
+            paused: false,
+            done: true,
+            failure: None,
+        },
+        Some(VbanPlaybackStatus::Pending) | Some(VbanPlaybackStatus::Playing) => VbanDrainInfo {
+            paused: false,
+            done: false,
+            failure: None,
+        },
+        Some(VbanPlaybackStatus::Paused) => VbanDrainInfo {
+            paused: true,
+            done: false,
+            failure: None,
+        },
+        Some(VbanPlaybackStatus::Finished) | Some(VbanPlaybackStatus::Stopped) => VbanDrainInfo {
+            paused: false,
+            done: true,
+            failure: None,
+        },
+        Some(VbanPlaybackStatus::Failed(error)) => VbanDrainInfo {
+            paused: false,
+            done: true,
+            failure: Some(error.clone()),
+        },
+    }
 }
 
 /// Pure key → action decision. No device logic; testable without audio.
@@ -634,6 +704,8 @@ impl PlaybackManager {
         app_handle: AppHandle,
         internal_ev: mpsc::Sender<crate::events::AppEvent>,
         cached_devices: Option<Arc<RwLock<HashMap<String, cpal::Device>>>>,
+        vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+        settings_cache: Arc<RwLock<crate::config::AppSettings>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let state = Arc::new(RwLock::new(Shared {
@@ -649,7 +721,16 @@ impl PlaybackManager {
         let th_app = app_handle.clone();
 
         thread::spawn(move || {
-            Self::thread_loop(cmd_rx, th_cmd_tx, th_app, internal_ev, th_state, th_devices);
+            Self::thread_loop(
+                cmd_rx,
+                th_cmd_tx,
+                th_app,
+                internal_ev,
+                th_state,
+                th_devices,
+                vban,
+                settings_cache,
+            );
         });
 
         PlaybackManager {
@@ -659,6 +740,7 @@ impl PlaybackManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn thread_loop(
         cmd_rx: Receiver<Cmd>,
         cmd_tx: mpsc::Sender<Cmd>,
@@ -666,9 +748,15 @@ impl PlaybackManager {
         internal_ev: mpsc::Sender<crate::events::AppEvent>,
         state: Arc<RwLock<Shared>>,
         cached_devices: Option<Arc<RwLock<HashMap<String, cpal::Device>>>>,
+        vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+        settings_cache: Arc<RwLock<crate::config::AppSettings>>,
     ) {
         let mut spk_holder: Option<OutputHolder> = None;
         let mut mic_holder: Option<OutputHolder> = None;
+        // Сетевой handle текущей фразы. Замена на старте следующего звука
+        // отменяет просроченный остаток внутри VBAN worker-а; нормальное
+        // завершение локальной дорожки хвост сети не обрезает.
+        let mut vban_speech: Option<crate::audio::vban::VbanPlayback> = None;
         let mut playing = false;
         let mut stopped = false;
 
@@ -694,6 +782,32 @@ impl PlaybackManager {
                     let mic_cfg = phrase.mic.clone();
                     let audio = phrase.audio.clone();
 
+                    // Сетевая дорожка речи стартует независимо от локальных
+                    // выходов: network-only работает при выключенных или
+                    // отказавших устройствах. Включённость проверяется по
+                    // актуальным настройкам в момент фактического старта, а
+                    // DSP-gain — характеристика самой фразы. Старт нового
+                    // источника заменяет остаток предыдущей фразы.
+                    let mut vban_started = false;
+                    vban_speech = None;
+                    if let Some((vb, gain)) =
+                        vban_start_decision(vban.as_ref(), &settings_cache, phrase.vban_gain)
+                    {
+                        match vb.start(
+                            crate::audio::vban::VbanSource::Speech,
+                            Arc::clone(&audio),
+                            gain,
+                        ) {
+                            Ok(handle) => {
+                                vban_speech = Some(handle);
+                                vban_started = true;
+                            }
+                            Err(e) => {
+                                warn!(target: "playback", error = %e, "VBAN speech start failed");
+                            }
+                        }
+                    }
+
                     if let Some(ref c) = spk_cfg {
                         ensure_output(&mut spk_holder, c, &audio, &cached_devices, "speaker");
                     } else {
@@ -707,8 +821,9 @@ impl PlaybackManager {
                         mic_holder = None;
                     }
 
-                    info!(target: "playback", has_spk=spk_holder.is_some(), has_mic=mic_holder.is_some(), "Playback start check");
-                    if spk_holder.is_some() || mic_holder.is_some() {
+                    let local_started = spk_holder.is_some() || mic_holder.is_some();
+                    info!(target: "playback", has_spk=spk_holder.is_some(), has_mic=mic_holder.is_some(), vban=vban_started, "Playback start check");
+                    if local_started || vban_started {
                         playing = true;
                         state.write().status = PlaybackStatus::Playing;
                         let _ = internal_ev.send(crate::events::AppEvent::PlaybackStarted {
@@ -724,18 +839,19 @@ impl PlaybackManager {
                         );
                         info!(target: "playback", "PlaybackStarted emitted");
                     } else {
-                        warn!(target: "playback", "No output sink — playback NOT started (speaker+mic both failed)");
+                        vban_speech = None;
+                        warn!(target: "playback", "No output — playback NOT started (speaker, mic and VBAN all failed)");
                         let failed_id = phrase.id.clone();
                         let _ = internal_ev.send(crate::events::AppEvent::PlaybackFailed {
                             text_id: failed_id.clone(),
-                            error: "No output sink could be opened (speaker and mic both failed)"
+                            error: "No output could be started (speaker, mic and VBAN all failed)"
                                 .to_string(),
                         });
                         let _ = app.emit(
                             "playback-failed",
                             serde_json::json!({
                                 "text_id": failed_id,
-                                "error": "No output sink could be opened",
+                                "error": "No output could be started",
                             }),
                         );
                     }
@@ -749,6 +865,9 @@ impl PlaybackManager {
                     }
                     if let Some(ref h) = mic_holder {
                         h.sink.pause();
+                    }
+                    if let Some(ref h) = vban_speech {
+                        h.pause();
                     }
                     state.write().status = PlaybackStatus::Paused;
                     let _ = internal_ev.send(crate::events::AppEvent::PlaybackPaused);
@@ -764,6 +883,9 @@ impl PlaybackManager {
                     if let Some(ref h) = mic_holder {
                         h.sink.play();
                     }
+                    if let Some(ref h) = vban_speech {
+                        h.resume();
+                    }
                     state.write().status = PlaybackStatus::Playing;
                     let _ = internal_ev.send(crate::events::AppEvent::PlaybackResumed);
                     let _ = app.emit("playback-resumed", ());
@@ -775,6 +897,10 @@ impl PlaybackManager {
                     if let Some(ref h) = mic_holder {
                         h.sink.stop();
                     }
+                    if let Some(ref h) = vban_speech {
+                        h.stop();
+                    }
+                    vban_speech = None;
                     release_stale_mode_holders(&mut spk_holder, &mut mic_holder);
                     playing = false;
                     stopped = true;
@@ -787,6 +913,10 @@ impl PlaybackManager {
                         warn!("Repeat: nothing playing");
                         continue;
                     }
+                    let vban_paused_before = matches!(
+                        vban_speech.as_ref().map(|h| h.status()),
+                        Some(crate::audio::vban::VbanPlaybackStatus::Paused)
+                    );
                     let was_paused = spk_holder
                         .as_ref()
                         .map(|h| h.sink.is_paused())
@@ -794,7 +924,8 @@ impl PlaybackManager {
                         || mic_holder
                             .as_ref()
                             .map(|h| h.sink.is_paused())
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                        || vban_paused_before;
                     let seek_ok = spk_holder
                         .as_ref()
                         .map(|h| h.sink.try_seek(Duration::ZERO).is_ok())
@@ -811,6 +942,34 @@ impl PlaybackManager {
                             let _ = cmd_tx.send(Cmd::Enqueue(p));
                         }
                     } else {
+                        // Сетевая дорожка повторяется через stop/start по
+                        // контракту; включённость проверяется по актуальным
+                        // настройкам на момент повтора. Локальные sink
+                        // продолжают через seek и не ждут сеть.
+                        if let Some(vb) = vban.as_ref() {
+                            if let Some(old) = vban_speech.take() {
+                                old.stop();
+                            }
+                            let phrase_gain =
+                                state.read().current.as_ref().and_then(|p| p.vban_gain);
+                            if let Some((vb, gain)) =
+                                vban_start_decision(Some(vb), &settings_cache, phrase_gain)
+                            {
+                                let audio = state.read().current.as_ref().map(|p| p.audio.clone());
+                                if let Some(audio) = audio {
+                                    match vb.start(
+                                        crate::audio::vban::VbanSource::Speech,
+                                        audio,
+                                        gain,
+                                    ) {
+                                        Ok(handle) => vban_speech = Some(handle),
+                                        Err(e) => {
+                                            warn!(target: "playback", error = %e, "VBAN repeat restart failed");
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if let Some(ref h) = spk_holder {
                             h.sink.play();
                         }
@@ -833,20 +992,63 @@ impl PlaybackManager {
             if playing && !stopped {
                 let spk_done = spk_holder.as_ref().map(|h| h.sink.empty()).unwrap_or(true);
                 let mic_done = mic_holder.as_ref().map(|h| h.sink.empty()).unwrap_or(true);
-                let paused = spk_holder
+                let spk_paused = spk_holder
                     .as_ref()
                     .map(|h| h.sink.is_paused())
-                    .unwrap_or(false)
-                    || mic_holder
-                        .as_ref()
-                        .map(|h| h.sink.is_paused())
-                        .unwrap_or(false);
+                    .unwrap_or(false);
+                let mic_paused = mic_holder
+                    .as_ref()
+                    .map(|h| h.sink.is_paused())
+                    .unwrap_or(false);
+                let local_present = spk_holder.is_some() || mic_holder.is_some();
+                let vban_info = vban_drain_info(vban_speech.as_ref().map(|h| h.status()).as_ref());
 
-                if !paused && spk_done && mic_done {
-                    debug!(target: "playback", "Sinks drained, playing=false");
+                // При локальном выводе сеть не удерживает старт/переход:
+                // завершение определяют локальные sink. Network-only живёт по
+                // статусам сетевого handle: старт (Pending/Playing), пауза,
+                // завершение и продвижение после ошибки.
+                let paused = if local_present {
+                    spk_paused || mic_paused
+                } else {
+                    vban_info.paused
+                };
+                let done = if local_present {
+                    spk_done && mic_done
+                } else {
+                    vban_info.done
+                };
+
+                if !paused && done {
+                    if !local_present {
+                        // Network-only: ошибка сети продвигает очередь вперёд
+                        // (fail-closed), фраза помечается неуспешной.
+                        if let Some(error) = vban_info.failure {
+                            playing = false;
+                            let failed_id = {
+                                let mut s = state.write();
+                                let id = s.current.as_ref().map(|p| p.id.clone());
+                                s.status = PlaybackStatus::Idle;
+                                id
+                            };
+                            if let Some(id) = failed_id {
+                                warn!(target: "playback", text_id=%id, error=%error, "VBAN-only playback failed");
+                                let _ = internal_ev.send(crate::events::AppEvent::PlaybackFailed {
+                                    text_id: id,
+                                    error: format!("VBAN playback failed: {error}"),
+                                });
+                            } else {
+                                warn!(target: "playback", "VBAN-only failure with no current phrase — invariant violated");
+                            }
+                            let _ = app.emit("queue-changed", ());
+                            continue;
+                        }
+                    }
+                    debug!(target: "playback", "Outputs drained, playing=false");
                     playing = false;
                     // Keep holders alive for reuse; release only stale-mode
-                    // streams so a format change applies while idle.
+                    // streams so a format change applies while idle. The
+                    // network tail keeps sending until it finishes or the
+                    // next start replaces it.
                     release_stale_mode_holders(&mut spk_holder, &mut mic_holder);
                     let finished_id = {
                         let mut s = state.write();
@@ -871,7 +1073,8 @@ impl PlaybackManager {
 
     /// Добавить фразу с явным per-phrase output config. Выходные устройства
     /// фиксируются в QueuedPhrase и воспроизводятся потоком без доступа к глобальному
-    /// `audio_config` во время playback.
+    /// `audio_config` во время playback. `vban_gain` — gain сетевого источника
+    /// речи (None: сетевая дорожка не стартует).
     pub fn enqueue_with_outputs(
         &self,
         id: String,
@@ -879,8 +1082,9 @@ impl PlaybackManager {
         audio: AudioPcm,
         speaker: Option<OutputConfig>,
         mic: Option<OutputConfig>,
+        vban_gain: Option<f32>,
     ) -> bool {
-        self.enqueue_inner(id, text, audio, speaker, mic)
+        self.enqueue_inner(id, text, audio, speaker, mic, vban_gain)
     }
 
     fn enqueue_inner(
@@ -890,10 +1094,11 @@ impl PlaybackManager {
         audio: AudioPcm,
         speaker: Option<OutputConfig>,
         mic: Option<OutputConfig>,
+        vban_gain: Option<f32>,
     ) -> bool {
         let arc_audio = Arc::new(audio);
         let mut s = self.state.write();
-        match s.enqueue_state(id, text, arc_audio, speaker, mic) {
+        match s.enqueue_state(id, text, arc_audio, speaker, mic, vban_gain) {
             EnqueueState::SendToThread(phrase) => {
                 drop(s);
                 let _ = self.cmd_tx.send(Cmd::Enqueue(phrase));
@@ -948,6 +1153,7 @@ impl PlaybackManager {
         id: &str,
         speaker: Option<OutputConfig>,
         mic: Option<OutputConfig>,
+        vban_gain: Option<f32>,
     ) -> Result<(), String> {
         let mut s = self.state.write();
 
@@ -956,7 +1162,7 @@ impl PlaybackManager {
             .ok_or_else(|| format!("CacheMiss: no cached audio for id '{}'", id))?;
         let (_, cached_text, cached_audio) = cached;
 
-        match s.accept_replay(id, cached_text, cached_audio, speaker, mic) {
+        match s.accept_replay(id, cached_text, cached_audio, speaker, mic, vban_gain) {
             Ok(EnqueueState::SendToThread(phrase)) => {
                 drop(s);
                 let _ = self.cmd_tx.send(Cmd::Enqueue(phrase));
@@ -1024,6 +1230,7 @@ impl PlaybackManager {
             let audio = next.audio.clone();
             let speaker = next.speaker.clone();
             let mic = next.mic.clone();
+            let vban_gain = next.vban_gain;
             drop(s);
             let _ = self.cmd_tx.send(Cmd::Enqueue(QueuedPhrase {
                 id,
@@ -1031,6 +1238,7 @@ impl PlaybackManager {
                 audio,
                 speaker,
                 mic,
+                vban_gain,
             }));
         }
     }
@@ -1070,6 +1278,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             }),
             queue: VecDeque::new(),
             audio_cache: VecDeque::with_capacity(AUDIO_CACHE_SIZE),
@@ -1092,6 +1301,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             }),
             queue: VecDeque::new(),
             audio_cache: VecDeque::with_capacity(AUDIO_CACHE_SIZE),
@@ -1228,7 +1438,14 @@ mod tests {
     fn enqueue_sets_current_when_idle() {
         let mut s = make_shared();
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("id1".into(), "hello".into(), Arc::clone(&audio), None, None) {
+        match s.enqueue_state(
+            "id1".into(),
+            "hello".into(),
+            Arc::clone(&audio),
+            None,
+            None,
+            None,
+        ) {
             EnqueueState::SendToThread(p) => {
                 assert_eq!(p.id, "id1");
                 assert_eq!(p.text, "hello");
@@ -1242,7 +1459,7 @@ mod tests {
     fn enqueue_queues_when_playing() {
         let mut s = make_shared_playing();
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("new_id".into(), "new text".into(), audio, None, None) {
+        match s.enqueue_state("new_id".into(), "new text".into(), audio, None, None, None) {
             EnqueueState::Queued => {}
             _ => panic!("expected Queued"),
         }
@@ -1253,7 +1470,7 @@ mod tests {
     fn enqueue_queues_when_paused() {
         let mut s = make_shared_paused();
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("new_id".into(), "new text".into(), audio, None, None) {
+        match s.enqueue_state("new_id".into(), "new text".into(), audio, None, None, None) {
             EnqueueState::Queued => {}
             _ => panic!("expected Queued"),
         }
@@ -1264,7 +1481,14 @@ mod tests {
     fn enqueue_dedup_current_id() {
         let mut s = make_shared_playing();
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("current".into(), "current text".into(), audio, None, None) {
+        match s.enqueue_state(
+            "current".into(),
+            "current text".into(),
+            audio,
+            None,
+            None,
+            None,
+        ) {
             EnqueueState::Queued => {}
             _ => panic!("expected Queued"),
         }
@@ -1280,9 +1504,17 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("queued".into(), "queued text".into(), audio, None, None) {
+        match s.enqueue_state(
+            "queued".into(),
+            "queued text".into(),
+            audio,
+            None,
+            None,
+            None,
+        ) {
             EnqueueState::Queued => {}
             _ => panic!("expected Queued"),
         }
@@ -1299,10 +1531,11 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         let audio = Arc::new(dummy_audio());
-        match s.enqueue_state("over".into(), "over text".into(), audio, None, None) {
+        match s.enqueue_state("over".into(), "over text".into(), audio, None, None, None) {
             EnqueueState::Rejected => {}
             _ => panic!("expected Rejected"),
         }
@@ -1314,7 +1547,14 @@ mod tests {
         let mut s = make_shared_playing();
         for i in 0..3 {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state(format!("id{i}"), format!("text{i}"), audio, None, None);
+            s.enqueue_state(
+                format!("id{i}"),
+                format!("text{i}"),
+                audio,
+                None,
+                None,
+                None,
+            );
         }
         assert_eq!(s.queue.len(), 3);
         assert_eq!(s.queue[0].id, "id0");
@@ -1329,7 +1569,14 @@ mod tests {
         let mut s = make_shared();
         for i in 0..(AUDIO_CACHE_SIZE + 5) {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state(format!("id{i}"), format!("text{i}"), audio, None, None);
+            s.enqueue_state(
+                format!("id{i}"),
+                format!("text{i}"),
+                audio,
+                None,
+                None,
+                None,
+            );
         }
         assert_eq!(s.audio_cache.len(), AUDIO_CACHE_SIZE);
         assert_eq!(s.audio_cache[0].id, "id5");
@@ -1344,15 +1591,22 @@ mod tests {
         let mut s = make_shared();
         {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state("id1".into(), "text1".into(), audio, None, None);
+            s.enqueue_state("id1".into(), "text1".into(), audio, None, None, None);
         }
         for i in 0..5 {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state(format!("fill{i}"), format!("text{i}"), audio, None, None);
+            s.enqueue_state(
+                format!("fill{i}"),
+                format!("text{i}"),
+                audio,
+                None,
+                None,
+                None,
+            );
         }
         {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state("id1".into(), "text1".into(), audio, None, None);
+            s.enqueue_state("id1".into(), "text1".into(), audio, None, None, None);
         }
         assert_eq!(s.audio_cache.back().unwrap().id, "id1");
         let count = s.audio_cache.iter().filter(|c| c.id == "id1").count();
@@ -1370,6 +1624,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let result = s.finish_inner();
         assert!(result.is_some());
@@ -1398,6 +1653,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         let r1 = s.finish_inner().unwrap();
@@ -1446,6 +1702,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         s.queue.push_back(QueuedPhrase {
             id: "q2".into(),
@@ -1453,6 +1710,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let dto = s.get_state_dto();
         assert_eq!(dto.queue, vec!["first", "second"]);
@@ -1586,6 +1844,7 @@ mod tests {
             Arc::clone(&audio),
             cfg_a.clone(),
             None,
+            None,
         );
         s.enqueue_state(
             "id_b".into(),
@@ -1596,6 +1855,7 @@ mod tests {
                 device_id: Some("mic_x".into()),
                 volume: 0.3,
             }),
+            None,
         );
         assert_eq!(s.queue.len(), 2);
         assert_eq!(
@@ -1626,6 +1886,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: cfg.clone(),
             mic: None,
+            vban_gain: None,
         });
         let result = s.finish_inner().unwrap();
         assert_eq!(result.id, "next");
@@ -1650,6 +1911,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         let audio = Arc::new(dummy_audio());
@@ -1661,6 +1923,7 @@ mod tests {
                 device_id: Some("d".into()),
                 volume: 0.5,
             }),
+            None,
             None,
         ) {
             EnqueueState::Rejected => {}
@@ -1682,6 +1945,7 @@ mod tests {
             "hello".into(),
             Arc::clone(&audio),
             cfg.clone(),
+            None,
             None,
         ) {
             EnqueueState::SendToThread(p) => {
@@ -1720,7 +1984,14 @@ mod tests {
         let mut s = make_shared();
         for i in 0..(AUDIO_CACHE_SIZE + 5) {
             let audio = Arc::new(dummy_audio());
-            s.enqueue_state(format!("id{i}"), format!("text{i}"), audio, None, None);
+            s.enqueue_state(
+                format!("id{i}"),
+                format!("text{i}"),
+                audio,
+                None,
+                None,
+                None,
+            );
         }
         assert!(!s.has_cached_audio("id0"));
         assert!(s.has_cached_audio(format!("id{}", AUDIO_CACHE_SIZE + 4).as_str()));
@@ -1811,6 +2082,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         s.queue.push_back(QueuedPhrase {
             id: "q2".into(),
@@ -1818,6 +2090,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let ids = s.queued_ids();
         assert_eq!(ids, vec!["q1", "q2"]);
@@ -2104,7 +2377,7 @@ mod tests {
     fn accept_replay_cache_miss() {
         let mut s = make_shared();
         let (text, audio) = phrase_for_replay("no_cache");
-        let result = s.accept_replay("no_cache", text, audio, None, None);
+        let result = s.accept_replay("no_cache", text, audio, None, None, None);
         match result {
             Err(msg) => assert!(msg.contains("CacheMiss"), "expected CacheMiss, got: {msg}"),
             _ => panic!("expected Err"),
@@ -2115,7 +2388,7 @@ mod tests {
     fn accept_replay_already_pending_when_playing_current() {
         let mut s = make_shared_playing();
         let (text, audio) = phrase_for_replay("current");
-        let result = s.accept_replay("current", text, audio, None, None);
+        let result = s.accept_replay("current", text, audio, None, None, None);
         match result {
             Err(msg) => assert!(
                 msg.contains("AlreadyPending"),
@@ -2129,7 +2402,7 @@ mod tests {
     fn accept_replay_already_pending_when_paused_current() {
         let mut s = make_shared_paused();
         let (text, audio) = phrase_for_replay("paused_id");
-        let result = s.accept_replay("paused_id", text, audio, None, None);
+        let result = s.accept_replay("paused_id", text, audio, None, None, None);
         match result {
             Err(msg) => assert!(
                 msg.contains("AlreadyPending"),
@@ -2148,9 +2421,10 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let (text, audio) = phrase_for_replay("queued");
-        let result = s.accept_replay("queued", text, audio, None, None);
+        let result = s.accept_replay("queued", text, audio, None, None, None);
         match result {
             Err(msg) => assert!(
                 msg.contains("AlreadyPending"),
@@ -2186,10 +2460,11 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         let (text, audio) = phrase_for_replay(cache_id);
-        let result = s.accept_replay(cache_id, text, audio, None, None);
+        let result = s.accept_replay(cache_id, text, audio, None, None, None);
         match result {
             Err(msg) => assert!(msg.contains("QueueFull"), "expected QueueFull, got: {msg}"),
             _ => panic!("expected Err"),
@@ -2214,6 +2489,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         let replay_id = "replay_tail";
@@ -2224,7 +2500,7 @@ mod tests {
             timestamp: 0,
         });
         let (text, audio) = phrase_for_replay(replay_id);
-        let result = s.accept_replay(replay_id, text, audio, None, None);
+        let result = s.accept_replay(replay_id, text, audio, None, None, None);
         assert!(
             matches!(result, Ok(EnqueueState::Queued)),
             "expected Queued"
@@ -2237,7 +2513,7 @@ mod tests {
     fn accept_replay_becomes_current_when_idle() {
         let mut s = shared_with_cache("idle_replay", 100);
         let (text, audio) = phrase_for_replay("idle_replay");
-        let result = s.accept_replay("idle_replay", text, audio, None, None);
+        let result = s.accept_replay("idle_replay", text, audio, None, None, None);
         assert!(
             matches!(result, Ok(EnqueueState::SendToThread(_))),
             "expected SendToThread"
@@ -2257,7 +2533,14 @@ mod tests {
             volume: 0.3,
         });
         let (text, audio) = phrase_for_replay("replay_cfg");
-        match s.accept_replay("replay_cfg", text, audio, speaker.clone(), mic.clone()) {
+        match s.accept_replay(
+            "replay_cfg",
+            text,
+            audio,
+            speaker.clone(),
+            mic.clone(),
+            None,
+        ) {
             Ok(EnqueueState::SendToThread(p)) => {
                 assert_eq!(
                     p.speaker.as_ref().map(|c| c.device_id.as_deref()),
@@ -2294,7 +2577,7 @@ mod tests {
             timestamp: 100,
         });
         let (text, audio) = phrase_for_replay(new_id);
-        let result = s.accept_replay(new_id, text, audio, None, None);
+        let result = s.accept_replay(new_id, text, audio, None, None, None);
         assert!(
             matches!(result, Ok(EnqueueState::SendToThread(_))),
             "expected SendToThread (Stopped is not pending), got: {:?}",
@@ -2312,6 +2595,7 @@ mod tests {
             Arc::new(dummy_audio()),
             None,
             None,
+            None,
         )
         .unwrap();
         let entry = s.audio_cache.iter().find(|c| c.id == "ts_replay").unwrap();
@@ -2325,6 +2609,7 @@ mod tests {
             "future_replay",
             "future_replay".into(),
             Arc::new(dummy_audio()),
+            None,
             None,
             None,
         )
@@ -2350,9 +2635,10 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let (text, audio) = phrase_for_replay("queued");
-        let result = s.accept_replay("queued", text, audio, None, None);
+        let result = s.accept_replay("queued", text, audio, None, None, None);
         match result {
             Err(msg) => assert!(
                 msg.contains("AlreadyPending"),
@@ -2370,6 +2656,7 @@ mod tests {
             "same_ms",
             "same_ms".into(),
             Arc::new(dummy_audio()),
+            None,
             None,
             None,
         )
@@ -2393,6 +2680,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         s.queue.push_back(QueuedPhrase {
             id: "keep_me".into(),
@@ -2400,6 +2688,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         assert_eq!(s.queue.len(), 2);
         assert!(s.remove_queued_item("to_cancel").is_ok());
@@ -2417,6 +2706,7 @@ mod tests {
                 audio: Arc::new(dummy_audio()),
                 speaker: None,
                 mic: None,
+                vban_gain: None,
             });
         }
         assert!(s.remove_queued_item("q1").is_ok());
@@ -2435,6 +2725,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         s.queue.push_back(QueuedPhrase {
             id: "q1".into(),
@@ -2442,6 +2733,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         assert!(s.remove_queued_item("q0").is_ok());
         assert_eq!(s.queue.len(), 1);
@@ -2457,6 +2749,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         s.queue.push_back(QueuedPhrase {
             id: "q1".into(),
@@ -2464,6 +2757,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         assert!(s.remove_queued_item("q1").is_ok());
         assert_eq!(s.queue.len(), 1);
@@ -2497,6 +2791,7 @@ mod tests {
             audio: Arc::new(dummy_audio()),
             speaker: None,
             mic: None,
+            vban_gain: None,
         });
         let current_before = s.current.as_ref().unwrap().id.clone();
         assert!(s.remove_queued_item("to_cancel").is_ok());
@@ -2683,5 +2978,224 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, "stopped");
+    }
+
+    // ── VBAN network track (ROADMAP-138) ──
+
+    use crate::audio::vban::VbanPlaybackStatus;
+
+    #[test]
+    fn vban_drain_info_none_track_is_done_without_failure() {
+        let info = vban_drain_info(None);
+        assert!(info.done);
+        assert!(!info.paused);
+        assert!(info.failure.is_none());
+    }
+
+    #[test]
+    fn vban_drain_info_pending_and_playing_keep_queue_waiting() {
+        // Своевременный старт: Pending означает «worker ещё готовит» — очередь
+        // не должна уйти вперёд раньше времени.
+        for status in [VbanPlaybackStatus::Pending, VbanPlaybackStatus::Playing] {
+            let info = vban_drain_info(Some(&status));
+            assert!(!info.done, "track must keep the queue waiting");
+            assert!(!info.paused);
+            assert!(info.failure.is_none());
+        }
+    }
+
+    #[test]
+    fn vban_drain_info_paused_is_not_done() {
+        let info = vban_drain_info(Some(&VbanPlaybackStatus::Paused));
+        assert!(info.paused);
+        assert!(!info.done);
+        assert!(info.failure.is_none());
+    }
+
+    #[test]
+    fn vban_drain_info_finished_and_stopped_are_done() {
+        for status in [VbanPlaybackStatus::Finished, VbanPlaybackStatus::Stopped] {
+            let info = vban_drain_info(Some(&status));
+            assert!(info.done, "terminal track must be done");
+            assert!(!info.paused);
+            assert!(info.failure.is_none());
+        }
+    }
+
+    #[test]
+    fn vban_drain_info_failed_advances_after_error() {
+        let info = vban_drain_info(Some(&VbanPlaybackStatus::Failed("socket gone".into())));
+        assert!(info.done, "failure must advance the network-only queue");
+        assert!(!info.paused);
+        assert_eq!(info.failure.as_deref(), Some("socket gone"));
+    }
+
+    #[test]
+    fn enqueue_state_captures_vban_gain_into_current_phrase() {
+        let mut s = make_shared();
+        let audio = Arc::new(dummy_audio());
+        match s.enqueue_state(
+            "id1".into(),
+            "hello".into(),
+            Arc::clone(&audio),
+            None,
+            None,
+            Some(0.8),
+        ) {
+            EnqueueState::SendToThread(p) => assert_eq!(p.vban_gain, Some(0.8)),
+            _ => panic!("expected SendToThread"),
+        }
+        assert_eq!(s.current.as_ref().unwrap().vban_gain, Some(0.8));
+    }
+
+    #[test]
+    fn enqueue_state_preserves_explicit_vban_opt_out() {
+        let mut s = make_shared();
+        let audio = Arc::new(dummy_audio());
+        match s.enqueue_state(
+            "id1".into(),
+            "hello".into(),
+            Arc::clone(&audio),
+            None,
+            None,
+            None,
+        ) {
+            EnqueueState::SendToThread(p) => assert_eq!(p.vban_gain, None),
+            _ => panic!("expected SendToThread"),
+        }
+    }
+
+    #[test]
+    fn queued_phrase_keeps_vban_gain_through_the_queue() {
+        let mut s = make_shared_playing();
+        let audio = Arc::new(dummy_audio());
+        match s.enqueue_state(
+            "next_id".into(),
+            "next".into(),
+            audio,
+            None,
+            None,
+            Some(0.5),
+        ) {
+            EnqueueState::Queued => {}
+            _ => panic!("expected Queued"),
+        }
+        let next = s.finish_inner().unwrap();
+        assert_eq!(next.id, "next_id");
+        assert_eq!(next.vban_gain, Some(0.5));
+        assert_eq!(s.current.as_ref().unwrap().vban_gain, Some(0.5));
+    }
+
+    #[test]
+    fn accept_replay_captures_vban_gain() {
+        let mut s = shared_with_cache("replay_vban", 1000);
+        let (text, audio) = phrase_for_replay("replay_vban");
+        let result = s.accept_replay("replay_vban", text, audio, None, None, Some(1.25));
+        match result {
+            Ok(EnqueueState::SendToThread(p)) => assert_eq!(p.vban_gain, Some(1.25)),
+            other => panic!("expected SendToThread, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_replay_when_active_queues_phrase_with_vban_gain() {
+        let mut s = make_shared_playing();
+        // Вторая фраза в кэше: replay при активном воспроизведении уходит в
+        // очередь вместе со своим сетевым gain.
+        s.audio_cache.push_back(CachedPhrase {
+            id: "second".into(),
+            text: "second".into(),
+            audio: Arc::new(dummy_audio()),
+            timestamp: 2000,
+        });
+        let (text, audio) = phrase_for_replay("second");
+        let result = s.accept_replay("second", text, audio, None, None, Some(0.9));
+        match result {
+            Ok(EnqueueState::Queued) => {}
+            _ => panic!("expected Queued"),
+        }
+        assert_eq!(s.queue[0].vban_gain, Some(0.9));
+    }
+
+    // ── старт сетевой дорожки по актуальным настройкам (ROADMAP-138 ревью) ──
+
+    fn start_settings(enabled: bool) -> Arc<RwLock<crate::config::AppSettings>> {
+        let mut settings = crate::config::AppSettings::default();
+        settings.audio.vban.enabled = enabled;
+        settings.audio.vban.address = "127.0.0.1".to_string();
+        Arc::new(RwLock::new(settings))
+    }
+
+    #[test]
+    fn vban_start_decision_requires_currently_enabled_settings() {
+        let output = Arc::new(crate::audio::vban::VbanOutput::new());
+        let disabled = start_settings(false);
+        assert!(
+            vban_start_decision(Some(&output), &disabled, Some(1.0)).is_none(),
+            "выключенный сейчас VBAN не стартует дорожку"
+        );
+        output.shutdown();
+
+        let enabled = start_settings(true);
+        let decision = vban_start_decision(Some(&output), &enabled, Some(1.0));
+        assert!(decision.is_some());
+        output.shutdown();
+    }
+
+    #[test]
+    fn vban_start_decision_requires_captured_gain_and_runtime() {
+        let output = Arc::new(crate::audio::vban::VbanOutput::new());
+        let enabled = start_settings(true);
+        // Фраза без захваченного gain сетевую дорожку не получает.
+        assert!(vban_start_decision(Some(&output), &enabled, None).is_none());
+        // Без runtime решения нет даже при включённых настройках.
+        assert!(vban_start_decision(None, &enabled, Some(1.0)).is_none());
+        output.shutdown();
+    }
+
+    #[test]
+    fn vban_start_decision_follows_live_settings_flip() {
+        // Regression: фраза, поставленная в очередь при выключенном VBAN,
+        // должна уйти по сети, если к моменту старта VBAN включили.
+        let output = Arc::new(crate::audio::vban::VbanOutput::new());
+        let settings = start_settings(false);
+        {
+            let mut live = settings.write();
+            live.audio_effects.enabled = true;
+            live.audio_effects.volume = 75;
+        }
+        let snapshot = settings.read().clone();
+        let captured_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
+            &snapshot.audio_effects,
+        ));
+        let mut shared = make_shared_playing();
+        let enqueue = shared.enqueue_state(
+            "queued".to_string(),
+            "queued speech".to_string(),
+            Arc::new(dummy_audio()),
+            Some(OutputConfig {
+                device_id: None,
+                volume: 0.8,
+            }),
+            None,
+            captured_gain,
+        );
+        assert!(matches!(enqueue, EnqueueState::Queued));
+        let phrase = shared
+            .finish_inner()
+            .expect("queued phrase becomes current");
+        assert!(vban_start_decision(Some(&output), &settings, phrase.vban_gain).is_none());
+
+        settings.write().audio.vban.enabled = true;
+        settings.write().audio_effects.volume = 150;
+        let (_, gain) = vban_start_decision(Some(&output), &settings, phrase.vban_gain)
+            .expect("enabling VBAN starts a phrase captured while disabled");
+        assert!(
+            (gain - 0.75).abs() < 0.0001,
+            "queued speech keeps its DSP gain"
+        );
+        settings.write().audio.vban.enabled = false;
+        assert!(vban_start_decision(Some(&output), &settings, phrase.vban_gain).is_none());
+        output.shutdown();
     }
 }

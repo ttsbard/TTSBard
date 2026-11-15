@@ -1,16 +1,48 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { Volume2, Sliders, RefreshCw, Loader2 } from 'lucide-vue-next';
+import { computed, ref } from 'vue';
+import { Volume2, Sliders, Network, RefreshCw, Loader2 } from 'lucide-vue-next';
 import { t } from '../i18n';
+import { useAudioSettings } from '../composables/useAppSettings';
+import type { VbanStatusDto } from '../types/settings';
 import AudioDevicesTab from './audio/AudioDevicesTab.vue';
 import AudioEffectsTab from './audio/AudioEffectsTab.vue';
+import AudioVbanTab from './audio/AudioVbanTab.vue';
 
-const activeTab = ref<'devices' | 'effects_dsp'>('devices');
+const activeTab = ref<'devices' | 'effects_dsp' | 'vban'>('devices');
 const effectsDirty = ref(false);
+const vbanDirty = ref(false);
 const devicesTab = ref<InstanceType<typeof AudioDevicesTab> | null>(null);
+
+const audioSettings = useAudioSettings();
+const savedVbanEnabled = computed(() => audioSettings.value?.vban?.enabled === true);
+const vbanStatus = ref<VbanStatusDto>({ state: 'disabled', error: null });
+
+const vbanStatusLabel = computed(() => {
+  switch (vbanStatus.value.state) {
+    case 'sending': return t('audio.vban.status.sending');
+    case 'error': return t('audio.vban.status.error');
+    case 'idle': return t('audio.vban.status.idle');
+    case 'disabled':
+    default: return t('audio.vban.status.disabled');
+  }
+});
+
+/** Keep the status in the tab's accessible name; the dot and text are visual. */
+const vbanTabAriaLabel = computed(() => {
+  const base = vbanDirty.value ? t('audio.tabs.vban.dirty') : t('audio.tabs.vban');
+  return savedVbanEnabled.value ? `${base} — ${vbanStatusLabel.value}` : base;
+});
 
 function onEffectsDirty(dirty: boolean) {
   effectsDirty.value = dirty;
+}
+
+function onVbanDirty(dirty: boolean) {
+  vbanDirty.value = dirty;
+}
+
+function onVbanStatus(status: VbanStatusDto) {
+  vbanStatus.value = status;
 }
 </script>
 
@@ -39,6 +71,26 @@ function onEffectsDirty(dirty: boolean) {
             <span>{{ t('audio.tabs.effects_dsp') }}</span>
             <span v-if="effectsDirty" class="dirty-dot" aria-hidden="true">*</span>
           </button>
+          <button
+            class="ui-tab"
+            role="tab"
+            :aria-selected="activeTab === 'vban'"
+            :aria-label="vbanTabAriaLabel"
+            :title="savedVbanEnabled ? vbanStatusLabel : undefined"
+            @click="activeTab = 'vban'"
+          >
+            <Network :size="18" />
+            <span class="vban-tab-label">
+              <span>{{ t('audio.tabs.vban') }}</span>
+              <span
+                v-if="savedVbanEnabled"
+                class="vban-tab-dot"
+                :class="`vban-tab-dot--${vbanStatus.state}`"
+                aria-hidden="true"
+              ></span>
+            </span>
+            <span v-if="vbanDirty" class="dirty-dot" aria-hidden="true">*</span>
+          </button>
         </div>
         <button
           v-if="activeTab === 'devices'"
@@ -59,6 +111,13 @@ function onEffectsDirty(dirty: boolean) {
       <AudioEffectsTab
         v-show="activeTab === 'effects_dsp'"
         @dirty-change="onEffectsDirty"
+      />
+
+      <AudioVbanTab
+        v-show="activeTab === 'vban'"
+        :active="activeTab === 'vban'"
+        @dirty-change="onVbanDirty"
+        @status-change="onVbanStatus"
       />
     </div>
   </div>
@@ -281,6 +340,33 @@ function onEffectsDirty(dirty: boolean) {
   line-height: 1;
   margin-left: 2px;
   flex-shrink: 0;
+}
+
+/* Production status in the VBAN tab; shown only for a saved enabled output. */
+.vban-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vban-tab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-text-muted);
+}
+
+.vban-tab-dot--idle {
+  background: var(--color-success);
+}
+
+.vban-tab-dot--sending {
+  background: var(--color-accent);
+}
+
+.vban-tab-dot--error {
+  background: var(--color-danger);
 }
 
 </style>

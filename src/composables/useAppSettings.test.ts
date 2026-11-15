@@ -57,7 +57,7 @@ function mockSettings(): AppSettingsDto & { vrchat: VrchatSettingsDto } {
       soundpanel: { x: null, y: null, opacity: 100, bg_color: '', clickthrough: false, stay_visible: false, hide_on_blur: false, appearance_source: '' },
       playback: { x: null, y: null, opacity: 100, bg_color: '', appearance_source: '' },
     },
-    audio: { output_format: 'default', speaker_device: null, speaker_enabled: true, speaker_volume: 100, virtual_mic_device: null, virtual_mic_volume: 100 },
+    audio: { output_format: 'default', speaker_device: null, speaker_enabled: true, speaker_volume: 100, virtual_mic_device: null, virtual_mic_volume: 100, vban: { enabled: false, address: '', port: 6980, stream_name: 'TTSBard', volume: 100 } },
     audio_effects: { enabled: false, pitch: 0, speed: 0, volume: 100, enhance_enabled: false, enhance_atten_db: 10, formant_preserved: true, boundary_cleanup_enabled: true },
     dsp: {
       eq: { enabled: false, low_cut_enabled: false, low_cut_hz: 80, low_cut_slope_db: 12, bands: [], high_shelf_enabled: false, high_shelf_hz: 8000, high_shelf_gain_db: 0 },

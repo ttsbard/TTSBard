@@ -178,6 +178,13 @@ pub struct AppState {
     /// Playback manager for queue/pause/resume
     pub playback_manager: Arc<Mutex<Option<Arc<crate::playback::PlaybackManager>>>>,
 
+    /// Shared VBAN network output runtime (ROADMAP-138).
+    ///
+    /// Один инстанс на процесс: речь, клипы SoundPanel и IPC-тест отправляют
+    /// через него. Цель назначения задаётся `configure` из сохранённых
+    /// настроек (старт приложения и команда сохранения).
+    pub vban: Arc<crate::audio::vban::VbanOutput>,
+
     /// Shared settings cache (same Arc as SettingsManager.cache) for hot-path reads
     pub settings_cache: Arc<RwLock<crate::config::AppSettings>>,
 
@@ -259,6 +266,7 @@ impl AppState {
             vrchat,
             backend_ready: Arc::new(AtomicBool::new(false)),
             playback_manager: Arc::new(Mutex::new(None)),
+            vban: Arc::new(crate::audio::vban::VbanOutput::new()),
             hotkey_recording_in_progress: Arc::new(AtomicBool::new(false)),
             runtime,
             cached_devices: Arc::new(RwLock::new(HashMap::new())),

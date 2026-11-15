@@ -11,6 +11,7 @@
 |---|---|---|
 | Start / Начало | [First launch](en/user/guide.md) | [Первый запуск](ru/user/guide.md) |
 | Guides / Руководства | [User guides](en/user/README.md) | [Пользовательские инструкции](ru/user/README.md) |
+| Network audio / Звук по сети | [VBAN](en/user/vban.md) | [VBAN](ru/user/vban.md) |
 | Connections / Подключения | [Integrations](en/integrations/README.md) | [Интеграции](ru/integrations/README.md) |
 | Help / Помощь | [FAQ](en/faq.md) | [Частые вопросы](ru/faq.md) |
 | Overview / Обзор | [Product overview](en/ttsbard-overview.md) · [PDF](en/ttsbard-overview.pdf) | [Обзор продукта](ru/ttsbard-overview.md) · [PDF](ru/ttsbard-overview.pdf) |
