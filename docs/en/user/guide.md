@@ -45,16 +45,34 @@ from the editor's **…** menu.
 
 ## Daily use
 
-- `Ctrl+Shift+F3`: show the editor.
-- `Enter`: send a phrase and perform the configured window action.
-- `Ctrl+Enter`: send and keep typing.
-- `Ctrl+Shift+F7`: open Playback control.
+- **Show the editor** with `Ctrl+Shift+F3` or the key assigned to **Main window**
+  in [Key interception](#key-interception).
+- **In the editor**
+  - `Enter` sends the phrase and performs the configured window action.
+  - `Ctrl+Enter` sends the phrase and lets you keep typing.
 
-In **Settings → Editor → Quick editor**, choose whether sending collapses the
-window or returns focus to the previous window. Clearing the text is a separate
-setting. See the [editor guide](editor.md) for shortcuts, history, spelling,
-routes and [minimizing, the tray and quitting](editor.md#minimizing-the-tray-and-quitting).
-Minimizing keeps the application running in the background.
+### Communicate through TTSBard while gaming or working
+
+Here are two ways to set up the quick editor. Choose what happens after sending
+a phrase under **Settings → Editor → Quick editor**.
+
+In either setup, open the editor with a [shortcut](editor.md#configure-shortcuts)
+(`Ctrl+Shift+F3` by default) or press a single key assigned to the **Main window**
+action in [Key interception](#key-interception).
+
+- **Open the editor for each phrase.** If you use one monitor and want to clear
+  the screen after sending, choose **Collapse**. Open the editor, type your
+  phrase, and press `Enter`. TTSBard hides until you open it again.
+- **Keep the editor open.** If you use two monitors, move TTSBard to the second
+  screen and choose **Return focus to the previous window**. Open the editor from
+  your game or work app, type your phrase, and press `Enter`. TTSBard stays on the
+  second screen, and focus returns to the previous window. This also works on
+  one monitor if there's room for the compact editor beside your work window.
+
+Press `Ctrl+Enter` to send a phrase and keep typing in the editor. Clearing the
+text is a separate setting. TTSBard keeps running in the background when hidden.
+See the [editor guide](editor.md) and
+[Minimizing, the tray and quitting](editor.md#minimizing-the-tray-and-quitting) for details.
 
 ## Compact mode and Mono
 
@@ -73,13 +91,11 @@ See [compact mode](editor.md#compact-mode).
 ## Key interception
 
 Assign global actions to individual NumPad, F1–F24, Page Up, End, Page Down,
-Home or Insert keys, including OCR capture. **Allow interception of any key**
-extends the available keys. Turning it off retains extra bindings but disables
-them. An intercepted key does not reach the active application.
-
-An occupied key shows a busy message and recording continues. With unrestricted
-keys, Escape can itself be assigned: use the close button to cancel recording.
-Existing interception actions are suspended while a binding is being recorded.
+Home or Insert keys. To open the editor with a single key, assign the **Main
+window** action. You can also assign OCR capture to read text from the screen.
+**Allow interception of any key** extends the available keys. Turning it off
+retains extra bindings and disables them. While interception is on, Windows
+and other applications do not receive presses of the assigned keys.
 
 ## Interface appearance
 
