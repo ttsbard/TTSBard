@@ -11,12 +11,12 @@ This guide has moved. / Инструкция перенесена.
 
 <a id="1-режим-twitch-api"></a>
 
-[Русский: 1. Режим Twitch API](../ru/integrations/twitch.md#1-режим-twitch-api) · [English](../en/integrations/twitch.md)
+[Русский: Режим Twitch API](../ru/integrations/twitch.md#режим-twitch-api) · [English](../en/integrations/twitch.md#twitch-api-mode)
 
 <a id="2-режим-irc-классический"></a>
 
-[Русский: 2. Режим IRC (классический)](../ru/integrations/twitch.md#2-режим-irc-классический) · [English](../en/integrations/twitch.md)
+[Русский: Режим IRC (классический)](../ru/integrations/twitch.md#режим-irc-классический) · [English](../en/integrations/twitch.md#classic-irc-mode)
 
 <a id="обновление-панели--второй-этап"></a>
 
-[Русский: Обновление панели — второй этап](../ru/integrations/twitch.md#обновление-панели--второй-этап) · [English](../en/integrations/twitch.md)
+[Русский: Отправка сообщений](../ru/integrations/twitch.md#отправка-сообщений) · [English](../en/integrations/twitch.md#sending-messages)
