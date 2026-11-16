@@ -11,9 +11,9 @@ TTSBard can also send spoken phrases to Twitch chat using either connection mode
 
 Connect directly through an IRC socket:
 
-1. Obtain an OAuth token for the Twitch account you want to use using [twitchtokengenerator.com](https://twitchtokengenerator.com).
-2. Copy only the OAuth token, without `oauth:`.
-3. Enter the account username, target channel and token, then connect.
+1. On [twitchtokengenerator.com](https://twitchtokengenerator.com/), choose **Bot Chat Token** and sign in to the Twitch account that will send the messages.
+2. Copy the value from the **Access Token** field.
+3. In TTSBard, enter the username for that account and the target channel name, paste the token into the **Token** field without the `oauth:` prefix, then click Connect.
 
 - **Username**: the token's account, 1–25 Latin letters, digits or `_`, no `@`/spaces.
 - **Token**: no `oauth:` prefix.
