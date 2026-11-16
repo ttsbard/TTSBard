@@ -7,10 +7,14 @@ your local network. For example, keep headphones and a game microphone on the
 gaming PC while receiving a separate voice source for OBS, Discord or
 microphone-based VTube Studio lip sync on the streaming PC.
 
-TTSBard is the sender. The receiving PC needs a compatible receiver such as
-[VBAN Receptor for Windows](https://vb-audio.com/Voicemeeter/vban.htm).
-To pass Receptor audio to applications as microphone input, install a
-[virtual audio cable](virtual-audio-cable.md) on the receiving PC as well.
+TTSBard sends the audio. On the receiving PC, choose either option:
+
+- **[VBAN Receptor](#receive-audio-with-vban-receptor)** is a simple receiver with one output.
+- **[Voicemeeter](#receive-audio-with-voicemeeter)** is a mixer that can route
+  audio to speakers and OBS at the same time.
+
+To route audio through **CABLE Input → CABLE Output**, install a
+[virtual audio cable](virtual-audio-cable.md) on the receiving PC.
 
 ## Audio flow
 
@@ -24,9 +28,12 @@ Select ordinary headphones or speakers in Receptor if you only need to listen
 on the other PC. Sending VBAN does not require a cable on the TTSBard PC or a
 separate VBAN Talkie sender.
 
-## Prepare the receiving PC
+## Receive audio with VBAN Receptor
 
-1. Connect both PCs to the local network and start VBAN Receptor on the receiver.
+Start [VBAN Receptor for Windows](https://vb-audio.com/Voicemeeter/vban.htm)
+on the receiving PC.
+
+1. Connect both PCs to the local network.
 2. Find the receiving PC's IP address: in VBAN Receptor, click the top panel
    containing the graph to open the settings window, which shows the IP address.
    Alternatively,
@@ -69,6 +76,26 @@ PC. Check the VBAN test first, then a regular TTSBard phrase and a Sound panel c
 To hear the cable through headphones on the receiving PC, enable
 [Windows monitoring through `mmsys.cpl`](virtual-audio-cable.md#listen-to-the-cable-through-windows).
 
+## Receive audio with Voicemeeter
+
+This example uses [Voicemeeter](https://vb-audio.com/Voicemeeter/index.htm)
+with two outputs on the streaming PC.
+
+1. Open **VBAN** in Voicemeeter and click **VBAN is OFF** to enable VBAN.
+2. Under **Incoming Streams**, manually enter the exact stream name from TTSBard
+   in **Stream Name** and the TTSBard PC's LAN IP address in **IP Address From**.
+   In TTSBard, enter the streaming PC's IP address under **Audio → VBAN**. Use the same UDP port on
+   both sides (default `6980`).
+3. In the same row, switch **On** and select a mixer input under **Destination**.
+4. Under **Hardware Out**, assign your speakers to **A1** and **CABLE Input
+   (VB-Audio Virtual Cable)** to **A2**. On the selected input strip, enable
+   **A**. This bus sends audio to both devices.
+5. In OBS, add an **Audio Input Capture** source and select **CABLE Output
+   (VB-Audio Virtual Cable)**. Click **Test** in TTSBard and check the
+   incoming stream indicator, speaker playback, and the OBS audio meter.
+6. In TTSBard, click **Save**, then turn on **Enable VBAN output** to send
+   regular speech and Sound panel audio.
+
 ## What gets sent
 
 - Regular speech, incoming phrases, repeats and history playback.
@@ -88,7 +115,10 @@ change VBAN. Network output is disabled by default.
 
 **Test sent** confirms sending from this PC. The tab's **Ready to send**,
 **Sending audio...** and **Send error** statuses also describe the local sender.
-UDP does not confirm that Receptor received or played the audio.
+UDP does not confirm that the receiver received or played the audio.
+
+For Voicemeeter, check both VBAN switches, the stream name, sender IP address,
+UDP port, the **A** button on the selected input strip, and the **A1** and **A2** devices.
 
 1. If the stream is missing, repeat the test and open **Stream Name** during
    transmission. Check the destination IPv4, matching UDP port, network and
