@@ -89,6 +89,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          key: windows-2022
           workspaces: src-tauri
       - name: Run clippy
         shell: pwsh
@@ -139,6 +140,7 @@ jobs:
           toolchain: ${{ env.WINDOWS_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
+          key: windows-2022
           workspaces: src-tauri
       - name: Prepare Piper test data
         shell: pwsh
@@ -183,6 +185,7 @@ jobs:
           toolchain: ${{ env.WINDOWS_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
+          key: windows-2022
           workspaces: src-tauri
       - name: Install dependencies
         run: npm ci
