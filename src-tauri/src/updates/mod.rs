@@ -39,9 +39,9 @@ pub mod state;
 pub mod launch;
 
 use std::future::Future;
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -451,14 +451,11 @@ pub fn status_snapshot(
     // be observed as its persisted half with the previous attempt's runtime
     // record (a fresh release next to a stale error) — see
     // [`UpdatesState::read_attempt_with`].
-    let (attempt, (_current_dir, persisted)) = state.read_attempt_with(|| -> (
-        Option<PathBuf>,
-        state::UpdateStateRecord,
-    ) {
-        settings_manager.get_update_state_with_dir()
-    });
-    let (last_attempt_at, last_attempt_error) =
-        UpdatesState::display_attempt(attempt, &persisted);
+    let (attempt, (_current_dir, persisted)) =
+        state.read_attempt_with(|| -> (Option<PathBuf>, state::UpdateStateRecord) {
+            settings_manager.get_update_state_with_dir()
+        });
+    let (last_attempt_at, last_attempt_error) = UpdatesState::display_attempt(attempt, &persisted);
     let update_available = persisted
         .last_release
         .as_ref()
@@ -678,8 +675,7 @@ where
     // persistence writes of this attempt land there even if the effective
     // root changes mid-flight. Manual and startup callers resolve the
     // current root here instead.
-    let check_dir =
-        check_dir.unwrap_or_else(|| settings_manager.update_state_dir());
+    let check_dir = check_dir.unwrap_or_else(|| settings_manager.update_state_dir());
 
     // Publish the in-flight flag right away, so an already open card shows
     // the spinner and keeps the manual button disabled while a scheduled
@@ -738,9 +734,11 @@ where
                 // the last success or the known release; it is persisted so a
                 // restart shows the failure instead of an older success.
                 let attempted = attempted_at.to_rfc3339_opts(SecondsFormat::Secs, true);
-                if let Err(error) = manager
-                    .set_updates_attempt_failure_in(state_dir.as_deref(), attempted, kind.as_str())
-                {
+                if let Err(error) = manager.set_updates_attempt_failure_in(
+                    state_dir.as_deref(),
+                    attempted,
+                    kind.as_str(),
+                ) {
                     warn!(
                         error = %error,
                         "Failed to persist the failed update attempt"
@@ -824,6 +822,10 @@ pub async fn perform_manual_check(
 /// The attempt runs in the root the caller's due decision was derived from:
 /// `check_dir` pins it (see [`try_run_check`]), so a root switch between the
 /// decision and the guard cannot redirect the write to another root.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Explicit dependencies keep the check and wait testable"
+)]
 async fn run_attempt_or_wait<F, Fut, E, C>(
     settings_manager: &SettingsManager,
     state: &UpdatesState,
@@ -839,9 +841,17 @@ async fn run_attempt_or_wait<F, Fut, E, C>(
     E: Fn(&UpdateStatusDto) + Sync,
     C: Fn() -> DateTime<Utc> + Send,
 {
-    if try_run_check(settings_manager, state, install, check_dir, fetch, emit, now)
-        .await
-        .is_some()
+    if try_run_check(
+        settings_manager,
+        state,
+        install,
+        check_dir,
+        fetch,
+        emit,
+        now,
+    )
+    .await
+    .is_some()
     {
         return;
     }
@@ -895,6 +905,10 @@ fn persisted_attempt_time(state: &state::UpdateStateRecord) -> Option<DateTime<U
 /// until the schedule changes or the app exits. Generic over the clock and
 /// the sleeper so tests drive time without real-day waits. Takes owned
 /// state so the future stays `'static` for the runtime spawn.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The scheduler takes injectable time, fetch, and event functions"
+)]
 async fn scheduler_loop<C, SF, S, F, Fut, E>(
     settings_manager: SettingsManager,
     state: Arc<UpdatesState>,
@@ -960,12 +974,10 @@ async fn scheduler_loop<C, SF, S, F, Fut, E>(
         // transaction (see `read_attempt_with`), so the base never mixes two
         // roots and never observes a completed check's persistence without
         // its runtime record (or vice versa) — the base cannot regress.
-        let (attempt, (current_dir, persisted)) = state.read_attempt_with(|| -> (
-            Option<PathBuf>,
-            state::UpdateStateRecord,
-        ) {
-            settings_manager.get_update_state_with_dir()
-        });
+        let (attempt, (current_dir, persisted)) =
+            state.read_attempt_with(|| -> (Option<PathBuf>, state::UpdateStateRecord) {
+                settings_manager.get_update_state_with_dir()
+            });
         let base = attempt
             .map(|record| record.at)
             .or_else(|| persisted_attempt_time(&persisted));
@@ -1177,10 +1189,11 @@ mod tests {
     fn fetch_ok(
         calls: &Arc<AtomicUsize>,
         version: &'static str,
-    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>>
-    + Send
-    + Sync
-    + Clone {
+    ) -> impl Fn() -> std::pin::Pin<
+        Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>,
+    > + Send
+           + Sync
+           + Clone {
         let calls = Arc::clone(calls);
         move || {
             let calls = Arc::clone(&calls);
@@ -1195,10 +1208,11 @@ mod tests {
     fn fetch_failing(
         calls: &Arc<AtomicUsize>,
         kind: UpdateErrorKind,
-    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>>
-    + Send
-    + Sync
-    + Clone {
+    ) -> impl Fn() -> std::pin::Pin<
+        Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>,
+    > + Send
+           + Sync
+           + Clone {
         let calls = Arc::clone(calls);
         move || {
             let calls = Arc::clone(&calls);
@@ -1218,10 +1232,11 @@ mod tests {
         version: &'static str,
         clock: &TestClock,
         advance_secs: u64,
-    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>>
-    + Send
-    + Sync
-    + Clone {
+    ) -> impl Fn() -> std::pin::Pin<
+        Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>,
+    > + Send
+           + Sync
+           + Clone {
         let calls = Arc::clone(calls);
         let clock = clock.clone();
         move || {
@@ -1263,7 +1278,9 @@ mod tests {
         }
 
         fn advance_secs(&self, secs: u64) {
-            self.advance(chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX)));
+            self.advance(chrono::Duration::seconds(
+                i64::try_from(secs).unwrap_or(i64::MAX),
+            ));
         }
 
         /// Wake the loop's current sleep. `notify_one` stores a permit when
@@ -1283,14 +1300,17 @@ mod tests {
 
         fn sleep_fn(
             &self,
-        ) -> impl Fn(Duration) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>
-        + Send
-        + Clone {
+        ) -> impl Fn(Duration) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Clone
+        {
             let clock = self.clone();
             move |duration: Duration| {
                 let clock = clock.clone();
                 Box::pin(async move {
-                    clock.sleeps.lock().expect("test sleeps lock").push(duration);
+                    clock
+                        .sleeps
+                        .lock()
+                        .expect("test sleeps lock")
+                        .push(duration);
                     clock.release.notified().await;
                 })
             }
@@ -1302,12 +1322,12 @@ mod tests {
         state: &Arc<UpdatesState>,
         clock: &TestClock,
         shutdown: &CancellationToken,
-        fetch: impl Fn()
-            -> std::pin::Pin<Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>>
-        + Send
-        + Sync
-        + Clone
-        + 'static,
+        fetch: impl Fn() -> std::pin::Pin<
+                Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>,
+            > + Send
+            + Sync
+            + Clone
+            + 'static,
         emit: impl Fn(&UpdateStatusDto) + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<()> {
         let clock2 = clock.clone();
@@ -1416,7 +1436,9 @@ mod tests {
         let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
         let state = UpdatesState::new();
 
-        let release = sample_release("1.9.0");
+        let current = parse_version(current_version()).expect("current app version is valid");
+        let next_version = semver::Version::new(current.major + 1, 0, 0).to_string();
+        let release = sample_release(&next_version);
         let status = try_run_check(
             &manager,
             &state,
@@ -1445,7 +1467,7 @@ mod tests {
         assert_eq!(persisted.last_attempt_error, None);
         assert_eq!(
             persisted.last_release.as_ref().map(|r| r.version.as_str()),
-            Some("1.9.0"),
+            Some(next_version.as_str()),
             "found release persisted"
         );
 
@@ -1457,7 +1479,7 @@ mod tests {
         let status = status_snapshot(&reloaded, &fresh_state, &test_install());
         assert_eq!(
             status.latest.as_ref().map(|r| r.version.as_str()),
-            Some("1.9.0"),
+            Some(next_version.as_str()),
             "release restored after restart"
         );
         assert!(status.update_available);
@@ -1468,13 +1490,16 @@ mod tests {
         // Dismissal keeps hiding the panel for this version across restarts,
         // while the card still receives the release through the same fields.
         reloaded
-            .set_updates_dismissed_version(Some("1.9.0".to_string()))
+            .set_updates_dismissed_version(Some(next_version.clone()))
             .unwrap();
         let status = status_snapshot(&reloaded, &fresh_state, &test_install());
-        assert_eq!(status.dismissed_version.as_deref(), Some("1.9.0"));
+        assert_eq!(
+            status.dismissed_version.as_deref(),
+            Some(next_version.as_str())
+        );
         assert_eq!(
             status.latest.as_ref().map(|r| r.version.as_str()),
-            Some("1.9.0")
+            Some(next_version.as_str())
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1714,7 +1739,14 @@ mod tests {
         let state = Arc::new(UpdatesState::new());
         let shutdown = CancellationToken::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let task = spawn_loop(&manager, &state, &clock, &shutdown, fetch_ok(&calls, "9.9.9"), noop_emit);
+        let task = spawn_loop(
+            &manager,
+            &state,
+            &clock,
+            &shutdown,
+            fetch_ok(&calls, "9.9.9"),
+            noop_emit,
+        );
 
         // The startup attempt covers the overdue periodic deadline: exactly
         // one fetch at T0, then a full 24-hour re-arm.
@@ -1754,7 +1786,11 @@ mod tests {
         clock.release_sleeps();
         wait_until(|| calls.load(Ordering::SeqCst) == 2, "the periodic attempt").await;
         wait_sleep_count(&clock, 4).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "exactly one periodic attempt");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "exactly one periodic attempt"
+        );
         assert_eq!(
             clock.sleeps()[3],
             Duration::from_secs(DAY),
@@ -2018,12 +2054,20 @@ mod tests {
             Duration::from_secs(DAY),
             "the deadline re-arms a full interval from the manual completion"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "no scheduler fetch after the manual check");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no scheduler fetch after the manual check"
+        );
 
         // When that deadline passes, exactly one scheduler attempt runs.
         clock.advance_secs(DAY + 1);
         clock.release_sleeps();
-        wait_until(|| calls.load(Ordering::SeqCst) == 1, "the scheduler attempt").await;
+        wait_until(
+            || calls.load(Ordering::SeqCst) == 1,
+            "the scheduler attempt",
+        )
+        .await;
         wait_sleep_count(&clock, 3).await;
         assert_eq!(clock.sleeps()[2], Duration::from_secs(DAY));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2060,7 +2104,11 @@ mod tests {
             Duration::from_secs(DAY),
             "the failed manual check re-arms a full interval from its completion"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "the scheduler stayed parked");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the scheduler stayed parked"
+        );
 
         shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -2098,7 +2146,14 @@ mod tests {
         let state = Arc::new(UpdatesState::new());
         let shutdown = CancellationToken::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let task = spawn_loop(&manager, &state, &clock, &shutdown, fetch_ok(&calls, "9.9.9"), noop_emit);
+        let task = spawn_loop(
+            &manager,
+            &state,
+            &clock,
+            &shutdown,
+            fetch_ok(&calls, "9.9.9"),
+            noop_emit,
+        );
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no checks with both off");
@@ -2120,7 +2175,11 @@ mod tests {
         // its completion on the test grid.
         manager.set_updates_periodic_check_enabled(true).unwrap();
         state.notify_schedule_changed();
-        wait_until(|| calls.load(Ordering::SeqCst) == 1, "the due periodic attempt").await;
+        wait_until(
+            || calls.load(Ordering::SeqCst) == 1,
+            "the due periodic attempt",
+        )
+        .await;
         wait_sleep_count(&clock, 1).await;
         assert_eq!(
             clock.sleeps()[0],
@@ -2217,7 +2276,14 @@ mod tests {
         let state = Arc::new(UpdatesState::new());
         let shutdown = CancellationToken::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let task = spawn_loop(&manager, &state, &clock, &shutdown, fetch_ok(&calls, "9.9.9"), noop_emit);
+        let task = spawn_loop(
+            &manager,
+            &state,
+            &clock,
+            &shutdown,
+            fetch_ok(&calls, "9.9.9"),
+            noop_emit,
+        );
 
         wait_until(|| calls.load(Ordering::SeqCst) == 1, "the startup attempt").await;
         wait_sleep_count(&clock, 1).await;
@@ -2348,10 +2414,11 @@ mod tests {
     fn fetch_gated(
         gate: Arc<tokio::sync::Notify>,
         version: &'static str,
-    ) -> impl Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>>
-    + Send
-    + Sync
-    + Clone {
+    ) -> impl Fn() -> std::pin::Pin<
+        Box<dyn Future<Output = Result<ReleaseInfoDto, UpdateErrorKind>> + Send>,
+    > + Send
+           + Sync
+           + Clone {
         move || {
             let gate = Arc::clone(&gate);
             Box::pin(async move {
@@ -2392,7 +2459,8 @@ mod tests {
         // memory, in the persisted record and in the shown snapshot.
         let expected = datetime("2026-11-18T12:01:30Z");
         assert_eq!(
-            state.attempt_of_root(manager.update_state_dir().as_deref())
+            state
+                .attempt_of_root(manager.update_state_dir().as_deref())
                 .map(|record| record.at),
             Some(expected),
             "the in-memory base is the fetch completion time"
@@ -2405,7 +2473,10 @@ mod tests {
         );
         assert_eq!(persisted_attempt_time(&persisted), Some(expected));
         assert_eq!(persisted.last_attempt_error, None);
-        assert_eq!(status.last_attempt_at.as_deref(), Some("2026-11-18T12:01:30Z"));
+        assert_eq!(
+            status.last_attempt_at.as_deref(),
+            Some("2026-11-18T12:01:30Z")
+        );
 
         // On the one grid, the next periodic deadline is exactly a full
         // interval from that completion.
@@ -2426,7 +2497,7 @@ mod tests {
         let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
         // Fresh defaults: startup=true → the startup attempt is scheduled.
 
-        let events: Arc<Mutex<Vec<(bool, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
         let emit = {
             let events = Arc::clone(&events);
             move |status: &UpdateStatusDto| {
@@ -2460,18 +2531,20 @@ mod tests {
         )
         .await;
 
-        let events = events.lock().expect("events lock");
-        assert_eq!(
-            events.len(),
-            2,
-            "exactly one start and one finish broadcast"
-        );
-        assert!(
-            events[0].0,
-            "the start broadcast carries checking=true before the fetch completes"
-        );
-        assert!(!events[1].0, "the finish broadcast clears checking");
-        assert_eq!(events[1].1, None, "the finished attempt succeeded");
+        {
+            let events = events.lock().expect("events lock");
+            assert_eq!(
+                events.len(),
+                2,
+                "exactly one start and one finish broadcast"
+            );
+            assert!(
+                events[0].0,
+                "the start broadcast carries checking=true before the fetch completes"
+            );
+            assert!(!events[1].0, "the finish broadcast clears checking");
+            assert_eq!(events[1].1, None, "the finished attempt succeeded");
+        }
 
         shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -2514,15 +2587,15 @@ mod tests {
         )
         .await
         .expect("the check ran");
-        assert_eq!(status.latest.as_ref().map(|r| r.version.as_str()), Some("1.8.0"));
+        assert_eq!(
+            status.latest.as_ref().map(|r| r.version.as_str()),
+            Some("1.8.0")
+        );
 
         // Root B pre-exists with a different result.
         let manager_b = SettingsManager::with_config_dir(dir_b.clone()).unwrap();
         manager_b
-            .set_updates_check_result(
-                "2026-11-18T09:00:00Z".to_string(),
-                sample_release("2.0.0"),
-            )
+            .set_updates_check_result("2026-11-18T09:00:00Z".to_string(), sample_release("2.0.0"))
             .unwrap();
         manager_b
             .set_updates_attempt_failure("2026-11-18T10:00:00Z".to_string(), "rate_limited")
@@ -2605,7 +2678,10 @@ mod tests {
         // The root switches while the request is in flight.
         manager.set_update_state_dir_for_tests(b_dir.clone());
         let status = status_snapshot(&manager, &state, &test_install());
-        assert_eq!(status.latest, None, "the empty root hides the in-flight result");
+        assert_eq!(
+            status.latest, None,
+            "the empty root hides the in-flight result"
+        );
 
         gate.notify_one();
         let status = tokio::time::timeout(Duration::from_secs(5), task)
@@ -2625,7 +2701,10 @@ mod tests {
             Some("9.9.9"),
             "the completion lands in the root captured at the attempt's start"
         );
-        assert!(!b_dir.join("state.json").exists(), "the new root's file is not written");
+        assert!(
+            !b_dir.join("state.json").exists(),
+            "the new root's file is not written"
+        );
 
         // The in-memory record is bound to the old root: it never drives the
         // new root's snapshot or periodic base.
@@ -2658,7 +2737,9 @@ mod tests {
         let b_dir = dir_b.join("updates");
 
         // Shared log of emitted events, in emission order.
-        let log = Arc::new(std::sync::Mutex::new(Vec::<(&'static str, UpdateStatusDto)>::new()));
+        let log = Arc::new(std::sync::Mutex::new(
+            Vec::<(&'static str, UpdateStatusDto)>::new(),
+        ));
 
         // The check's emit: the started broadcast passes through; the final
         // broadcast blocks mid-emit until the test releases it, holding the
@@ -2678,7 +2759,9 @@ mod tests {
             };
             log_check.lock().unwrap().push((tag, status.clone()));
             if tag == "check-final" {
-                final_in_emit.send(()).expect("the final-emit signal is sent");
+                final_in_emit
+                    .send(())
+                    .expect("the final-emit signal is sent");
                 final_gate
                     .lock()
                     .expect("the final gate lock")
@@ -2743,9 +2826,16 @@ mod tests {
                 &switch_state,
                 &switch_install,
                 move |status: &UpdateStatusDto| {
-                    log_switch.lock().unwrap().push(("root-switch", status.clone()));
-                    switch_in_emit.send(()).expect("the switch-emit signal is sent");
-                    switch_release_rx.recv().expect("the switch release arrives");
+                    log_switch
+                        .lock()
+                        .unwrap()
+                        .push(("root-switch", status.clone()));
+                    switch_in_emit
+                        .send(())
+                        .expect("the switch-emit signal is sent");
+                    switch_release_rx
+                        .recv()
+                        .expect("the switch release arrives");
                 },
             );
         });
@@ -2780,7 +2870,10 @@ mod tests {
             !switch_status.update_available && switch_status.latest.is_none(),
             "the last event reflects the new (empty) root, not the old root's release"
         );
-        assert!(!switch_status.checking, "the switch snapshot is post-completion");
+        assert!(
+            !switch_status.checking,
+            "the switch snapshot is post-completion"
+        );
 
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);
@@ -2811,11 +2904,22 @@ mod tests {
         let state = Arc::new(UpdatesState::new());
         let shutdown = CancellationToken::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let task = spawn_loop(&manager, &state, &clock, &shutdown, fetch_ok(&calls, "9.9.9"), noop_emit);
+        let task = spawn_loop(
+            &manager,
+            &state,
+            &clock,
+            &shutdown,
+            fetch_ok(&calls, "9.9.9"),
+            noop_emit,
+        );
 
         wait_sleep_count(&clock, 1).await;
         assert_eq!(clock.sleeps()[0], Duration::from_secs(23 * 3600));
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "parked on the old root's base");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "parked on the old root's base"
+        );
 
         // The switch (publish) plus the storage command's wake-up: the
         // waiting timer is recomputed from the new root's (empty) file.
@@ -2824,7 +2928,11 @@ mod tests {
 
         // Empty root → no base → one due attempt now, persisted into the
         // new root and re-armed a full interval from its completion.
-        wait_until(|| calls.load(Ordering::SeqCst) == 1, "the due attempt in the new root").await;
+        wait_until(
+            || calls.load(Ordering::SeqCst) == 1,
+            "the due attempt in the new root",
+        )
+        .await;
         wait_sleep_count(&clock, 2).await;
         assert_eq!(
             clock.sleeps()[1],
@@ -2848,7 +2956,10 @@ mod tests {
         assert_eq!(b_state.last_attempt_error, None);
 
         let status = status_snapshot(&manager, &state, &test_install());
-        assert_eq!(status.latest.as_ref().map(|r| r.version.as_str()), Some("9.9.9"));
+        assert_eq!(
+            status.latest.as_ref().map(|r| r.version.as_str()),
+            Some("9.9.9")
+        );
         assert_eq!(status.last_attempt_error, None);
 
         shutdown.cancel();
@@ -2897,7 +3008,14 @@ mod tests {
         let state = Arc::new(UpdatesState::new());
         let shutdown = CancellationToken::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let task = spawn_loop(&manager, &state, &clock, &shutdown, fetch_ok(&calls, "9.9.9"), noop_emit);
+        let task = spawn_loop(
+            &manager,
+            &state,
+            &clock,
+            &shutdown,
+            fetch_ok(&calls, "9.9.9"),
+            noop_emit,
+        );
 
         // The loop parks one hour on A's base.
         wait_sleep_count(&clock, 1).await;
@@ -2932,11 +3050,17 @@ mod tests {
 
         // Neither root's file was touched by the scheduler.
         assert_eq!(
-            state_store_at(&dir_a.join("updates")).load().last_attempt_at.as_deref(),
+            state_store_at(&dir_a.join("updates"))
+                .load()
+                .last_attempt_at
+                .as_deref(),
             Some("2026-11-18T13:00:00Z"),
         );
         assert_eq!(
-            state_store_at(&dir_b.join("updates")).load().last_attempt_at.as_deref(),
+            state_store_at(&dir_b.join("updates"))
+                .load()
+                .last_attempt_at
+                .as_deref(),
             Some("2026-11-19T12:00:00Z"),
         );
 
@@ -3044,7 +3168,10 @@ mod tests {
         let status = status_snapshot(&manager, &state, &test_install());
         assert_eq!(status.last_attempt_error, None);
         assert_eq!(
-            status.latest.as_ref().map(|release| release.version.as_str()),
+            status
+                .latest
+                .as_ref()
+                .map(|release| release.version.as_str()),
             Some("9.9.9")
         );
 

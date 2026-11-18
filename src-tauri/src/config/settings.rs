@@ -4038,10 +4038,7 @@ impl SettingsManager {
     /// root's directory with the other root's record.
     pub fn get_update_state_with_dir(
         &self,
-    ) -> (
-        Option<PathBuf>,
-        crate::updates::state::UpdateStateRecord,
-    ) {
+    ) -> (Option<PathBuf>, crate::updates::state::UpdateStateRecord) {
         self.update_state.load_with_dir()
     }
 
@@ -6230,10 +6227,19 @@ mod tests {
         // The serialized form carries exactly the three schedule keys; the
         // legacy keys of the source file are gone after a round-trip.
         let serialized = serde_json::to_value(&settings.updates).unwrap();
-        let updates = serialized.as_object().expect("updates must serialize to an object");
+        let updates = serialized
+            .as_object()
+            .expect("updates must serialize to an object");
         let mut keys: Vec<&str> = updates.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["check_interval_days", "periodic_check_enabled", "startup_check_enabled"]);
+        assert_eq!(
+            keys,
+            vec![
+                "check_interval_days",
+                "periodic_check_enabled",
+                "startup_check_enabled"
+            ]
+        );
     }
 
     /// Update check setters persist and survive a manager reload from the same
@@ -6306,10 +6312,9 @@ mod tests {
 
         // settings.json serializes only the settings: the `updates` section
         // holds exactly the three schedule keys.
-        let raw_settings: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("settings.json")).unwrap(),
-        )
-        .unwrap();
+        let raw_settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
         let section = raw_settings
             .pointer("/updates")
             .and_then(Value::as_object)
@@ -6318,7 +6323,11 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["check_interval_days", "periodic_check_enabled", "startup_check_enabled"],
+            vec![
+                "check_interval_days",
+                "periodic_check_enabled",
+                "startup_check_enabled"
+            ],
             "settings.json must not carry update check state"
         );
         // The check state lives in its own file under the config dir
@@ -6334,7 +6343,9 @@ mod tests {
             Some("1.9.0")
         );
         assert_eq!(
-            raw_state.pointer("/dismissed_version").and_then(Value::as_str),
+            raw_state
+                .pointer("/dismissed_version")
+                .and_then(Value::as_str),
             Some("1.9.0")
         );
 
@@ -6351,7 +6362,10 @@ mod tests {
         assert!(updates.periodic_check_enabled);
         assert_eq!(updates.check_interval_days, UPDATES_MAX_INTERVAL_DAYS);
         let state = reloaded.get_update_state();
-        assert_eq!(state.last_attempt_at.as_deref(), Some("2026-11-18T10:00:00Z"));
+        assert_eq!(
+            state.last_attempt_at.as_deref(),
+            Some("2026-11-18T10:00:00Z")
+        );
         assert_eq!(state.last_attempt_error, None);
         assert_eq!(state.last_check_at.as_deref(), Some("2026-11-18T10:00:00Z"));
         assert_eq!(
@@ -6483,7 +6497,10 @@ mod tests {
 
         let reloaded = SettingsManager::with_config_dir(dir.clone()).unwrap();
         let state = reloaded.get_update_state();
-        assert_eq!(state.last_attempt_at.as_deref(), Some("2026-11-18T12:30:00Z"));
+        assert_eq!(
+            state.last_attempt_at.as_deref(),
+            Some("2026-11-18T12:30:00Z")
+        );
         assert_eq!(state.last_attempt_error.as_deref(), Some("rate_limited"));
         assert_eq!(state.last_check_at.as_deref(), Some("2026-11-17T10:00:00Z"));
 

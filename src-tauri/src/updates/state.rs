@@ -192,9 +192,7 @@ impl UpdateStateStore {
     /// between two resolutions a «Данные программы» switch would pair one
     /// root's directory with the other root's JSON.
     pub fn load_with_dir(&self) -> (Option<PathBuf>, UpdateStateRecord) {
-        let _guard = state_write_lock()
-            .lock()
-            .expect("update state write lock");
+        let _guard = state_write_lock().lock().expect("update state write lock");
         match self.resolved_dir() {
             Some(dir) => {
                 let path = dir.join(STATE_FILE_NAME);
@@ -217,9 +215,7 @@ impl UpdateStateStore {
     /// caller's existing save-error semantics) and leaves the previous file
     /// untouched; a damaged file read as empty is replaced by this write.
     pub fn update(&self, mutate: impl FnOnce(&mut UpdateStateRecord)) -> Result<()> {
-        let _guard = state_write_lock()
-            .lock()
-            .expect("update state write lock");
+        let _guard = state_write_lock().lock().expect("update state write lock");
         let path = self.state_path()?;
         let mut record = Self::read_file(&path);
         mutate(&mut record);
@@ -269,7 +265,10 @@ mod tests {
         let store = UpdateStateStore::with_state_dir(dir.join("updates"));
 
         assert_eq!(store.load(), UpdateStateRecord::default());
-        assert!(!dir.join("updates").exists(), "load must not create anything");
+        assert!(
+            !dir.join("updates").exists(),
+            "load must not create anything"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -299,7 +298,10 @@ mod tests {
             healed.last_release.as_ref().map(|r| r.version.as_str()),
             Some("1.9.0")
         );
-        assert_eq!(healed.last_check_at.as_deref(), Some("2026-11-18T10:00:00Z"));
+        assert_eq!(
+            healed.last_check_at.as_deref(),
+            Some("2026-11-18T10:00:00Z")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -327,8 +329,14 @@ mod tests {
             record.last_release.as_ref().map(|r| r.version.as_str()),
             Some("1.9.0")
         );
-        assert_eq!(record.last_check_at.as_deref(), Some("2026-11-18T09:00:00Z"));
-        assert_eq!(record.last_attempt_at.as_deref(), Some("2026-11-18T12:30:00Z"));
+        assert_eq!(
+            record.last_check_at.as_deref(),
+            Some("2026-11-18T09:00:00Z")
+        );
+        assert_eq!(
+            record.last_attempt_at.as_deref(),
+            Some("2026-11-18T12:30:00Z")
+        );
         assert_eq!(record.last_attempt_error.as_deref(), Some("network"));
         assert_eq!(record.dismissed_version.as_deref(), Some("1.9.0"));
 
@@ -395,7 +403,9 @@ mod tests {
         // Reads stay safe (missing state file inside an unusable directory).
         assert_eq!(store.load(), UpdateStateRecord::default());
         assert!(
-            store.update(|state| state.last_attempt_at = Some("x".to_string())).is_err(),
+            store
+                .update(|state| state.last_attempt_at = Some("x".to_string()))
+                .is_err(),
             "a write into an unusable directory must fail"
         );
         assert!(!dir.join(STATE_DIR_NAME).join(STATE_FILE_NAME).exists());

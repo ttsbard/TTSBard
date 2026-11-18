@@ -265,7 +265,12 @@ pub async fn storage_transfer_data(
         crate::commands::emit_settings_changed(&app_handle);
         // `settings-changed` does not refresh the updates context: publish
         // the fresh snapshot of the new root and wake the scheduler here.
-        crate::updates::notify_data_root_changed(&app_handle, &manager_for_notify, &updates, &install);
+        crate::updates::notify_data_root_changed(
+            &app_handle,
+            &manager_for_notify,
+            &updates,
+            &install,
+        );
     })
 }
 

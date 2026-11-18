@@ -168,8 +168,11 @@ pub fn nsis_install_detected() -> bool {
             let raw = &buffer[..(len as usize).min(buffer.len())];
             // REG_SZ is UTF-16; trim the terminator and the template's quotes.
             let wide: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .collect();
             let text = String::from_utf16_lossy(&wide)
                 .trim_end_matches('\0')

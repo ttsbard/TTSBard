@@ -34,9 +34,7 @@ pub async fn get_update_status(
 /// the main window is mounted, so the scheduler may run its delayed startup
 /// pass. Repeated calls have no effect (idempotent cancel).
 #[tauri::command]
-pub async fn mark_update_startup_ready(
-    state: State<'_, Arc<UpdatesState>>,
-) -> Result<(), String> {
+pub async fn mark_update_startup_ready(state: State<'_, Arc<UpdatesState>>) -> Result<(), String> {
     state.mark_startup_ready();
     Ok(())
 }
