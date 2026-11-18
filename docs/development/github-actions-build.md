@@ -3,11 +3,13 @@
 ## Текущий workflow
 
 Windows-сборка настроена в `.github/workflows/build.yml` через runner
-`windows-latest` и target `x86_64-pc-windows-msvc`.
+`windows-2022` и target `x86_64-pc-windows-msvc`. Этот образ использует
+Visual Studio 2022. На образе с Visual Studio 2026 препроцессор MSVC
+останавливает сборку eSpeak NG на директивах `__has_include_next`.
 
 Workflow ищет `libclang.dll` в каталогах LLVM и Visual Studio, задаёт
 `LIBCLANG_PATH` и останавливает сборку, если библиотека отсутствует. Состав
-образа можно сверить со [списком ПО Windows runner](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md#installed-software).
+образа можно сверить со [списком ПО Windows runner](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md#installed-software).
 
 ## Релизный запуск
 
@@ -71,7 +73,7 @@ Actions ждут проверки. Подробности зафиксирова
 
 Проверки документации, форматирования, Clippy, TypeScript/IPC и тесты выполняет
 отдельный workflow `CI` при push в `master` или pull request. Clippy и Rust-тесты
-запускаются на целевой платформе `windows-latest` через `scripts/cargo.ps1`;
+запускаются на `windows-2022` через `scripts/cargo.ps1`;
 документация, форматирование и frontend-проверки остаются на Ubuntu. CI также
 запускает `scripts/check-third-party-notices.ps1`, который сверяет provenance
 непосредственно включённых сторонних assets (словарь, eSpeak NG, Signalsmith) —

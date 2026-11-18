@@ -79,7 +79,8 @@ jobs:
 
   check-clippy:
     name: Run Clippy linter
-    runs-on: windows-latest
+    # Piper's bundled eSpeak NG headers fail under the VS 2026 preprocessor.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -130,7 +131,7 @@ jobs:
 
   test-rust:
     name: Run Rust tests
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -170,7 +171,7 @@ jobs:
 
   bundle-smoke:
     name: Tauri bundle smoke
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
