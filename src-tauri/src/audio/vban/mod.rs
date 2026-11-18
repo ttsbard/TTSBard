@@ -6,6 +6,7 @@
 //! SoundPanel each keep one active track and mix into the production stream in
 //! real time; tests use a dedicated track on their own target.
 
+pub mod health;
 pub(crate) mod protocol;
 pub(crate) mod worker;
 
@@ -18,6 +19,7 @@ use std::time::Duration;
 
 use crate::audio::AudioPcm;
 
+use health::VbanHealthMonitor;
 use worker::{Control, TrackControl, TrackKind, TrackSpec, WorkerShared};
 
 /// The test command waits for the worker's occupancy verdict; the worker
@@ -68,8 +70,13 @@ struct OutputInner {
 }
 
 /// Shared VBAN runtime. Thread-safe, shared through `Arc` by the backend.
+///
+/// Owns two independent threads: the audio worker (PCM conversion, mixing,
+/// networking) and the receiver-health monitor (ROADMAP-139), which probes the
+/// saved destination on its own schedule and never blocks the audio path.
 pub struct VbanOutput {
     inner: Arc<OutputInner>,
+    health: VbanHealthMonitor,
 }
 
 /// Handle to one started track. Dropping it does not stop the sound; use
@@ -104,7 +111,14 @@ impl VbanOutput {
                 production: Mutex::new(None),
                 next_track: AtomicU64::new(1),
             }),
+            health: VbanHealthMonitor::new(),
         }
+    }
+
+    /// Receiver availability monitor (ROADMAP-139). Independent of the audio
+    /// worker; its target follows the saved settings, not the live audio one.
+    pub fn health(&self) -> &VbanHealthMonitor {
+        &self.health
     }
 
     /// Set or clear the production destination. Passing a different address,
@@ -237,9 +251,10 @@ impl VbanOutput {
             > 0
     }
 
-    /// Cancel every track and stop the worker. Subsequent operations fail
-    /// until a new runtime is created.
+    /// Cancel every track and stop the worker and the health monitor.
+    /// Subsequent operations fail until a new runtime is created.
     pub fn shutdown(&self) {
+        self.health.shutdown();
         let mut production = self.inner.production.lock().expect("VBAN mirror poisoned");
         *production = None;
         let _ = self

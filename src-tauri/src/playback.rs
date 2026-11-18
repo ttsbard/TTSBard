@@ -801,6 +801,12 @@ impl PlaybackManager {
                             Ok(handle) => {
                                 vban_speech = Some(handle);
                                 vban_started = true;
+                                // ROADMAP-139: warn about a failed receiver at
+                                // the actual send start; the monitor dedupes
+                                // the alert while the global toast is visible.
+                                if vb.health().notify_send_started() {
+                                    warn!(target: "playback", "VBAN send started while the receiver is failed");
+                                }
                             }
                             Err(e) => {
                                 warn!(target: "playback", error = %e, "VBAN speech start failed");
@@ -962,7 +968,12 @@ impl PlaybackManager {
                                         audio,
                                         gain,
                                     ) {
-                                        Ok(handle) => vban_speech = Some(handle),
+                                        Ok(handle) => {
+                                            vban_speech = Some(handle);
+                                            if vb.health().notify_send_started() {
+                                                warn!(target: "playback", "VBAN repeat started while the receiver is failed");
+                                            }
+                                        }
                                         Err(e) => {
                                             warn!(target: "playback", error = %e, "VBAN repeat restart failed");
                                         }

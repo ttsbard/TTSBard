@@ -111,6 +111,18 @@ VBAN's volume controls the network mix. The network format is fixed at
 under **Audio → Devices → Output format** affects local devices and does not
 change VBAN. Network output is disabled by default.
 
+## Receiver check
+
+While VBAN is enabled, the tab's dot shows receiver availability:
+grey — no result yet, green — responding, red — not responding.
+**Ping** sets the interval from 1 to 300 seconds (default: 30).
+Apply the change with **Save**.
+
+A 5-second warning appears when the connection is lost or audio is sent
+to an unavailable receiver. Audio sending continues. If the local UDP port
+is busy, the message asks you to free it. A successful ping confirms that
+the service is reachable, but does not confirm audio playback.
+
 ## If there is no sound
 
 **Test sent** confirms sending from this PC. The tab's **Ready to send**,

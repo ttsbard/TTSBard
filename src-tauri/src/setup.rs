@@ -137,15 +137,38 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
     // path can start, and stop the worker (canceling every track) on shutdown.
     // Disabling or retargeting later reconfigures the runtime from the save
     // command; the values saved here are the ones the first tracks use.
+    //
+    // The receiver-health monitor (ROADMAP-139) follows the same saved fields
+    // with its own interval; its events go to the main window as IPC events.
     {
         let vban = app_state.inner().vban.clone();
-        let target = crate::commands::vban::saved_vban_target(&settings.audio.vban);
+        let health_target = crate::commands::vban::saved_health_target(&settings.audio.vban);
         info!(
             enabled = settings.audio.vban.enabled,
-            has_target = target.is_some(),
+            health_target = health_target.is_some(),
             "Applying saved VBAN settings"
         );
-        vban.configure(target);
+
+        let app_handle_for_health = app.handle().clone();
+        vban.health().set_emitter(Some(std::sync::Arc::new(
+            move |event: crate::audio::vban::health::VbanHealthEvent| {
+                use crate::audio::vban::health::VbanHealthEvent;
+                match event {
+                    VbanHealthEvent::Status(state) => {
+                        let payload = crate::commands::vban::VbanHealthDto::from(&state);
+                        let _ = app_handle_for_health.emit("vban-health-changed", &payload);
+                    }
+                    VbanHealthEvent::Alert(state) => {
+                        let payload = crate::commands::vban::VbanHealthDto::from(&state);
+                        let _ = app_handle_for_health.emit("vban-health-alert", &payload);
+                    }
+                }
+            },
+        )));
+        vban.health().set_target(health_target);
+        vban.configure(crate::commands::vban::saved_vban_target(
+            &settings.audio.vban,
+        ));
 
         let vban_for_shutdown = vban.clone();
         let shutdown_token = app_state.inner().shutdown.clone();

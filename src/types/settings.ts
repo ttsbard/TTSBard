@@ -264,7 +264,7 @@ export interface AudioSettingsDto {
 
 /**
  * VBAN Audio output settings (ROADMAP-138). Defaults: `false`, `""`, `6980`,
- * `"TTSBard"`, `100`. The address may stay empty while VBAN is disabled;
+ * `"TTSBard"`, `100`, `30`. The address may stay empty while VBAN is disabled;
  * enabling or testing requires a valid destination IPv4.
  */
 export interface VbanSettingsDto {
@@ -273,6 +273,8 @@ export interface VbanSettingsDto {
   port: number
   stream_name: string
   volume: number
+  /** Receiver ping (heartbeat) interval in seconds, 1–300 (ROADMAP-139). */
+  ping_interval: number
 }
 
 /**

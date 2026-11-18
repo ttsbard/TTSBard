@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { Volume2, Sliders, Network, RefreshCw, Loader2 } from 'lucide-vue-next';
 import { t } from '../i18n';
 import { useAudioSettings } from '../composables/useAppSettings';
-import type { VbanStatusDto } from '../types/settings';
+import { useVbanHealth, type VbanHealth } from '../composables/useVbanHealth';
 import AudioDevicesTab from './audio/AudioDevicesTab.vue';
 import AudioEffectsTab from './audio/AudioEffectsTab.vue';
 import AudioVbanTab from './audio/AudioVbanTab.vue';
@@ -15,22 +15,34 @@ const devicesTab = ref<InstanceType<typeof AudioDevicesTab> | null>(null);
 
 const audioSettings = useAudioSettings();
 const savedVbanEnabled = computed(() => audioSettings.value?.vban?.enabled === true);
-const vbanStatus = ref<VbanStatusDto>({ state: 'disabled', error: null });
 
-const vbanStatusLabel = computed(() => {
-  switch (vbanStatus.value.state) {
-    case 'sending': return t('audio.vban.status.sending');
-    case 'error': return t('audio.vban.status.error');
-    case 'idle': return t('audio.vban.status.idle');
-    case 'disabled':
-    default: return t('audio.vban.status.disabled');
+// Receiver availability verdict from the global monitor (App owns the
+// listener); this panel only renders it. Local send diagnostics stay in the
+// VBAN tab body and are never mixed into this indicator.
+const { health } = useVbanHealth();
+
+/**
+ * Availability text for the title/accessible name: it describes the ping
+ * service, never a confirmed audio playback on the receiver.
+ */
+function vbanHealthText(value: VbanHealth): string {
+  switch (value.state) {
+    case 'alive': return t('audio.vban.health.alive');
+    case 'failed':
+      if (value.reason === 'no_reply') return t('audio.vban.health.failed.no_reply');
+      if (value.reason === 'local_socket') return t('audio.vban.health.failed.local_socket');
+      return t('audio.vban.health.failed');
+    case 'unknown':
+    default: return t('audio.vban.health.unknown');
   }
-});
+}
 
-/** Keep the status in the tab's accessible name; the dot and text are visual. */
+const vbanHealthLabel = computed(() => vbanHealthText(health.value));
+
+/** Keep the availability in the tab's accessible name; the dot is visual. */
 const vbanTabAriaLabel = computed(() => {
   const base = vbanDirty.value ? t('audio.tabs.vban.dirty') : t('audio.tabs.vban');
-  return savedVbanEnabled.value ? `${base} — ${vbanStatusLabel.value}` : base;
+  return savedVbanEnabled.value ? `${base} — ${vbanHealthLabel.value}` : base;
 });
 
 function onEffectsDirty(dirty: boolean) {
@@ -39,10 +51,6 @@ function onEffectsDirty(dirty: boolean) {
 
 function onVbanDirty(dirty: boolean) {
   vbanDirty.value = dirty;
-}
-
-function onVbanStatus(status: VbanStatusDto) {
-  vbanStatus.value = status;
 }
 </script>
 
@@ -76,7 +84,7 @@ function onVbanStatus(status: VbanStatusDto) {
             role="tab"
             :aria-selected="activeTab === 'vban'"
             :aria-label="vbanTabAriaLabel"
-            :title="savedVbanEnabled ? vbanStatusLabel : undefined"
+            :title="savedVbanEnabled ? vbanHealthLabel : undefined"
             @click="activeTab = 'vban'"
           >
             <Network :size="18" />
@@ -85,7 +93,7 @@ function onVbanStatus(status: VbanStatusDto) {
               <span
                 v-if="savedVbanEnabled"
                 class="vban-tab-dot"
-                :class="`vban-tab-dot--${vbanStatus.state}`"
+                :class="`vban-tab-dot--${health.state}`"
                 aria-hidden="true"
               ></span>
             </span>
@@ -117,7 +125,6 @@ function onVbanStatus(status: VbanStatusDto) {
         v-show="activeTab === 'vban'"
         :active="activeTab === 'vban'"
         @dirty-change="onVbanDirty"
-        @status-change="onVbanStatus"
       />
     </div>
   </div>
@@ -342,7 +349,9 @@ function onVbanStatus(status: VbanStatusDto) {
   flex-shrink: 0;
 }
 
-/* Production status in the VBAN tab; shown only for a saved enabled output. */
+/* Receiver availability in the VBAN tab; shown only for a saved enabled
+   output. Grey unknown / green alive / red failed; local send diagnostics are
+   not part of this indicator. */
 .vban-tab-label {
   display: inline-flex;
   align-items: center;
@@ -357,15 +366,15 @@ function onVbanStatus(status: VbanStatusDto) {
   background: var(--color-text-muted);
 }
 
-.vban-tab-dot--idle {
+.vban-tab-dot--unknown {
+  background: var(--color-text-muted);
+}
+
+.vban-tab-dot--alive {
   background: var(--color-success);
 }
 
-.vban-tab-dot--sending {
-  background: var(--color-accent);
-}
-
-.vban-tab-dot--error {
+.vban-tab-dot--failed {
   background: var(--color-danger);
 }
 

@@ -81,6 +81,10 @@ impl Default for AudioSettings {
 pub const DEFAULT_VBAN_PORT: u16 = 6980;
 /// Имя потока VBAN по умолчанию.
 pub const DEFAULT_VBAN_STREAM_NAME: &str = "TTSBard";
+/// Интервал проверки доступности приёмника по умолчанию, секунд (ROADMAP-139).
+pub const DEFAULT_VBAN_PING_INTERVAL_SECS: u32 = 30;
+/// Максимальный интервал проверки доступности приёмника, секунд (5 минут).
+pub const MAX_VBAN_PING_INTERVAL_SECS: u32 = 300;
 
 /// Настройки сетевого аудиовыхода VBAN.
 ///
@@ -101,6 +105,9 @@ pub struct VbanSettings {
     /// Громкость сетевого выхода в процентах, применяется к сетевому миксу.
     #[serde(default = "default_vban_volume")]
     pub volume: u8,
+    /// Интервал проверки доступности приёмника (VBAN-PING), 1–300 секунд.
+    #[serde(default = "default_vban_ping_interval")]
+    pub ping_interval: u32,
 }
 
 fn default_vban_port() -> u16 {
@@ -112,6 +119,9 @@ fn default_vban_stream_name() -> String {
 fn default_vban_volume() -> u8 {
     100
 }
+fn default_vban_ping_interval() -> u32 {
+    DEFAULT_VBAN_PING_INTERVAL_SECS
+}
 
 impl Default for VbanSettings {
     fn default() -> Self {
@@ -121,6 +131,7 @@ impl Default for VbanSettings {
             port: DEFAULT_VBAN_PORT,
             stream_name: DEFAULT_VBAN_STREAM_NAME.to_string(),
             volume: 100,
+            ping_interval: DEFAULT_VBAN_PING_INTERVAL_SECS,
         }
     }
 }
@@ -178,6 +189,18 @@ impl VbanSettings {
         }
     }
 
+    /// Проверить интервал проверки доступности приёмника: 1–300 секунд.
+    pub fn validate_ping_interval(&self) -> Result<u32, String> {
+        if (1..=MAX_VBAN_PING_INTERVAL_SECS).contains(&self.ping_interval) {
+            Ok(self.ping_interval)
+        } else {
+            Err(format!(
+                "ping_interval: {} must be in range 1–{} seconds",
+                self.ping_interval, MAX_VBAN_PING_INTERVAL_SECS
+            ))
+        }
+    }
+
     /// Полная валидация перед применением (field-specific ошибки).
     ///
     /// `require_address` включает проверку IPv4 назначения: она обязательна
@@ -190,6 +213,7 @@ impl VbanSettings {
         self.validate_port()?;
         self.validate_stream_name()?;
         self.validate_volume()?;
+        self.validate_ping_interval()?;
         Ok(())
     }
 }
@@ -1920,6 +1944,13 @@ impl AppSettings {
                 vban.port = DEFAULT_VBAN_PORT;
             }
             vban.volume = validate_volume(vban.volume);
+            if !(1..=MAX_VBAN_PING_INTERVAL_SECS).contains(&vban.ping_interval) {
+                warn!(
+                    interval = vban.ping_interval,
+                    "Invalid VBAN ping interval, using default"
+                );
+                vban.ping_interval = DEFAULT_VBAN_PING_INTERVAL_SECS;
+            }
             let sanitized: String = vban
                 .stream_name
                 .chars()
@@ -2499,6 +2530,7 @@ impl SettingsManager {
             vban.address = connection.address;
             vban.port = connection.port;
             vban.stream_name = connection.stream_name;
+            vban.ping_interval = connection.ping_interval;
             vban.validate(vban.enabled).map_err(anyhow::Error::msg)?;
             Ok(())
         })
@@ -4031,6 +4063,7 @@ mod tests {
             port: 6980,
             stream_name: "TTSBard".to_string(),
             volume: 100,
+            ping_interval: DEFAULT_VBAN_PING_INTERVAL_SECS,
         }
     }
 
@@ -4051,6 +4084,7 @@ mod tests {
         assert_eq!(audio.vban.port, DEFAULT_VBAN_PORT);
         assert_eq!(audio.vban.stream_name, "TTSBard");
         assert_eq!(audio.vban.volume, 100);
+        assert_eq!(audio.vban.ping_interval, DEFAULT_VBAN_PING_INTERVAL_SECS);
     }
 
     #[test]
@@ -4062,6 +4096,7 @@ mod tests {
         assert_eq!(vban.port, DEFAULT_VBAN_PORT);
         assert_eq!(vban.stream_name, "TTSBard");
         assert_eq!(vban.volume, 100);
+        assert_eq!(vban.ping_interval, DEFAULT_VBAN_PING_INTERVAL_SECS);
     }
 
     #[test]
@@ -4072,9 +4107,65 @@ mod tests {
         assert_eq!(parsed, settings);
         // Wire names match the IPC contract.
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        for key in ["enabled", "address", "port", "stream_name", "volume"] {
+        for key in [
+            "enabled",
+            "address",
+            "port",
+            "stream_name",
+            "volume",
+            "ping_interval",
+        ] {
             assert!(value.get(key).is_some(), "missing wire field {key}");
         }
+    }
+
+    #[test]
+    fn vban_validate_ping_interval_bounds() {
+        let mut settings = valid_vban();
+        settings.ping_interval = 1;
+        settings.validate(true).unwrap();
+        settings.ping_interval = 300;
+        settings.validate(true).unwrap();
+
+        settings.ping_interval = 0;
+        let err = settings.validate(true).unwrap_err();
+        assert!(
+            err.starts_with("ping_interval:"),
+            "field-specific error: {err}"
+        );
+
+        settings.ping_interval = 301;
+        assert!(settings
+            .validate(true)
+            .unwrap_err()
+            .starts_with("ping_interval:"));
+
+        settings.ping_interval = 9;
+        settings.validate(false).unwrap();
+        settings.ping_interval = 10;
+        settings.validate(false).unwrap();
+    }
+
+    #[test]
+    fn appsettings_validate_normalizes_out_of_range_ping_interval() {
+        let mut settings = AppSettings::default();
+        settings.audio.vban.ping_interval = 0;
+        settings.validate();
+        assert_eq!(
+            settings.audio.vban.ping_interval,
+            DEFAULT_VBAN_PING_INTERVAL_SECS
+        );
+
+        settings.audio.vban.ping_interval = 301;
+        settings.validate();
+        assert_eq!(
+            settings.audio.vban.ping_interval,
+            DEFAULT_VBAN_PING_INTERVAL_SECS
+        );
+
+        settings.audio.vban.ping_interval = 45;
+        settings.validate();
+        assert_eq!(settings.audio.vban.ping_interval, 45, "valid value is kept");
     }
 
     #[test]
@@ -4172,6 +4263,7 @@ mod tests {
             port: 0,
             stream_name: "bad\tname".to_string(),
             volume: 250,
+            ping_interval: 999,
         };
 
         settings.validate();
@@ -4183,6 +4275,10 @@ mod tests {
         );
         assert_eq!(vban.port, DEFAULT_VBAN_PORT);
         assert_eq!(vban.volume, 100);
+        assert_eq!(
+            vban.ping_interval, DEFAULT_VBAN_PING_INTERVAL_SECS,
+            "out-of-range ping interval normalizes to the default"
+        );
         assert!(
             vban.stream_name.bytes().all(|b| (0x20..=0x7e).contains(&b)),
             "stream name must be printable ASCII: {:?}",
@@ -4234,6 +4330,7 @@ mod tests {
         connection.address = "192.168.1.99".into();
         connection.port = 7001;
         connection.stream_name = "OtherStream".into();
+        connection.ping_interval = 60;
         manager.set_vban_connection_settings(connection).unwrap();
         let saved = read_disk_settings(&dir).audio.vban;
         assert_eq!(saved.volume, 35);
@@ -4241,6 +4338,7 @@ mod tests {
         assert_eq!(saved.address, "192.168.1.99");
         assert_eq!(saved.port, 7001);
         assert_eq!(saved.stream_name, "OtherStream");
+        assert_eq!(saved.ping_interval, 60);
 
         manager.set_vban_enabled(true).unwrap();
         manager.set_vban_volume(20).unwrap();
@@ -4249,6 +4347,10 @@ mod tests {
         assert_eq!(settings.address, saved.address);
         assert_eq!(settings.port, 7001);
         assert_eq!(settings.volume, 20);
+        assert_eq!(
+            settings.ping_interval, 60,
+            "ping interval is part of the connection draft"
+        );
         assert!(settings.enabled);
         let _ = std::fs::remove_dir_all(dir);
     }

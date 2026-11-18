@@ -8,7 +8,6 @@ import {
   type AppSettingsDto,
   type AudioSettingsDto,
   type VbanSettingsDto,
-  type VbanStatusDto,
 } from '../../types/settings'
 import { presentCommandError } from '../../ipc/commandError'
 import { i18n, t } from '../../i18n'
@@ -29,6 +28,7 @@ const savedSection: VbanSettingsDto = {
   port: 6980,
   stream_name: 'TTSBard',
   volume: 100,
+  ping_interval: 30,
 }
 
 function createAudio(vban: VbanSettingsDto = {
@@ -37,6 +37,7 @@ function createAudio(vban: VbanSettingsDto = {
   port: 6980,
   stream_name: 'TTSBard',
   volume: 100,
+  ping_interval: 30,
 }): AudioSettingsDto {
   return {
     output_format: 'default',
@@ -75,7 +76,6 @@ async function mountTab({ settings = createSettings(undefined), active = false }
   const settingsRef = ref<AppSettingsDto | null>(settings)
   const activeRef = ref(active)
   const dirtyChanges: boolean[] = []
-  const statusChanges: VbanStatusDto[] = []
   const mockedInvoke = vi.mocked(invoke)
   // Well-formed baseline for every test (individual tests override it).
   mockedInvoke.mockImplementation(async (cmd) => {
@@ -88,7 +88,6 @@ async function mountTab({ settings = createSettings(undefined), active = false }
       return h(AudioVbanTab, {
         active: activeRef.value,
         onDirtyChange: (dirty: boolean) => dirtyChanges.push(dirty),
-        onStatusChange: (status: VbanStatusDto) => statusChanges.push(status),
       })
     },
   })
@@ -108,7 +107,6 @@ async function mountTab({ settings = createSettings(undefined), active = false }
     settingsRef,
     activeRef,
     dirtyChanges,
-    statusChanges,
     mockedInvoke,
     async setActive(value: boolean) {
       activeRef.value = value
@@ -168,6 +166,11 @@ function getStreamError(root: HTMLElement): string {
   return hint?.textContent?.trim() ?? ''
 }
 
+function getPingError(root: HTMLElement): string {
+  const hint = root.querySelector<HTMLElement>('#vban-ping-error')
+  return hint?.textContent?.trim() ?? ''
+}
+
 function getActionMessage(root: HTMLElement): string {
   const element = root.querySelector<HTMLElement>('.save-status')
   return element?.textContent?.trim() ?? ''
@@ -175,6 +178,10 @@ function getActionMessage(root: HTMLElement): string {
 
 function getAddressInput(root: HTMLElement): HTMLInputElement {
   return byId<HTMLInputElement>(root, 'vban-address')
+}
+
+function getPingInput(root: HTMLElement): HTMLInputElement {
+  return byId<HTMLInputElement>(root, 'vban-ping-interval')
 }
 
 function setTypeValue(input: HTMLInputElement, value: string) {
@@ -231,19 +238,21 @@ describe('AudioVbanTab loading and form population', () => {
       expect(byId<HTMLInputElement>(root, 'vban-port').value).toBe('6980')
       expect(byId<HTMLInputElement>(root, 'vban-stream-name').value).toBe('TTSBard')
       expect(byId<HTMLInputElement>(root, 'vban-volume').value).toBe('100')
+      expect(getPingInput(root).value).toBe('30')
     } finally {
       await tab.unmount()
     }
   })
 
   it('populates the form from the saved vban section', async () => {
-    const tab = await mountTab({ settings: createSettings(savedSection) })
+    const tab = await mountTab({ settings: createSettings({ ...savedSection, ping_interval: 45 }) })
     try {
       const root = tab.container!
       expect(getToggle(root).checked).toBe(true)
       expect(getAddressInput(root).value).toBe('192.168.1.50')
       expect(byId<HTMLInputElement>(root, 'vban-port').value).toBe('6980')
       expect(byId<HTMLInputElement>(root, 'vban-stream-name').value).toBe('TTSBard')
+      expect(getPingInput(root).value).toBe('45')
       expect(root.querySelector('.volume-value')?.textContent).toContain('100%')
     } finally {
       await tab.unmount()
@@ -330,6 +339,8 @@ describe('AudioVbanTab validation', () => {
   it.each([
     ['vban-port', '0', 'vban-port-error', 'audio.vban.port.invalid'],
     ['vban-stream-name', '', 'vban-stream-error', 'audio.vban.stream_name.invalid'],
+    ['vban-ping-interval', '0', 'vban-ping-error', 'audio.vban.ping.invalid'],
+    ['vban-ping-interval', '301', 'vban-ping-error', 'audio.vban.ping.invalid'],
   ])('shows %s errors after blur in the shared vertical list', async (fieldId, value, errorId, key) => {
     const tab = await mountTab({ settings: createSettings(savedSection) })
     try {
@@ -405,6 +416,40 @@ describe('AudioVbanTab validation', () => {
     }
   })
 
+  it('accepts ping interval boundaries and rejects out-of-range and non-integer values', async () => {
+    const tab = await mountTab({ settings: createSettings(savedSection) })
+    try {
+      const root = tab.container!
+      const ping = getPingInput(root)
+
+      setTypeValue(ping, '1')
+      await flushAsync()
+      expect(getPingError(root)).toBe('')
+      expect(getSaveButton(root).disabled).toBe(false)
+      expect(getTestButton(root).disabled).toBe(false)
+
+      setTypeValue(ping, '300')
+      await flushAsync()
+      expect(getPingError(root)).toBe('')
+      expect(getSaveButton(root).disabled).toBe(false)
+
+      setTypeValue(ping, '301')
+      await flushAsync()
+      expect(getPingError(root)).toBe(t('audio.vban.ping.invalid'))
+      expect(getSaveButton(root).disabled).toBe(true)
+      expect(getTestButton(root).disabled).toBe(true)
+
+      // Like the port: the raw text stays visible and counts as invalid.
+      setTypeValue(ping, '1.5')
+      await flushAsync()
+      expect(ping.value).toBe('1.5')
+      expect(getPingError(root)).toBe(t('audio.vban.ping.invalid'))
+      expect(getSaveButton(root).disabled).toBe(true)
+    } finally {
+      await tab.unmount()
+    }
+  })
+
   it('rejects a stream name outside printable ASCII', async () => {
     const tab = await mountTab({ settings: createSettings(savedSection) })
     try {
@@ -455,6 +500,7 @@ describe('AudioVbanTab save', () => {
           port: 6980,
           stream_name: 'TTSBard',
           volume: 100,
+          ping_interval: 30,
         },
       })
       expect(getActionMessage(root)).toBe(t('audio.save.saved'))
@@ -628,6 +674,45 @@ describe('AudioVbanTab live controls', () => {
     })
     await tab.unmount()
   })
+
+  it('keeps an unsaved ping interval out of volume and enable auto-saves', async () => {
+    const tab = await mountTab({ settings: createSettings(savedSection) })
+    try {
+      const root = tab.container!
+      setTypeValue(getPingInput(root), '45')
+      await flushAsync()
+      expect(tab.dirtyChanges[tab.dirtyChanges.length - 1]).toBe(true)
+
+      // Live controls stay usable and never send the connection draft.
+      getToggle(root).click()
+      await flushAsync()
+      const volume = byId<HTMLInputElement>(root, 'vban-volume')
+      volume.value = '40'
+      volume.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushAsync()
+
+      expect(tab.mockedInvoke).toHaveBeenCalledWith('set_vban_enabled', { enabled: false })
+      expect(tab.mockedInvoke).toHaveBeenCalledWith('set_vban_volume', { volume: 40 })
+      expect(tab.mockedInvoke).not.toHaveBeenCalledWith('set_vban_connection_settings', expect.anything())
+
+      // A cache reload applies the confirmed enabled/volume but keeps the draft ping.
+      await tab.updateSettings({ ...savedSection, enabled: false, volume: 40 })
+      expect(getToggle(root).checked).toBe(false)
+      expect(byId<HTMLInputElement>(root, 'vban-volume').value).toBe('40')
+      expect(getPingInput(root).value).toBe('45')
+
+      // Save sends the unsaved interval together with the connection fields.
+      getSaveButton(root).click()
+      await flushAsync()
+      expect(tab.mockedInvoke).toHaveBeenCalledWith('set_vban_connection_settings', {
+        settings: { ...savedSection, enabled: false, volume: 40, ping_interval: 45 },
+      })
+      expect(tab.dirtyChanges[tab.dirtyChanges.length - 1]).toBe(false)
+      expect(getSaveButton(root).disabled).toBe(true)
+    } finally {
+      await tab.unmount()
+    }
+  })
 })
 
 describe('AudioVbanTab test', () => {
@@ -636,6 +721,7 @@ describe('AudioVbanTab test', () => {
     try {
       const root = tab.container!
       setTypeValue(getAddressInput(root), '192.168.1.99')
+      setTypeValue(getPingInput(root), '45')
       await flushAsync()
 
       getTestButton(root).click()
@@ -648,6 +734,7 @@ describe('AudioVbanTab test', () => {
           port: 6980,
           stream_name: 'TTSBard',
           volume: 100,
+          ping_interval: 45,
         },
       })
       expect(getActionMessage(root)).toBe(t('audio.vban.test.success'))
@@ -667,7 +754,7 @@ describe('AudioVbanTab test', () => {
       getTestButton(root).click()
       await flushAsync()
       expect(tab.mockedInvoke).toHaveBeenCalledWith('test_vban_output', {
-        settings: { enabled: false, address: '192.168.1.50', port: 6980, stream_name: 'TTSBard', volume: 100 },
+        settings: { enabled: false, address: '192.168.1.50', port: 6980, stream_name: 'TTSBard', volume: 100, ping_interval: 30 },
       })
       expect(getActionMessage(root)).toBe(t('audio.vban.test.success'))
     } finally {
@@ -917,7 +1004,11 @@ describe('AudioVbanTab help', () => {
       const section = panel.closest('section')
       expect(section?.getAttribute('aria-labelledby')).toBe('vban-help-title')
       expect(section?.querySelector('h2')?.textContent?.trim()).toBe(t('audio.vban.help.title'))
-      expect(panel.textContent?.trim()).toBe(t('audio.vban.help.text'))
+      expect(Array.from(panel.querySelectorAll('p'), (p) => p.textContent?.trim())).toEqual([
+        t('audio.vban.help.text'),
+        `VBAN Receptor: ${t('audio.vban.help.receptor')}`,
+        `Voicemeeter: ${t('audio.vban.help.voicemeeter')}`,
+      ])
     } finally {
       await tab.unmount()
     }
@@ -941,10 +1032,14 @@ describe('AudioVbanTab help', () => {
     // switching the locale so the runtime lookup itself is covered.
     i18n.global.setLocaleMessage('ru', (ruCatalog as { messages: Record<string, string> }).messages)
     withLocale('ru', () => {
-      expect(t('audio.vban.help.text')).toBe('Кнопка «Тест» использует текущие значения формы. В «VBAN Receptor» нажмите «Stream Name» и выберите «TTSBard».')
+      expect(t('audio.vban.help.text')).toBe('«Тест» отправляет звук по текущим настройкам формы.')
+      expect(t('audio.vban.help.receptor')).toContain('выберите поток с именем из формы')
+      expect(t('audio.vban.help.voicemeeter')).toContain('нажмите правой кнопкой')
     })
     withLocale('en', () => {
-      expect(t('audio.vban.help.text')).toBe('The Test button uses the current form values. In VBAN Receptor, click “Stream Name” and select “TTSBard”.')
+      expect(t('audio.vban.help.text')).toBe('“Test” sends audio using the current form settings.')
+      expect(t('audio.vban.help.receptor')).toContain('whose name matches the form')
+      expect(t('audio.vban.help.voicemeeter')).toContain('right-click')
     })
   })
 })
@@ -983,7 +1078,7 @@ describe('AudioVbanTab backend status', () => {
     }
   })
 
-  it('emits the production state and keeps the backend error text', async () => {
+  it('keeps only the backend error text while the panel owns the indicator', async () => {
     const tab = await mountTab({ settings: createSettings(undefined), active: true })
     try {
       const root = tab.container!
@@ -995,7 +1090,6 @@ describe('AudioVbanTab backend status', () => {
       })
       await tab.setActive(false)
       await tab.setActive(true)
-      expect(tab.statusChanges[tab.statusChanges.length - 1]?.state).toBe('sending')
 
       // The duplicate status line is gone from the body.
       expect(root.querySelector('.vban-status')).toBeNull()
@@ -1009,7 +1103,6 @@ describe('AudioVbanTab backend status', () => {
       })
       await tab.setActive(false)
       await tab.setActive(true)
-      expect(tab.statusChanges[tab.statusChanges.length - 1]?.state).toBe('error')
       const detail = root.querySelector<HTMLElement>('.vban-status-error')
       expect(detail?.textContent?.trim()).toBe('socket send failed')
       expect(detail?.getAttribute('role')).toBe('status')
@@ -1040,7 +1133,6 @@ describe('AudioVbanTab backend status', () => {
 
       const statusCallsAfter = tab.mockedInvoke.mock.calls.filter(([cmd]) => cmd === 'get_vban_status').length
       expect(statusCallsAfter).toBeGreaterThan(statusCallsBefore)
-      expect(tab.statusChanges[tab.statusChanges.length - 1]?.state).toBe('idle')
     } finally {
       await tab.unmount()
     }
@@ -1052,7 +1144,7 @@ describe('AudioVbanTab accessibility and errors', () => {
     const tab = await mountTab({ settings: createSettings(savedSection) })
     try {
       const root = tab.container!
-      for (const id of ['vban-address', 'vban-port', 'vban-stream-name', 'vban-volume']) {
+      for (const id of ['vban-address', 'vban-port', 'vban-stream-name', 'vban-volume', 'vban-ping-interval']) {
         const field = byId<HTMLElement>(root, id)
         expect(field).toBeTruthy()
       }

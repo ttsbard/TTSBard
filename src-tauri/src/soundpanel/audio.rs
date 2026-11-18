@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Построить включённые конфигурации вывода из настроек аудио.
 ///
@@ -139,8 +139,15 @@ fn wait_for_clip_outputs(
                 Ok(result) => {
                     preparation = None;
                     match result.and_then(|pcm| {
-                        vban.ok_or_else(|| "VBAN runtime unavailable".to_string())?
-                            .start(VbanSource::SoundPanel, pcm, 1.0)
+                        let output = vban.ok_or_else(|| "VBAN runtime unavailable".to_string())?;
+                        let handle = output.start(VbanSource::SoundPanel, pcm, 1.0)?;
+                        // ROADMAP-139: warn about a failed receiver at the
+                        // actual clip send start; the monitor dedupes the
+                        // alert while the global toast is visible.
+                        if output.health().notify_send_started() {
+                            warn!(target: "soundpanel", "VBAN clip started while the receiver is failed");
+                        }
+                        Ok(handle)
                     }) {
                         Ok(handle) => network = Some(handle),
                         Err(e) => error!(error = %e, "VBAN SoundPanel start failed"),

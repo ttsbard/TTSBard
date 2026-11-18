@@ -21,22 +21,23 @@ const DEFAULT_VBAN: VbanSettingsDto = {
   port: 6980,
   stream_name: 'TTSBard',
   volume: 100,
+  ping_interval: 30,
 };
 
-/** Editable form shape: the port stays raw text so invalid typing is visible. */
+/** Editable form shape: port and ping stay raw text so invalid typing is visible. */
 interface VbanDraft {
   enabled: boolean;
   address: string;
   port: string;
   stream_name: string;
   volume: number;
+  ping_interval: string;
 }
 
 const props = defineProps<{ active: boolean }>();
 
 const emit = defineEmits<{
   (e: 'dirty-change', dirty: boolean): void;
-  (e: 'status-change', status: VbanStatusDto): void;
 }>();
 
 const audioSettingsFromComposable = useAudioSettings();
@@ -49,6 +50,7 @@ function fromSettings(section: VbanSettingsDto | undefined): VbanDraft {
     port: String(s.port),
     stream_name: s.stream_name,
     volume: s.volume,
+    ping_interval: String(s.ping_interval),
   };
 }
 
@@ -95,10 +97,9 @@ async function refreshStatus() {
   try {
     const status = await invoke<VbanStatusDto>('get_vban_status');
     if (!disposed && isVbanStatus(status)) {
+      // The body renders only the diagnostic error line; the production
+      // indicator on the Audio panel tab follows the global health monitor.
       backendStatus.value = status;
-      // The Audio panel tab owns the production indicator; the body keeps
-      // only the diagnostic error text.
-      emit('status-change', status);
     }
   } catch (error) {
     if (!disposed) debugError('[AudioVbanTab] Failed to read VBAN status:', error);
@@ -158,12 +159,18 @@ const parsedPort = computed(() => {
   if (!/^\d+$/.test(raw)) return null;
   return Number(raw);
 });
+const parsedPing = computed(() => {
+  const raw = draft.value.ping_interval.trim();
+  if (!/^\d+$/.test(raw)) return null;
+  return Number(raw);
+});
 const streamValue = computed(() => draft.value.stream_name.trim());
 const volumeValue = computed(() => draft.value.volume);
-const editingField = ref<'address' | 'port' | 'stream_name' | null>(null);
+const editingField = ref<'address' | 'port' | 'stream_name' | 'ping_interval' | null>(null);
 
 const addressFilledValid = computed(() => addressValue.value !== '' && isIPv4(addressValue.value));
 const portValid = computed(() => parsedPort.value !== null && parsedPort.value >= 1 && parsedPort.value <= 65535);
+const pingValid = computed(() => parsedPing.value !== null && parsedPing.value >= 1 && parsedPing.value <= 300);
 const streamValid = computed(() => /^[\x20-\x7E]{1,16}$/.test(streamValue.value));
 const volumeValid = computed(() => Number.isFinite(volumeValue.value) && volumeValue.value >= 0 && volumeValue.value <= 100);
 
@@ -176,9 +183,11 @@ const addressError = computed(() => {
   return isIPv4(value) ? '' : t('audio.vban.address.invalid');
 });
 const portError = computed(() => (portValid.value ? '' : t('audio.vban.port.invalid')));
+const pingError = computed(() => (pingValid.value ? '' : t('audio.vban.ping.invalid')));
 const streamError = computed(() => (streamValid.value ? '' : t('audio.vban.stream_name.invalid')));
 const visibleAddressError = computed(() => editingField.value === 'address' ? '' : addressError.value);
 const visiblePortError = computed(() => editingField.value === 'port' ? '' : portError.value);
+const visiblePingError = computed(() => editingField.value === 'ping_interval' ? '' : pingError.value);
 const visibleStreamError = computed(() => editingField.value === 'stream_name' ? '' : streamError.value);
 
 /** The address blocks Save only when it is definitely invalid: an enabled
@@ -187,24 +196,26 @@ const visibleStreamError = computed(() => editingField.value === 'stream_name' ?
 const addressBlocksSave = computed(() => draft.value.enabled && addressError.value !== '');
 
 /** Everything the backend will validate before applying saved settings. */
-const formValid = computed(() => !addressBlocksSave.value && portValid.value && streamValid.value && volumeValid.value);
+const formValid = computed(() => !addressBlocksSave.value && portValid.value && streamValid.value && volumeValid.value && pingValid.value);
 /** A concrete send destination: testable regardless of the enabled toggle. */
-const targetValid = computed(() => addressFilledValid.value && portValid.value && streamValid.value && volumeValid.value);
+const targetValid = computed(() => addressFilledValid.value && portValid.value && streamValid.value && volumeValid.value && pingValid.value);
 
 function toSettings(source: VbanDraft): VbanSettingsDto {
   const rawPort = source.port.trim();
+  const rawPing = source.ping_interval.trim();
   return {
     enabled: source.enabled,
     address: source.address.trim(),
     port: /^\d+$/.test(rawPort) ? Number(rawPort) : 0,
     stream_name: source.stream_name.trim(),
     volume: source.volume,
+    ping_interval: /^\d+$/.test(rawPing) ? Number(rawPing) : 0,
   };
 }
 
 function normalized(source: VbanDraft): string {
-  const { address, port, stream_name } = toSettings(source);
-  return JSON.stringify({ address, port, stream_name });
+  const { address, port, stream_name, ping_interval } = toSettings(source);
+  return JSON.stringify({ address, port, stream_name, ping_interval });
 }
 
 const isDirty = computed(() => normalized(draft.value) !== normalized(saved.value));
@@ -252,6 +263,11 @@ function onPortInput(event: Event) {
   onFormInput();
 }
 
+function onPingInput(event: Event) {
+  draft.value.ping_interval = (event.target as HTMLInputElement).value;
+  onFormInput();
+}
+
 function onVolumeInput(event: Event) {
   if (isSaving.value || isTesting.value) return;
   const value = Number((event.target as HTMLInputElement).value);
@@ -289,7 +305,8 @@ async function updateVolume() {
 const canEnable = computed(() => {
   const connection = toSettings(saved.value);
   return isIPv4(connection.address) && connection.port >= 1 && connection.port <= 65535
-    && /^[\x20-\x7E]{1,16}$/.test(connection.stream_name);
+    && /^[\x20-\x7E]{1,16}$/.test(connection.stream_name)
+    && connection.ping_interval >= 1 && connection.ping_interval <= 300;
 });
 
 async function onEnabledChange(event: Event) {
@@ -526,14 +543,38 @@ const actionMessage = computed(() => {
                 @input="onFormInput"
               />
             </div>
+            <label class="ui-label" for="vban-ping-interval">{{ t('audio.vban.ping') }}</label>
+            <div class="vban-field-stack">
+              <div class="ping-field">
+                <input
+                  id="vban-ping-interval"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  max="300"
+                  step="1"
+                  class="ui-input ping-input"
+                  :value="draft.ping_interval"
+                  :aria-invalid="visiblePingError ? 'true' : 'false'"
+                  :aria-describedby="visiblePingError ? 'vban-ping-error' : undefined"
+                  autocomplete="off"
+                  spellcheck="false"
+                  @focus="editingField = 'ping_interval'"
+                  @blur="editingField = null"
+                  @input="onPingInput"
+                />
+                <span class="ping-unit">{{ t('audio.vban.ping.unit') }}</span>
+              </div>
+            </div>
           </div>
 
         </div>
 
-        <div v-if="visibleAddressError || visiblePortError || visibleStreamError" class="vban-validation" role="status" aria-live="polite">
+        <div v-if="visibleAddressError || visiblePortError || visibleStreamError || visiblePingError" class="vban-validation" role="status" aria-live="polite">
           <p v-if="visibleAddressError" id="vban-address-error" class="ui-hint field-error">{{ visibleAddressError }}</p>
           <p v-if="visiblePortError" id="vban-port-error" class="ui-hint field-error">{{ visiblePortError }}</p>
           <p v-if="visibleStreamError" id="vban-stream-error" class="ui-hint field-error">{{ visibleStreamError }}</p>
+          <p v-if="visiblePingError" id="vban-ping-error" class="ui-hint field-error">{{ visiblePingError }}</p>
         </div>
 
         <div class="save-section">
@@ -571,7 +612,11 @@ const actionMessage = computed(() => {
 
       <section class="ui-section vban-help" aria-labelledby="vban-help-title">
         <h2 id="vban-help-title" class="ui-section-title">{{ t('audio.vban.help.title') }}</h2>
-        <p id="vban-help-panel" class="ui-description">{{ t('audio.vban.help.text') }}</p>
+        <div id="vban-help-panel" class="ui-description">
+          <p>{{ t('audio.vban.help.text') }}</p>
+          <p><strong>VBAN Receptor:</strong> {{ t('audio.vban.help.receptor') }}</p>
+          <p><strong>Voicemeeter:</strong> {{ t('audio.vban.help.voicemeeter') }}</p>
+        </div>
       </section>
     </div>
   </div>
@@ -731,6 +776,29 @@ const actionMessage = computed(() => {
   width: 100%;
 }
 
+/* Ping: compact numeric field with the unit rendered outside the input,
+   following the interface font "px" suffix pattern. */
+.ping-field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+/* Room for three digits and the native number-input arrows. */
+.ping-input {
+  box-sizing: border-box;
+  width: 76px;
+  flex: 0 0 76px;
+}
+
+.ping-unit {
+  flex: none;
+  font-size: var(--ui-text-size-control);
+  font-weight: var(--ui-text-weight-control);
+  color: var(--color-text-secondary);
+}
+
 .vban-row--volume {
   grid-column: 1 / -1;
   display: grid;
@@ -779,6 +847,15 @@ const actionMessage = computed(() => {
 
 .vban-help .ui-section-title {
   margin: 0 0 var(--ui-hint-gap);
+}
+
+#vban-help-panel {
+  display: grid;
+  gap: var(--ui-hint-gap);
+}
+
+#vban-help-panel > p {
+  margin: 0;
 }
 
 .save-section {

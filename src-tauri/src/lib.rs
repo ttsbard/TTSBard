@@ -845,6 +845,7 @@ pub fn run() {
             commands::vban::set_vban_enabled,
             commands::vban::test_vban_output,
             commands::vban::get_vban_status,
+            commands::vban::get_vban_health,
         ])
         .setup({
             let settings_clone = settings.clone();

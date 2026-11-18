@@ -40,6 +40,8 @@ import {
 } from './composables/speechQueueFailureNotifications'
 import { convertOcrOneShotFailure } from './composables/ocrFailureNotifications'
 import { useOcrRuntimeNotifications } from './composables/useOcrRuntimeNotifications'
+import { useVbanHealthMonitor } from './composables/useVbanHealth'
+import { useVbanHealthNotifications } from './composables/useVbanHealthNotifications'
 import type { ModelCategory } from './composables/useModelDownloads'
 import { TWITCH_DELIVERY_FAILED_EVENT, twitchDeliveryFailureLocaleKey } from './ipc/twitchDelivery'
 import {
@@ -131,6 +133,14 @@ const { dispose: disposeRuAccentRuntime } = useRuAccentRuntime()
 // Show a global toast on OCR runtime startup failures even when the OCR panel
 // is never opened. Registers its own status listener and boot snapshot read.
 useOcrRuntimeNotifications()
+
+// Track VBAN receiver availability at App level so the Audio panel header
+// shows the current verdict even when the panel was closed during a
+// transition; global health toasts subscribe separately (ROADMAP-139).
+useVbanHealthMonitor()
+// Global receiver-failure toasts: the alert stream plus the boot catch-up,
+// independent of any panel (ROADMAP-139).
+useVbanHealthNotifications()
 
 useStartupNotifications(appSettings.settings)
 

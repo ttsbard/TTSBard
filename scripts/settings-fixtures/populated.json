@@ -163,7 +163,8 @@
       "address": "",
       "port": 6980,
       "stream_name": "TTSBard",
-      "volume": 100
+      "volume": 100,
+      "ping_interval": 30
     }
   },
   "audio_effects": {

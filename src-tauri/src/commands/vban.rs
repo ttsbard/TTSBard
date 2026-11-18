@@ -1,4 +1,4 @@
-//! VBAN network output commands (ROADMAP-138).
+//! VBAN network output commands (ROADMAP-138, ROADMAP-139).
 //!
 //! Единая точка IPC для сетевого аудиовыхода VBAN:
 //! - [`set_vban_settings`] — валидация, persist-first сохранение секции
@@ -6,9 +6,11 @@
 //! - [`test_vban_output`] — отправка встроенного тестового звука на параметры
 //!   из формы (независимо от флага `enabled`), без локального звука, истории
 //!   и TTS;
-//! - [`get_vban_status`] — диагностика локальной отправки; доступность
-//!   приёмника (Receptor) по UDP не определяется.
+//! - [`get_vban_status`] — диагностика локальной отправки;
+//! - [`get_vban_health`] — доступность приёмника (Receptor) по VBAN-PING;
+//!   проверка живёт в отдельном потоке мониторинга и не зависит от вкладки.
 
+use crate::audio::vban::health::{VbanHealthState, VbanPingTarget};
 use crate::audio::vban::{VbanPlaybackStatus, VbanTarget};
 use crate::config::{SettingsManager, VbanSettings, VbanSettingsDto};
 use crate::state::AppState;
@@ -57,6 +59,32 @@ pub(crate) fn saved_vban_target(settings: &VbanSettings) -> Option<VbanTarget> {
             None
         }
     }
+}
+
+/// Цель проверки доступности из сохранённых настроек (ROADMAP-139).
+///
+/// Следует сохранённому состоянию, а не несохранённому черновику формы:
+/// пока VBAN выключен или сохранённое назначение невалидно, проверка не
+/// ведётся. `None` останавливает монитор и освобождает локальный порт.
+pub(crate) fn saved_health_target(settings: &VbanSettings) -> Option<VbanPingTarget> {
+    let target = saved_vban_target(settings)?;
+    let interval_secs = settings.validate_ping_interval().ok()?;
+    Some(VbanPingTarget {
+        addr: target.addr,
+        interval: Duration::from_secs(u64::from(interval_secs)),
+    })
+}
+
+/// Применить сохранённые настройки к обоим рантаймам: аудио-воркеру и
+/// монитору доступности. Монитор следует тем же сохранённым полям, что и
+/// отправка, но с собственным интервалом.
+fn apply_saved_runtimes(state: &AppState) {
+    let settings = state.settings_cache.read().audio.vban.clone();
+    state.vban.configure(saved_vban_target(&settings));
+    state
+        .vban
+        .health()
+        .set_target(saved_health_target(&settings));
 }
 
 /// Чистое отображение состояния runtime в DTO статуса.
@@ -115,7 +143,8 @@ pub async fn set_vban_settings(
     .map_err(|e| format!("Не удалось сохранить настройки VBAN: {e}"))?;
 
     // Применяем к runtime только после успешного persist. При выключении
-    // цель снимается: configure(None) отменяет production-дорожки.
+    // цель снимается: configure(None) отменяет production-дорожки, монитор
+    // доступности прекращает проверку.
     let target = if settings.enabled {
         match build_vban_target(&settings) {
             Ok(target) => Some(target),
@@ -129,6 +158,10 @@ pub async fn set_vban_settings(
         None
     };
     state.vban.configure(target);
+    state
+        .vban
+        .health()
+        .set_target(saved_health_target(&settings));
 
     super::emit_settings_changed(&app_handle);
     Ok(())
@@ -136,8 +169,7 @@ pub async fn set_vban_settings(
 
 /// Apply the durable snapshot, never an unsaved connection draft.
 fn apply_saved_vban(state: &AppState) {
-    let settings = state.settings_cache.read().audio.vban.clone();
-    state.vban.configure(saved_vban_target(&settings));
+    apply_saved_runtimes(state);
 }
 
 /// Save only address, port and stream name, preserving the live controls.
@@ -278,6 +310,33 @@ pub fn get_vban_status(state: State<'_, AppState>) -> VbanStatusDto {
     vban_status_dto(enabled, state.vban.is_sending(), state.vban.last_error())
 }
 
+/// Доступность приёмника VBAN (ROADMAP-139): снапшот монитора VBAN-PING.
+///
+/// `unknown` — результата ещё нет (серый), `alive` — приёмник ответил
+/// (зелёный), `failed` — установлена ошибка (красный) с причиной `reason`:
+/// `no_reply` — приёмник не отвечает, `local_socket` — локальная проверка
+/// не смогла запуститься (например, занят UDP-порт), отдельное объяснение.
+/// Проверка идёт в фоне независимо от открытой вкладки.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VbanHealthDto {
+    pub state: String,
+    pub reason: Option<String>,
+}
+
+impl From<&VbanHealthState> for VbanHealthDto {
+    fn from(state: &VbanHealthState) -> Self {
+        Self {
+            state: state.state_key().to_string(),
+            reason: state.reason_key().map(str::to_string),
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_vban_health(state: State<'_, AppState>) -> VbanHealthDto {
+    VbanHealthDto::from(&state.vban.health().state())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,11 +398,76 @@ mod tests {
             port: 7001,
             stream_name: "Stream1".to_string(),
             volume: 60,
+            ..Default::default()
         };
         let target = build_vban_target(&settings).unwrap();
         assert_eq!(target.addr.ip().to_string(), "192.168.10.7");
         assert_eq!(target.addr.port(), 7001);
         assert_eq!(target.stream_name, "Stream1");
         assert!((target.gain - 0.6).abs() < 0.0001);
+    }
+
+    #[test]
+    fn saved_health_target_follows_the_saved_snapshot() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        use std::time::Duration;
+
+        // Disabled VBAN: no check at all.
+        let disabled = VbanSettings {
+            enabled: false,
+            address: "192.168.1.50".to_string(),
+            ..Default::default()
+        };
+        assert!(saved_health_target(&disabled).is_none());
+
+        // Enabled with the agreed default interval.
+        let enabled = VbanSettings {
+            enabled: true,
+            address: "192.168.1.50".to_string(),
+            port: 6980,
+            stream_name: "TTSBard".to_string(),
+            volume: 100,
+            ping_interval: 30,
+        };
+        let target = saved_health_target(&enabled).unwrap();
+        assert_eq!(
+            target.addr,
+            SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 6980)
+        );
+        assert_eq!(target.interval, Duration::from_secs(30));
+
+        // An out-of-range interval keeps the check off (the load path
+        // normalizes this; here it is the last line of defence).
+        let damaged = VbanSettings {
+            ping_interval: 0,
+            ..enabled
+        };
+        assert!(saved_health_target(&damaged).is_none());
+    }
+
+    #[test]
+    fn vban_health_dto_maps_state_and_reason_keys() {
+        let dto = VbanHealthDto::from(&VbanHealthState::Unknown);
+        assert_eq!(dto.state, "unknown");
+        assert_eq!(dto.reason, None);
+
+        let dto = VbanHealthDto::from(&VbanHealthState::Alive);
+        assert_eq!(dto.state, "alive");
+        assert_eq!(dto.reason, None);
+
+        let dto = VbanHealthDto::from(&VbanHealthState::Failed(
+            crate::audio::vban::health::VbanHealthFailure::NoReply,
+        ));
+        assert_eq!(dto.state, "failed");
+        assert_eq!(dto.reason.as_deref(), Some("no_reply"));
+
+        let dto = VbanHealthDto::from(&VbanHealthState::Failed(
+            crate::audio::vban::health::VbanHealthFailure::LocalSocket("busy".to_string()),
+        ));
+        assert_eq!(dto.state, "failed");
+        assert_eq!(dto.reason.as_deref(), Some("local_socket"));
+        let value = serde_json::to_value(&dto).unwrap();
+        assert!(value.get("state").is_some());
+        assert!(value.get("reason").is_some());
     }
 }
