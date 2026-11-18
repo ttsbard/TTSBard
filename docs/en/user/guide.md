@@ -84,8 +84,9 @@ in the tray.
   the new `ttsbard.exe`, close TTSBard, and replace the file. This also applies
   if you have another copy of TTSBard installed on the same PC.
 
-If your installed version only offers **Open on GitHub**, download and run
-the latest `*_x64-setup.exe` to switch to a release that supports in-app updates.
+If the card offers **Open on GitHub**, download and run `*_x64-setup.exe`
+manually. Future in-app updates require an installed build with a public
+verification key and a signed installer for the new release.
 
 ## Daily use
 
