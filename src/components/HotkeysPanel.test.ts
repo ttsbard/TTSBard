@@ -92,6 +92,7 @@ let container: HTMLDivElement | null = null
 async function mountHotkeysPanel(options: {
   active?: boolean
   hotkeys?: Record<string, unknown>
+  onReload?: () => void
 } = {}) {
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -111,7 +112,9 @@ async function mountHotkeysPanel(options: {
     settings: settingsRef,
     isLoading: ref(false),
     error: ref(null),
-    reload: vi.fn(async () => {}),
+    reload: vi.fn(async () => {
+      options.onReload?.()
+    }),
   })
 
   appInstance.mount(container)
@@ -515,6 +518,313 @@ describe('HotkeysPanel per-hotkey enable switch', () => {
     expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
       name: 'main_window',
       hotkey: { key: 'G', modifiers: ['ctrl', 'shift'], enabled: true },
+    })
+  })
+})
+
+describe('HotkeysPanel NumPad capture and save-in-flight', () => {
+  it('records a bare NumPad digit with an empty modifier list', async () => {
+    const { getMainRecordBtn, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel()
+    getMainRecordBtn()!.click()
+    await flushAsync()
+    expect(getRecordingIndicator()).not.toBeNull()
+
+    dispatchKey('keydown', { key: '7', code: 'Numpad7' })
+    await flushAsync()
+    expect(getRecordingIndicator()?.textContent).toContain('Num 7')
+
+    dispatchKey('keyup', { key: '7', code: 'Numpad7' })
+    await flushAsync()
+
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: 'NUMPAD7', modifiers: [], enabled: true },
+    })
+  })
+
+  it('keeps a captured NumPad binding visible while the save is in flight and swaps it in on success', async () => {
+    const gate = deferred<{ key: string; modifiers: string[] } | undefined>()
+    let savedHotkey: { key: string; modifiers: string[] } | null = null
+    let applySaved: (() => void) | null = null
+    const { getMainRecordBtn, getRow, getToggle, getRecordingIndicator, settingsRef, mockedInvoke } = await mountHotkeysPanel({
+      onReload: () => applySaved?.(),
+    })
+    applySaved = () => {
+      if (!savedHotkey) return
+      settingsRef.value = {
+        ...(settingsRef.value as AppSettingsDto),
+        hotkeys: {
+          ...(settingsRef.value as AppSettingsDto).hotkeys,
+          main_window: savedHotkey,
+        },
+      } as AppSettingsDto
+    }
+
+    getMainRecordBtn()!.click()
+    await flushAsync()
+    expect(getRecordingIndicator()).not.toBeNull()
+
+    mockedInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'set_hotkey') {
+        savedHotkey = (args as { hotkey: { key: string; modifiers: string[] } }).hotkey
+        return gate.promise
+      }
+      return undefined
+    })
+
+    // Capture NumPad 5 with Ctrl: physical code decides, modifier is real.
+    dispatchKey('keydown', { key: '5', code: 'Numpad5', ctrlKey: true })
+    dispatchKey('keyup', { key: '5', code: 'Numpad5', ctrlKey: true })
+    await nextTick()
+
+    // Between capture and the settled save the row shows the captured value;
+    // before the fix this window rendered neither the old nor the new value.
+    const row = getRow('main_window')!
+    const pending = row.querySelector('.hotkey-value.saving') as HTMLElement | null
+    expect(pending).not.toBeNull()
+    expect(pending?.textContent).toContain('Ctrl+Num 5')
+    expect(row.querySelector('.hotkey-value.recording')).toBeNull()
+
+    // The panel stays locked while the save is in flight.
+    expect((getRow('sound_panel')!.querySelector('.record-btn') as HTMLButtonElement).disabled).toBe(true)
+    expect(getToggle('sound_panel')!.disabled).toBe(true)
+
+    gate.resolve(undefined)
+    await flushAsync()
+
+    // Settled: the confirmed value replaces the pending chip without a blank frame.
+    expect(row.querySelector('.hotkey-value.saving')).toBeNull()
+    expect(row.querySelector('.hotkey-value')?.textContent).toContain('Ctrl+Num 5')
+    expect((getRow('sound_panel')!.querySelector('.record-btn') as HTMLButtonElement).disabled).toBe(false)
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: 'NUMPAD5', modifiers: ['ctrl'], enabled: true },
+    })
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey_recording', { recording: false })
+  })
+
+  it('restores the confirmed value and shows the conflict when an in-flight save fails', async () => {
+    const gate = deferred<void>()
+    const { getMainRecordBtn, getRow, getErrorMessage, mockedInvoke } = await mountHotkeysPanel()
+    getMainRecordBtn()!.click()
+    await flushAsync()
+
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_hotkey') return gate.promise
+      return undefined
+    })
+
+    // Ctrl+K is free in the default settings (Ctrl+R is taken by cycle_route).
+    dispatchKey('keydown', { key: 'K', code: 'KeyK', ctrlKey: true })
+    dispatchKey('keyup', { key: 'K', code: 'KeyK' })
+    await nextTick()
+
+    const row = getRow('main_window')!
+    expect((row.querySelector('.hotkey-value.saving') as HTMLElement | null)?.textContent).toContain('Ctrl+K')
+
+    gate.reject(new Error('Этот хоткей уже используется для «Перехвата»'))
+    await flushAsync()
+
+    // The pending chip is gone, the last confirmed binding is back and the
+    // backend conflict stays visible.
+    expect(row.querySelector('.hotkey-value.saving')).toBeNull()
+    expect(row.querySelector('.hotkey-value')?.textContent).toContain('Ctrl+M')
+    expect(getErrorMessage()?.classList.contains('error')).toBe(true)
+    expect(getErrorMessage()?.textContent).toContain('Этот хоткей уже используется')
+    expect(mockedInvoke).toHaveBeenCalledWith('reregister_hotkeys_cmd')
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey_recording', { recording: false })
+  })
+
+  it('records NumPad on main-window-local and editor rows, ignores NumpadEnter everywhere', async () => {
+    const { getRow, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel()
+    const recordInRow = (name: string) => getRow(name)!.querySelector('.record-btn') as HTMLButtonElement
+
+    // Editor rows record NumPad through the editor command.
+    recordInRow('edit_word').click()
+    await flushAsync()
+    dispatchKey('keydown', { key: '5', code: 'Numpad5' })
+    dispatchKey('keyup', { key: '5', code: 'Numpad5' })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_editor_hotkey', {
+      actionId: 'edit_word',
+      hotkey: { key: 'NUMPAD5', modifiers: [], enabled: true },
+    })
+    dispatchKey('keydown', { key: 'Escape', code: 'Escape' })
+    await flushAsync()
+
+    // Main-window-local rows record NumPad through the global command.
+    recordInRow('toggle_minimal_mode').click()
+    await flushAsync()
+    // Ctrl+NumPad5: physical code decides, the modifier is real.
+    dispatchKey('keydown', { key: '5', code: 'Numpad5', ctrlKey: true })
+    dispatchKey('keyup', { key: '5', code: 'Numpad5', ctrlKey: true })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'toggle_minimal_mode',
+      hotkey: { key: 'NUMPAD5', modifiers: ['ctrl'], enabled: true },
+    })
+
+    // NumpadEnter is excluded from every scope.
+    mockedInvoke.mockClear()
+    recordInRow('return_previous_window').click()
+    await flushAsync()
+    dispatchKey('keydown', { key: 'Enter', code: 'NumpadEnter' })
+    dispatchKey('keyup', { key: 'Enter', code: 'NumpadEnter' })
+    await flushAsync()
+    expect(mockedInvoke).not.toHaveBeenCalledWith('set_hotkey', expect.anything())
+    dispatchKey('keydown', { key: 'Escape', code: 'Escape' })
+    await flushAsync()
+
+    recordInRow('edit_word').click()
+    await flushAsync()
+    dispatchKey('keydown', { key: 'Enter', code: 'NumpadEnter' })
+    dispatchKey('keyup', { key: 'Enter', code: 'NumpadEnter' })
+    await flushAsync()
+    expect(mockedInvoke).not.toHaveBeenCalledWith('set_editor_hotkey', expect.anything())
+    expect(getRecordingIndicator()).not.toBeNull()
+  })
+
+  it('shows the NumPad label while recording an editor row', async () => {
+    const { getRow, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel()
+    const recordInRow = (name: string) => getRow(name)!.querySelector('.record-btn') as HTMLButtonElement
+
+    recordInRow('cycle_route').click()
+    await flushAsync()
+    expect(getRecordingIndicator()).not.toBeNull()
+
+    dispatchKey('keydown', { key: '-', code: 'NumpadSubtract' })
+    await flushAsync()
+    expect(getRecordingIndicator()?.textContent).toContain('Num -')
+
+    dispatchKey('keyup', { key: '-', code: 'NumpadSubtract' })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_editor_hotkey', {
+      actionId: 'cycle_route',
+      hotkey: { key: 'NUMPAD_SUBTRACT', modifiers: [], enabled: true },
+    })
+  })
+
+  it('blocks a NumPad capture occupied by an enabled local binding and allows a different modifier set', async () => {
+    const { getMainRecordBtn, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel({
+      hotkeys: {
+        toggle_minimal_mode: { key: 'NUMPAD5', modifiers: [] },
+      },
+    })
+
+    // Bare NumPad5 is taken by toggle_minimal_mode: blocked before any IPC.
+    getMainRecordBtn()!.click()
+    await flushAsync()
+    dispatchKey('keydown', { key: '5', code: 'Numpad5' })
+    dispatchKey('keyup', { key: '5', code: 'Numpad5' })
+    await flushAsync()
+    expect(getRecordingIndicator()?.textContent).toContain('Already assigned')
+    expect(mockedInvoke).not.toHaveBeenCalledWith('set_hotkey', expect.anything())
+
+    // A different modifier set does not shadow the bare local binding.
+    dispatchKey('keydown', { key: '5', code: 'Numpad5', ctrlKey: true })
+    dispatchKey('keyup', { key: '5', code: 'Numpad5', ctrlKey: true })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: 'NUMPAD5', modifiers: ['ctrl'], enabled: true },
+    })
+  })
+
+  it('keeps the top digit row separate when a NumPad binding is taken', async () => {
+    const { getMainRecordBtn, mockedInvoke } = await mountHotkeysPanel({
+      hotkeys: {
+        sound_panel: { key: 'NUMPAD5', modifiers: [] },
+      },
+    })
+
+    getMainRecordBtn()!.click()
+    await flushAsync()
+    // Digit5 on the top row is a different physical key: recorded, not blocked
+    // (the capture finishes into a save, so no occupied notice ever shows).
+    dispatchKey('keydown', { key: '5', code: 'Digit5' })
+    dispatchKey('keyup', { key: '5', code: 'Digit5' })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: '5', modifiers: [], enabled: true },
+    })
+  })
+})
+
+describe('HotkeysPanel review: save/refresh/cleanup separation', () => {
+  it('keeps the saved binding and stays silent when the recording-flag cleanup fails after a successful save', async () => {
+    const { getMainRecordBtn, getRow, getErrorMessage, mockedInvoke } = await mountHotkeysPanel()
+    getMainRecordBtn()!.click()
+    await flushAsync()
+
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_hotkey') return undefined
+      if (cmd === 'set_hotkey_recording') throw new Error('IPC bridge closed')
+      return undefined
+    })
+
+    // Ctrl+K is free in the default settings. The save itself succeeds; the
+    // subsequent cleanup invoke fails and the settings snapshot stays stale.
+    dispatchKey('keydown', { key: 'K', code: 'KeyK', ctrlKey: true })
+    dispatchKey('keyup', { key: 'K', code: 'KeyK' })
+    await flushAsync()
+
+    const row = getRow('main_window')!
+    // The assignment persisted: the new binding stays confirmed on screen even
+    // though reload produced no fresh snapshot (the old one still holds
+    // Ctrl+M). The cleanup failure must not surface as a failed assignment.
+    expect(row.querySelector('.hotkey-value.saving')).toBeNull()
+    expect(row.querySelector('.hotkey-value')?.textContent).toContain('Ctrl+K')
+    expect(row.querySelector('.hotkey-value')?.textContent).not.toContain('Ctrl+M')
+    expect(getErrorMessage()).toBeNull()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', expect.anything())
+  })
+
+  it('keeps the saved binding when the settings refresh after a successful save fails', async () => {
+    let failRefresh = false
+    const { getMainRecordBtn, getRow, getErrorMessage, mockedInvoke } = await mountHotkeysPanel({
+      onReload: () => {
+        if (failRefresh) throw new Error('refresh failed')
+      },
+    })
+    getMainRecordBtn()!.click()
+    await flushAsync()
+
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'set_hotkey') return undefined
+      return undefined
+    })
+    failRefresh = true
+
+    dispatchKey('keydown', { key: 'K', code: 'KeyK', ctrlKey: true })
+    dispatchKey('keyup', { key: 'K', code: 'KeyK' })
+    await flushAsync()
+
+    const row = getRow('main_window')!
+    expect(row.querySelector('.hotkey-value.saving')).toBeNull()
+    expect(row.querySelector('.hotkey-value')?.textContent).toContain('Ctrl+K')
+    expect(getErrorMessage()).toBeNull()
+  })
+
+  it('records the decimal key and an operator with their NumPad labels', async () => {
+    const { getMainRecordBtn, getRecordingIndicator, mockedInvoke } = await mountHotkeysPanel()
+    getMainRecordBtn()!.click()
+    await flushAsync()
+
+    // The decimal key is captured like the digits: physical code decides.
+    dispatchKey('keydown', { key: '.', code: 'NumpadDecimal' })
+    await flushAsync()
+    expect(getRecordingIndicator()?.textContent).toContain('Num .')
+
+    dispatchKey('keydown', { key: '+', code: 'NumpadAdd' })
+    await flushAsync()
+    expect(getRecordingIndicator()?.textContent).toContain('Num +')
+
+    dispatchKey('keyup', { key: '+', code: 'NumpadAdd' })
+    await flushAsync()
+    expect(mockedInvoke).toHaveBeenCalledWith('set_hotkey', {
+      name: 'main_window',
+      hotkey: { key: 'NUMPAD_ADD', modifiers: [], enabled: true },
     })
   })
 })

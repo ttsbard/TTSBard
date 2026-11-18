@@ -2,7 +2,6 @@ use crate::commands::playback::PlaybackState;
 use crate::config::{Hotkey, HotkeySettings};
 use crate::soundpanel::SoundPanelState;
 use crate::state::{ActiveWindow, AppState};
-use std::future::Future;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -368,6 +367,12 @@ fn register_binding_by_name(
 }
 
 /// Register hotkeys from settings
+///
+/// One rejected combination must not strand the rest of the module's
+/// shortcuts (review 009 fix): `reregister_hotkeys` has already released the
+/// whole tracked set by the time this runs, so every remaining valid binding
+/// is registered even after an individual failure, and the collected failures
+/// are reported as a single error.
 #[cfg(target_os = "windows")]
 pub fn register_from_settings(
     hotkey_settings: &HotkeySettings,
@@ -376,31 +381,65 @@ pub fn register_from_settings(
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Registering hotkeys from settings");
 
-    for &name in &OS_REGISTERED_GLOBAL_NAMES {
+    let outcome = register_all_listed_bindings(|name| {
         let hotkey = hotkey_settings
             .get_global_by_name(name)
             .expect("listed OS-registered binding must exist");
-        if should_register(hotkey) {
-            let shortcut = hotkey.to_shortcut()?;
-            register_binding_by_name(app_handle, app_state, name, shortcut)?;
-        } else {
+        if !should_register(hotkey) {
             debug!(
                 hotkey = name,
                 status = "disabled",
                 "Skipping disabled hotkey"
             );
+            return Ok(());
         }
-    }
+        let shortcut = hotkey.to_shortcut()?;
+        register_binding_by_name(app_handle, app_state, name, shortcut)
+    });
 
     info!(
         main_window = %hotkey_settings.main_window.format_display(),
         main_window_enabled = hotkey_settings.main_window.enabled,
         sound_panel = %hotkey_settings.sound_panel.format_display(),
         sound_panel_enabled = hotkey_settings.sound_panel.enabled,
-        "Hotkeys registered successfully"
+        "Hotkey registration pass finished"
     );
 
-    Ok(())
+    outcome
+}
+
+/// Register every listed binding, continuing past individual failures.
+///
+/// Aborting at the first rejected combination would leave every later binding
+/// unregistered after `unregister_all_hotkeys` released the whole tracked set
+/// (the review 009 scenario: an early hotkey is refused while a later hotkey
+/// would succeed). All names are therefore attempted, failures are logged,
+/// and a combined error listing every failure is returned.
+#[cfg(target_os = "windows")]
+fn register_all_listed_bindings(
+    mut register_one: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut failures: Vec<String> = Vec::new();
+    for &name in &OS_REGISTERED_GLOBAL_NAMES {
+        if let Err(error) = register_one(name) {
+            error!(
+                hotkey = name,
+                error = %error,
+                "Failed to register hotkey; continuing with the remaining bindings"
+            );
+            failures.push(format!("{name}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "registered every binding that could be registered, but {} failed: {}",
+            failures.len(),
+            failures.join("; ")
+        )
+        .into())
+    }
 }
 
 /// Unregister every shortcut tracked as owned by this module.
@@ -444,9 +483,10 @@ pub fn unregister_all_hotkeys(app_handle: &AppHandle) -> Result<(), Box<dyn std:
 /// Ownership is decided by this module's tracking rather than by the plugin's
 /// process-wide registry: enabling a combination that another in-app owner
 /// already registered is an in-app conflict, and disabling it preserves that
-/// foreign registration. Registration and unregistration failures are surfaced
-/// before the caller persists anything, so the stored switch keeps describing
-/// the previous state.
+/// foreign registration. Registration and unregistration failures are
+/// surfaced to the caller, which is responsible for keeping the persisted
+/// switch truthful — the toggle command rolls the switch back on failure
+/// ([`crate::commands::window::rollback_hotkey_enabled_switch`]).
 #[cfg(target_os = "windows")]
 pub fn set_global_binding_runtime_state(
     app_handle: &AppHandle,
@@ -526,42 +566,6 @@ pub fn set_global_binding_runtime_state(
     }
 }
 
-/// Run one per-binding switch as an ordered transaction.
-///
-/// The runtime change is applied first; the switch is persisted only after that
-/// succeeds, so an OS rejection leaves the stored flag untouched. If
-/// persistence then fails, the runtime change is rolled back. `apply` reports
-/// whether the runtime changed at all, so a no-op switch never triggers a
-/// rollback that would invent a registration.
-pub(crate) async fn apply_binding_toggle<A, P, R>(
-    apply: A,
-    persist: P,
-    rollback: R,
-) -> Result<(), String>
-where
-    A: FnOnce() -> Result<bool, String>,
-    P: Future<Output = Result<(), String>>,
-    R: FnOnce() -> Result<(), String>,
-{
-    let runtime_changed = apply()?;
-    match persist.await {
-        Ok(()) => Ok(()),
-        Err(persist_error) if !runtime_changed => {
-            Err(format!("Failed to persist hotkey state: {}", persist_error))
-        }
-        Err(persist_error) => match rollback() {
-            Ok(()) => Err(format!(
-                "Failed to persist hotkey state: {}; the shortcut was restored to its previous state",
-                persist_error
-            )),
-            Err(rollback_error) => Err(format!(
-                "Failed to persist hotkey state: {}; restoring the previous shortcut state failed: {}",
-                persist_error, rollback_error
-            )),
-        },
-    }
-}
-
 /// Initialize hotkeys from settings
 ///
 /// This function reads hotkey settings from the config and registers them.
@@ -605,6 +609,10 @@ pub fn initialize_hotkeys(
 ///
 /// This function is called when hotkey settings are changed.
 /// It unregisters all hotkeys and re-registers them with the new settings.
+/// Even when a combination is rejected by the OS, every other valid binding
+/// is still registered ([`register_from_settings`] continues past individual
+/// failures) and the collected failures are reported as one error — a
+/// rollback caller can rely on the other shortcuts being back either way.
 pub fn reregister_hotkeys(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     info!("Re-registering hotkeys with new settings");
 
@@ -683,6 +691,7 @@ pub fn set_global_binding_runtime_state(
 mod tests {
     use super::*;
     use crate::config::HotkeyModifier;
+    #[cfg(target_os = "windows")]
     use std::cell::RefCell;
 
     fn hotkey(key: &str, enabled: bool) -> Hotkey {
@@ -747,138 +756,37 @@ mod tests {
         assert!(!is_tracked_shortcut(shortcut));
     }
 
-    /// The transaction must not persist when applying the runtime change fails:
-    /// the stored switch keeps its previous value and no rollback runs.
-    #[tokio::test]
-    async fn binding_toggle_keeps_previous_state_when_apply_fails() {
-        let calls = RefCell::new(Vec::new());
-
-        let result = apply_binding_toggle(
-            || {
-                calls.borrow_mut().push("apply");
-                Err("register rejected".to_string())
-            },
-            async {
-                calls.borrow_mut().push("persist");
+    /// A rejected binding must not strand the rest of the set (review 009):
+    /// after `unregister_all_hotkeys` released everything, every remaining
+    /// listed name is still attempted, and the combined error names the
+    /// failure without inventing success for it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn registration_continues_past_a_failed_binding_and_reports_all_failures() {
+        let attempted = RefCell::new(Vec::new());
+        let outcome = register_all_listed_bindings(|name| {
+            attempted.borrow_mut().push(name.to_string());
+            if name == "sound_panel" {
+                Err("Windows rejected the combination".into())
+            } else {
                 Ok(())
-            },
-            || {
-                calls.borrow_mut().push("rollback");
-                Ok(())
-            },
-        )
-        .await;
+            }
+        });
 
-        assert!(result.unwrap_err().contains("register rejected"));
-        assert_eq!(*calls.borrow(), vec!["apply"]);
-    }
+        assert_eq!(
+            *attempted.borrow(),
+            OS_REGISTERED_GLOBAL_NAMES.to_vec(),
+            "a failed early binding must not abort the remaining registrations"
+        );
+        let error = outcome.unwrap_err().to_string();
+        assert!(error.contains("sound_panel"), "unexpected: {error}");
+        assert!(
+            error.contains("Windows rejected the combination"),
+            "unexpected: {error}"
+        );
 
-    /// A successful runtime change is persisted only afterwards, and a
-    /// persistence failure rolls the runtime back instead of leaving the
-    /// switch and the registration out of sync.
-    #[tokio::test]
-    async fn binding_toggle_rolls_back_when_persist_fails() {
-        let calls = RefCell::new(Vec::new());
-
-        let result = apply_binding_toggle(
-            || {
-                calls.borrow_mut().push("apply");
-                Ok(true)
-            },
-            async {
-                calls.borrow_mut().push("persist");
-                Err("disk full".to_string())
-            },
-            || {
-                calls.borrow_mut().push("rollback");
-                Ok(())
-            },
-        )
-        .await;
-
-        let error = result.unwrap_err();
-        assert!(error.contains("disk full"), "unexpected: {error}");
-        assert!(error.contains("restored"), "unexpected: {error}");
-        assert_eq!(*calls.borrow(), vec!["apply", "persist", "rollback"]);
-    }
-
-    /// A failed rollback is surfaced together with the persistence error, so a
-    /// possibly still-active shortcut is never reported as a clean success.
-    #[tokio::test]
-    async fn binding_toggle_reports_rollback_failure() {
-        let calls = RefCell::new(Vec::new());
-
-        let result = apply_binding_toggle(
-            || {
-                calls.borrow_mut().push("apply");
-                Ok(true)
-            },
-            async {
-                calls.borrow_mut().push("persist");
-                Err("disk full".to_string())
-            },
-            || {
-                calls.borrow_mut().push("rollback");
-                Err("unregister rejected".to_string())
-            },
-        )
-        .await;
-
-        let error = result.unwrap_err();
-        assert!(error.contains("disk full"), "unexpected: {error}");
-        assert!(error.contains("unregister rejected"), "unexpected: {error}");
-        assert_eq!(*calls.borrow(), vec!["apply", "persist", "rollback"]);
-    }
-
-    /// A switch that needed no runtime change (empty or window-local binding)
-    /// must not run a rollback: there is no registration to restore.
-    #[tokio::test]
-    async fn binding_toggle_skips_rollback_without_runtime_change() {
-        let calls = RefCell::new(Vec::new());
-
-        let result = apply_binding_toggle(
-            || {
-                calls.borrow_mut().push("apply");
-                Ok(false)
-            },
-            async {
-                calls.borrow_mut().push("persist");
-                Err("disk full".to_string())
-            },
-            || {
-                calls.borrow_mut().push("rollback");
-                Ok(())
-            },
-        )
-        .await;
-
-        assert!(result.unwrap_err().contains("disk full"));
-        assert_eq!(*calls.borrow(), vec!["apply", "persist"]);
-    }
-
-    /// The happy path persists after the runtime changed and never rolls back.
-    #[tokio::test]
-    async fn binding_toggle_persists_after_runtime_change() {
-        let calls = RefCell::new(Vec::new());
-
-        let result = apply_binding_toggle(
-            || {
-                calls.borrow_mut().push("apply");
-                Ok(true)
-            },
-            async {
-                calls.borrow_mut().push("persist");
-                Ok(())
-            },
-            || {
-                calls.borrow_mut().push("rollback");
-                Ok(())
-            },
-        )
-        .await;
-
-        assert!(result.is_ok());
-        assert_eq!(*calls.borrow(), vec!["apply", "persist"]);
+        // The clean pass reports success.
+        assert!(register_all_listed_bindings(|_| Ok(())).is_ok());
     }
 
     /// Only the six module-owned global shortcuts are registered with the OS;

@@ -214,7 +214,7 @@ async function saveBinding() {
     await invoke('set_intercept_binding', { key, action })
     await loadSettings()
   } catch (e) {
-    showMessage(t('intercept.error.generic', { detail: (e as Error).message }), 'error')
+    showMessage(t('intercept.error.generic', { detail: normalizeCommandError(e).message }), 'error')
   }
   recordingKeyFor.value = null
   newBindingAction.value = 'show_main_window'
@@ -225,7 +225,7 @@ async function updateBindingAction(binding: InterceptBindingDto, action: string)
     await invoke('set_intercept_binding', { key: binding.key, action })
     await loadSettings()
   } catch (e) {
-    showMessage(t('intercept.error.generic', { detail: (e as Error).message }), 'error')
+    showMessage(t('intercept.error.generic', { detail: normalizeCommandError(e).message }), 'error')
   }
 }
 
@@ -234,7 +234,7 @@ async function removeBinding(key: string) {
     await invoke('clear_intercept_binding', { key })
     await loadSettings()
   } catch (e) {
-    showMessage(t('intercept.error.generic', { detail: (e as Error).message }), 'error')
+    showMessage(t('intercept.error.generic', { detail: normalizeCommandError(e).message }), 'error')
   }
 }
 

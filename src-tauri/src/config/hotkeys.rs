@@ -658,6 +658,26 @@ fn parse_key_code(key: &str) -> Result<Code, String> {
         "7" => Ok(Code::Digit7),
         "8" => Ok(Code::Digit8),
         "9" => Ok(Code::Digit9),
+        // Windows NumPad, canonical names shared with the intercept bindings
+        // (see `soundpanel::intercept` and `interceptKeys.ts`). Distinct from
+        // the top digit row above: `NUMPAD1` and `1` map to different physical
+        // keys (`Code::Numpad1` vs `Code::Digit1`). NumPad Enter is
+        // intentionally absent — ROADMAP-140 leaves it out of scope.
+        "NUMPAD0" => Ok(Code::Numpad0),
+        "NUMPAD1" => Ok(Code::Numpad1),
+        "NUMPAD2" => Ok(Code::Numpad2),
+        "NUMPAD3" => Ok(Code::Numpad3),
+        "NUMPAD4" => Ok(Code::Numpad4),
+        "NUMPAD5" => Ok(Code::Numpad5),
+        "NUMPAD6" => Ok(Code::Numpad6),
+        "NUMPAD7" => Ok(Code::Numpad7),
+        "NUMPAD8" => Ok(Code::Numpad8),
+        "NUMPAD9" => Ok(Code::Numpad9),
+        "NUMPAD_ADD" => Ok(Code::NumpadAdd),
+        "NUMPAD_SUBTRACT" => Ok(Code::NumpadSubtract),
+        "NUMPAD_MULTIPLY" => Ok(Code::NumpadMultiply),
+        "NUMPAD_DIVIDE" => Ok(Code::NumpadDivide),
+        "NUMPAD_DECIMAL" => Ok(Code::NumpadDecimal),
         // Space
         "SPACE" => Ok(Code::Space),
         // Enter / Tab
@@ -691,6 +711,130 @@ mod tests {
         assert!(matches!(parse_key_code("Enter"), Ok(Code::Enter)));
         assert!(matches!(parse_key_code("Tab"), Ok(Code::Tab)));
         assert!(parse_key_code("INVALID").is_err());
+    }
+
+    /// Shared parity fixture for the supported NumPad keys
+    /// (scripts/contract-fixtures/numpad/numpad-keys.json): the same table
+    /// the frontend (`interceptKeys.test.ts`) and the
+    /// `soundpanel::intercept` mapping assert on.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NumpadFixtureRow {
+        dom_code: String,
+        canonical_name: String,
+        #[allow(dead_code)]
+        windows_vk: u32,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NumpadFixture {
+        keys: Vec<NumpadFixtureRow>,
+        excluded: Vec<NumpadFixtureRow>,
+        digit_row: NumpadFixtureRow,
+    }
+
+    fn numpad_fixture() -> NumpadFixture {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/contract-fixtures/numpad/numpad-keys.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .expect("numpad parity fixture must exist next to the crate");
+        serde_json::from_str(&raw).expect("numpad parity fixture must parse")
+    }
+
+    /// NumPad names parse to the dedicated `Code::Numpad*` variants, driven
+    /// by the shared parity fixture: every row's canonical name parses to the
+    /// code whose Debug name is exactly the row's DOM code — the physical
+    /// mapping aligned with the `global-hotkey` dependency and the intercept
+    /// hook. Excluded rows (NumPad Enter) stay unparseable, key names stay
+    /// case-insensitive, and the digit row keeps its own `Code::Digit*`
+    /// code.
+    #[test]
+    fn parse_key_code_accepts_numpad_names() {
+        let fixture = numpad_fixture();
+        for row in &fixture.keys {
+            let parsed = parse_key_code(&row.canonical_name)
+                .unwrap_or_else(|error| panic!("{} must parse: {error}", row.canonical_name));
+            assert_eq!(
+                format!("{parsed:?}"),
+                row.dom_code,
+                "{} must map to the fixture's physical code",
+                row.canonical_name
+            );
+            // Key names are matched case-insensitively like every other key.
+            let lowered = row.canonical_name.to_lowercase();
+            assert_eq!(
+                format!("{:?}", parse_key_code(&lowered).unwrap()),
+                row.dom_code,
+                "{} must parse case-insensitively",
+                row.canonical_name
+            );
+        }
+        for row in &fixture.excluded {
+            assert!(
+                parse_key_code(&row.canonical_name).is_err(),
+                "{} stays outside the shortcut set",
+                row.canonical_name
+            );
+        }
+        assert_eq!(
+            format!(
+                "{:?}",
+                parse_key_code(&fixture.digit_row.canonical_name).unwrap()
+            ),
+            fixture.digit_row.dom_code,
+            "the digit row parses to its own Digit* code"
+        );
+    }
+
+    /// The top digit row and the NumPad digits must stay separate bindings:
+    /// same stored digit, different physical codes, never equal — so an
+    /// existing Digit assignment can neither clash with nor be silently
+    /// migrated to a NumPad one.
+    #[test]
+    fn numpad_names_stay_distinct_from_digit_row() {
+        assert!(matches!(parse_key_code("1"), Ok(Code::Digit1)));
+        assert!(matches!(parse_key_code("NUMPAD1"), Ok(Code::Numpad1)));
+
+        let digit = Hotkey {
+            modifiers: vec![],
+            key: "1".to_string(),
+            enabled: true,
+        };
+        let numpad = Hotkey {
+            modifiers: vec![],
+            key: "NUMPAD1".to_string(),
+            enabled: true,
+        };
+        assert_ne!(digit, numpad);
+    }
+
+    /// NumPad hotkeys convert to OS shortcuts with and without modifiers: an
+    /// empty modifier list registers the bare key (`None`), a non-empty list
+    /// folds into a single modifier mask.
+    #[test]
+    fn numpad_hotkey_to_shortcut_with_and_without_modifiers() {
+        let bare = Hotkey {
+            modifiers: vec![],
+            key: "NUMPAD1".to_string(),
+            enabled: true,
+        };
+        assert_eq!(
+            bare.to_shortcut().unwrap(),
+            Shortcut::new(None, Code::Numpad1)
+        );
+
+        let modified = Hotkey {
+            modifiers: vec![HotkeyModifier::Ctrl, HotkeyModifier::Shift],
+            key: "NUMPAD_ADD".to_string(),
+            enabled: true,
+        };
+        assert_eq!(
+            modified.to_shortcut().unwrap(),
+            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::NumpadAdd,),
+        );
     }
 
     #[test]

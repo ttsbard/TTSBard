@@ -137,6 +137,42 @@ describe('editor hotkey matching', () => {
     expect(hotkeyCode('TAB')).toBe('Tab')
   })
 
+  it('maps stored NumPad names to their physical codes', () => {
+    expect(hotkeyCode('NUMPAD5')).toBe('Numpad5')
+    expect(hotkeyCode('NUMPAD0')).toBe('Numpad0')
+    expect(hotkeyCode('NUMPAD_ADD')).toBe('NumpadAdd')
+    expect(hotkeyCode('NUMPAD_SUBTRACT')).toBe('NumpadSubtract')
+    expect(hotkeyCode('NUMPAD_MULTIPLY')).toBe('NumpadMultiply')
+    expect(hotkeyCode('NUMPAD_DIVIDE')).toBe('NumpadDivide')
+    expect(hotkeyCode('NUMPAD_DECIMAL')).toBe('NumpadDecimal')
+    // Case-insensitive like the backend parse.
+    expect(hotkeyCode('numpad5')).toBe('Numpad5')
+    // NumPad Enter stays outside the restricted set.
+    expect(hotkeyCode('NUMPAD_ENTER')).toBeNull()
+  })
+
+  it('matches NumPad bindings by physical code with the exact modifier set', () => {
+    const numpad5: HotkeyDto = { modifiers: [], key: 'NUMPAD5' }
+    expect(matchesEditorHotkey(numpad5, event({ code: 'Numpad5' }))).toBe(true)
+    // The top digit row is a different physical key and never matches NumPad.
+    expect(matchesEditorHotkey(numpad5, event({ code: 'Digit5' }))).toBe(false)
+    expect(matchesEditorHotkey(numpad5, event({ code: 'Numpad5', ctrlKey: true }))).toBe(false)
+    expect(matchesEditorHotkey(numpad5, event({ code: 'Numpad6' }))).toBe(false)
+
+    // Num-Lock-off: the same physical key reports a navigation `key` text while
+    // `code` stays physical; matching below only reads the code, so this fires.
+    expect(matchesEditorHotkey(
+      { modifiers: [], key: 'NUMPAD4' },
+      { code: 'Numpad4', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false },
+    )).toBe(true)
+
+    const ctrlNumpadAdd: HotkeyDto = { modifiers: ['ctrl'], key: 'NUMPAD_ADD' }
+    expect(matchesEditorHotkey(ctrlNumpadAdd, event({ code: 'NumpadAdd', ctrlKey: true }))).toBe(true)
+    expect(matchesEditorHotkey(ctrlNumpadAdd, event({ code: 'NumpadAdd' }))).toBe(false)
+    // NumPad Enter cannot be recorded and cannot match either.
+    expect(matchesEditorHotkey({ modifiers: [], key: 'NUMPAD_ENTER' }, event({ code: 'NumpadEnter' }))).toBe(false)
+  })
+
   it('prioritizes submit bindings by modifier set (keep_focus > keep_text > submit_continue)', () => {
     const submitContinue: HotkeyDto = { modifiers: ['ctrl'], key: 'Enter' }
     const submitKeepText: HotkeyDto = { modifiers: ['alt'], key: 'Enter' }

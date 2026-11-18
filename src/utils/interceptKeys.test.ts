@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { resolveInterceptKey, formatInterceptKey, type InterceptKeyEvent } from './interceptKeys'
+import numpadFixtureJson from '../../scripts/contract-fixtures/numpad/numpad-keys.json'
+import {
+  resolveInterceptKey,
+  formatInterceptKey,
+  numpadKeyNameFromCode,
+  numpadCodeFromKeyName,
+  formatNumpadKeyLabel,
+  isNumpadDigitKey,
+  type InterceptKeyEvent,
+} from './interceptKeys'
+
+// Shared NumPad parity table (scripts/contract-fixtures/numpad/): the same
+// rows the Rust config::hotkeys and soundpanel::intercept tests assert on.
+// Static import (resolveJsonModule + native Vite JSON support) instead of
+// node:fs — a clean install has no @types/node, so node:* imports fail
+// vue-tsc during `npm run build`.
+const numpadFixture = numpadFixtureJson as {
+  keys: { domCode: string; canonicalName: string; windowsVk: number }[]
+  excluded: { domCode: string; canonicalName: string; windowsVk: number }[]
+  digitRow: { domCode: string; canonicalName: string; windowsVk: number }
+}
 
 function ev(partial: Partial<InterceptKeyEvent>): InterceptKeyEvent {
   return { key: '', code: '', keyCode: 0, ...partial }
@@ -116,5 +136,153 @@ describe('formatInterceptKey', () => {
   it('displays the raw code for unknown VK values', () => {
     expect(formatInterceptKey('VK_BA')).toBe('VK_BA')
     expect(formatInterceptKey('VK_FE')).toBe('VK_FE')
+  })
+})
+
+describe('numpadKeyNameFromCode', () => {
+  it('maps numpad digits by physical code', () => {
+    expect(numpadKeyNameFromCode('Numpad0')).toBe('NUMPAD0')
+    expect(numpadKeyNameFromCode('Numpad5')).toBe('NUMPAD5')
+    expect(numpadKeyNameFromCode('Numpad9')).toBe('NUMPAD9')
+  })
+
+  it('maps numpad operator and decimal keys', () => {
+    expect(numpadKeyNameFromCode('NumpadAdd')).toBe('NUMPAD_ADD')
+    expect(numpadKeyNameFromCode('NumpadSubtract')).toBe('NUMPAD_SUBTRACT')
+    expect(numpadKeyNameFromCode('NumpadMultiply')).toBe('NUMPAD_MULTIPLY')
+    expect(numpadKeyNameFromCode('NumpadDivide')).toBe('NUMPAD_DIVIDE')
+    expect(numpadKeyNameFromCode('NumpadDecimal')).toBe('NUMPAD_DECIMAL')
+  })
+
+  it('rejects NumpadEnter and non-numpad codes', () => {
+    expect(numpadKeyNameFromCode('NumpadEnter')).toBeNull()
+    expect(numpadKeyNameFromCode('NumpadEqual')).toBeNull()
+    expect(numpadKeyNameFromCode('NumpadComma')).toBeNull()
+    expect(numpadKeyNameFromCode('Digit5')).toBeNull()
+    expect(numpadKeyNameFromCode('KeyA')).toBeNull()
+    expect(numpadKeyNameFromCode('')).toBeNull()
+  })
+})
+
+describe('numpadCodeFromKeyName', () => {
+  it('maps stored numpad names to their physical DOM codes', () => {
+    expect(numpadCodeFromKeyName('NUMPAD0')).toBe('Numpad0')
+    expect(numpadCodeFromKeyName('NUMPAD5')).toBe('Numpad5')
+    expect(numpadCodeFromKeyName('NUMPAD9')).toBe('Numpad9')
+    expect(numpadCodeFromKeyName('NUMPAD_ADD')).toBe('NumpadAdd')
+    expect(numpadCodeFromKeyName('NUMPAD_SUBTRACT')).toBe('NumpadSubtract')
+    expect(numpadCodeFromKeyName('NUMPAD_MULTIPLY')).toBe('NumpadMultiply')
+    expect(numpadCodeFromKeyName('NUMPAD_DECIMAL')).toBe('NumpadDecimal')
+    expect(numpadCodeFromKeyName('NUMPAD_DIVIDE')).toBe('NumpadDivide')
+  })
+
+  it('is case-insensitive and trims like the backend parse', () => {
+    expect(numpadCodeFromKeyName('numpad5')).toBe('Numpad5')
+    expect(numpadCodeFromKeyName(' NumpadAdd ')).toBe('NumpadAdd')
+  })
+
+  it('leaves NumpadEnter, the digit row and non-numpad names unmapped', () => {
+    expect(numpadCodeFromKeyName('NUMPAD_ENTER')).toBeNull()
+    expect(numpadCodeFromKeyName('NUMPADEQUAL')).toBeNull()
+    expect(numpadCodeFromKeyName('5')).toBeNull()
+    expect(numpadCodeFromKeyName('F5')).toBeNull()
+    expect(numpadCodeFromKeyName('SPACE')).toBeNull()
+    expect(numpadCodeFromKeyName('')).toBeNull()
+  })
+
+  it('round-trips with numpadKeyNameFromCode over the whole restricted set', () => {
+    for (const { domCode } of numpadFixture.keys) {
+      const name = numpadKeyNameFromCode(domCode)
+      expect(name, `numpadKeyNameFromCode(${domCode})`).not.toBeNull()
+      expect(numpadCodeFromKeyName(name as string)).toBe(domCode)
+    }
+  })
+
+  // ==================== shared fixture parity (008-numpad-parity) ====================
+
+  describe('shared NumPad fixture parity', () => {
+    it('maps every fixture row: DOM code to canonical name (recording)', () => {
+      for (const { domCode, canonicalName } of numpadFixture.keys) {
+        expect(numpadKeyNameFromCode(domCode), domCode).toBe(canonicalName)
+      }
+    })
+
+    it('maps every fixture row: canonical name back to the DOM code', () => {
+      for (const { domCode, canonicalName } of numpadFixture.keys) {
+        expect(numpadCodeFromKeyName(canonicalName), canonicalName).toBe(domCode)
+      }
+    })
+
+    it('resolves every fixture Windows VK to the canonical name', () => {
+      // The VK path is what an actual hook event takes when the DOM code is
+      // unavailable: the unrestricted fallback reuses restricted canonical
+      // names by VK (see restrictedNameFromVk).
+      for (const { canonicalName, windowsVk } of numpadFixture.keys) {
+        expect(
+          resolveInterceptKey(ev({ code: 'UnrelatedCode', keyCode: windowsVk }), true),
+          `VK 0x${windowsVk.toString(16)}`,
+        ).toBe(canonicalName)
+      }
+    })
+
+    it('keeps NumpadEnter out of the supported set', () => {
+      for (const { domCode, canonicalName, windowsVk } of numpadFixture.excluded) {
+        expect(numpadKeyNameFromCode(domCode), domCode).toBeNull()
+        expect(numpadCodeFromKeyName(canonicalName), canonicalName).toBeNull()
+        expect(formatNumpadKeyLabel(canonicalName), canonicalName).toBeNull()
+        // Restricted mode rejects the key; unrestricted mode falls through to
+        // the shared Enter VK (0x0D) instead of inventing a NumPad name.
+        expect(
+          resolveInterceptKey(ev({ key: 'Enter', code: domCode, keyCode: windowsVk }), false),
+          domCode,
+        ).toBeNull()
+        expect(
+          resolveInterceptKey(ev({ key: 'Enter', code: domCode, keyCode: windowsVk }), true),
+          domCode,
+        ).toBe(`VK_${windowsVk.toString(16).toUpperCase().padStart(2, '0')}`)
+      }
+    })
+
+    it('keeps the top digit row a different physical key from the NumPad', () => {
+      const { domCode, canonicalName, windowsVk } = numpadFixture.digitRow
+      // The digit row has no NumPad name in either direction.
+      expect(numpadKeyNameFromCode(domCode)).toBeNull()
+      expect(numpadCodeFromKeyName(canonicalName)).toBeNull()
+      // Its unrestricted VK (0x35) is distinct from the fixture's NumPad VKs.
+      expect(
+        resolveInterceptKey(ev({ key: canonicalName, code: domCode, keyCode: windowsVk }), true),
+      ).toBe(`VK_${windowsVk.toString(16).toUpperCase().padStart(2, '0')}`)
+      const numpadVks = new Set(numpadFixture.keys.map(({ windowsVk: vk }) => vk))
+      expect(numpadVks.has(windowsVk)).toBe(false)
+    })
+  })
+})
+
+describe('formatNumpadKeyLabel', () => {
+  it('labels digits and operators readably', () => {
+    expect(formatNumpadKeyLabel('NUMPAD0')).toBe('Num 0')
+    expect(formatNumpadKeyLabel('NUMPAD9')).toBe('Num 9')
+    expect(formatNumpadKeyLabel('NUMPAD_ADD')).toBe('Num +')
+    expect(formatNumpadKeyLabel('NUMPAD_SUBTRACT')).toBe('Num -')
+    expect(formatNumpadKeyLabel('NUMPAD_MULTIPLY')).toBe('Num *')
+    expect(formatNumpadKeyLabel('NUMPAD_DIVIDE')).toBe('Num /')
+    expect(formatNumpadKeyLabel('NUMPAD_DECIMAL')).toBe('Num .')
+  })
+
+  it('leaves non-numpad keys to the caller', () => {
+    expect(formatNumpadKeyLabel('M')).toBeNull()
+    expect(formatNumpadKeyLabel('F5')).toBeNull()
+    expect(formatNumpadKeyLabel('SPACE')).toBeNull()
+    expect(formatNumpadKeyLabel('NUMPAD_ENTER')).toBeNull()
+  })
+})
+
+describe('isNumpadDigitKey', () => {
+  it('accepts only numpad digits, not operators', () => {
+    expect(isNumpadDigitKey('NUMPAD5')).toBe(true)
+    expect(isNumpadDigitKey('NUMPAD0')).toBe(true)
+    expect(isNumpadDigitKey('NUMPAD_ADD')).toBe(false)
+    expect(isNumpadDigitKey('NUMPAD_DECIMAL')).toBe(false)
+    expect(isNumpadDigitKey('5')).toBe(false)
   })
 })

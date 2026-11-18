@@ -28,6 +28,7 @@ import { useTelegramAuth, TELEGRAM_AUTH_KEY } from './composables/useTelegramAut
 import { provideAppSettings } from './composables/useAppSettings'
 import { useRuAccentRuntime } from './composables/useRuAccentRuntime'
 import { debugLog, debugError } from './utils/debug'
+import { matchesLocalHotkey } from './utils/localHotkeys'
 import { getInitialCompactMode, getInitialCompactView, saveCompactViewToStorage, saveStartCompactToStorage } from './composables/compactModeState'
 import { createMainWindowModeController, MAIN_WINDOW_MODE_KEY } from './composables/mainWindowMode'
 import { createMainWindowModeAdapter } from './composables/mainWindowModeAdapter'
@@ -387,35 +388,12 @@ watch(
   { immediate: true },
 )
 
-function keyToCode(key: string): string {
-  if (key === 'SPACE') return 'Space'
-  if (/^F\d+$/.test(key)) return key
-  if (/^[A-Z]$/.test(key)) return `Key${key}`
-  if (/^[0-9]$/.test(key)) return `Digit${key}`
-  return key
-}
-
-function modifiersMatch(event: KeyboardEvent, hotkeyModifiers: string[]): boolean {
-  if (hotkeyModifiers.includes('ctrl') !== event.ctrlKey) return false
-  if (hotkeyModifiers.includes('shift') !== event.shiftKey) return false
-  if (hotkeyModifiers.includes('alt') !== event.altKey) return false
-  if (hotkeyModifiers.includes('super') !== event.metaKey) return false
-  // Ensure no extra modifiers are pressed
-  const expectedCount = hotkeyModifiers.length
-  let actualCount = 0
-  if (event.ctrlKey) actualCount++
-  if (event.shiftKey) actualCount++
-  if (event.altKey) actualCount++
-  if (event.metaKey) actualCount++
-  return expectedCount === actualCount
-}
-
+// Main-window-local hotkeys match on the physical event.code with the exact
+// modifier set (`utils/localHotkeys.ts`); NumPad names fire in both Num Lock
+// states because the DOM code is physical.
 function handleReturnFocusKeydown(event: KeyboardEvent) {
   const hotkey = appSettings.settings.value?.hotkeys?.return_previous_window
-  if (!hotkey || !hotkey.key || hotkey.enabled === false) return
-
-  const expectedCode = keyToCode(hotkey.key)
-  if (event.code === expectedCode && modifiersMatch(event, hotkey.modifiers)) {
+  if (matchesLocalHotkey(hotkey, event)) {
     event.preventDefault()
     invoke('return_to_previous_window').catch(() => {})
   }
@@ -425,17 +403,13 @@ function handleReturnFocusKeydown(event: KeyboardEvent) {
 // Handled on the frontend like return_previous_window — no global registration.
 function handleToggleMinimalKeydown(event: KeyboardEvent) {
   const hotkey = appSettings.settings.value?.hotkeys?.toggle_minimal_mode
-  if (!hotkey || !hotkey.key || hotkey.enabled === false) return
-
-  const expectedCode = keyToCode(hotkey.key)
-  if (event.code === expectedCode && modifiersMatch(event, hotkey.modifiers)) {
-    const target = event.target as HTMLElement | null
-    if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')) {
-      return
-    }
-    event.preventDefault()
-    void handleToggleMinimalMode()
+  if (!matchesLocalHotkey(hotkey, event)) return
+  const target = event.target as HTMLElement | null
+  if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')) {
+    return
   }
+  event.preventDefault()
+  void handleToggleMinimalMode()
 }
 
 // Initialize Telegram session on app start

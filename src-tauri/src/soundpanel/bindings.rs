@@ -515,12 +515,37 @@ pub fn set_intercept_enabled(
 }
 
 /// Установить биндинг перехвата
+///
+/// ROADMAP-140: сохранённый глобальный хоткей (включая OCR-назначение и
+/// выключенный) и сохранённое действие редактора (включая выключенное)
+/// резервируют свой NumPad-код — новый биндинг перехвата на тот же код
+/// отклоняется до мутации независимо от модификаторов.
+///
+/// Проверка и запись атомарны: оба снимка (settings.json и intercept.json)
+/// читаются и мутация persist-ится под общим NumPad-локом координации, поэтому
+/// параллельное сохранение глобального/редакторского хоткея не может
+/// вклиниться между проверкой и записью — несовместимые сохранения взаимно
+/// исключаются (см. `intercept::lock_numpad_coordination`).
 #[tauri::command]
 pub fn set_intercept_binding(
     key: String,
     action: String,
     state: State<'_, SoundPanelState>,
+    settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
+    let _coordination = crate::soundpanel::intercept::lock_numpad_coordination();
+    let hotkeys = settings_manager
+        .load()
+        .map_err(|e| format!("Failed to load settings: {}", e))?
+        .hotkeys;
+    if let Some(name) = crate::soundpanel::intercept::find_numpad_global_conflict(&hotkeys, &key) {
+        return Err(crate::soundpanel::intercept::numpad_global_conflict_message(&key, name));
+    }
+    if let Some(action_id) =
+        crate::soundpanel::intercept::find_numpad_editor_conflict(&hotkeys, &key)
+    {
+        return Err(crate::soundpanel::intercept::numpad_editor_conflict_message(&key, action_id));
+    }
     state.set_intercept_binding(key, action)
 }
 

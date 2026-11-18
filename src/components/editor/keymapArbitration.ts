@@ -1,4 +1,5 @@
 import type { HotkeyDto } from '../../types/settings'
+import { numpadCodeFromKeyName } from '../../utils/interceptKeys'
 
 export function shouldEnterSubmit(
   completionStatus: string | null,
@@ -25,6 +26,10 @@ export type HotkeyEventLike = Pick<
 export function hotkeyCode(key: string): string | null {
   const normalized = key.trim().toUpperCase()
   if (!normalized) return null
+  // Stored NumPad names resolve through the shared physical mapping; NumPad
+  // Enter and other names outside the restricted set stay unmapped.
+  const numpad = numpadCodeFromKeyName(normalized)
+  if (numpad !== null) return numpad
   if (normalized === 'ENTER') return 'Enter'
   if (normalized === 'TAB') return 'Tab'
   if (normalized === 'SPACE') return 'Space'

@@ -441,3 +441,39 @@ describe('InterceptPanel mounted lifecycle and recording', () => {
     },
   )
 })
+
+describe('InterceptPanel binding save error reporting', () => {
+  it('shows the full conflict text when set_intercept_binding rejects with a string', async () => {
+    const { getRecordBtn, getNewBindingRow, getErrorMessage, mockedInvoke, defaultHandler } =
+      await mountPanel()
+
+    // Record NumPad 9, which the backend will reject as already assigned globally.
+    getRecordBtn()!.click()
+    await flushAsync()
+    dispatchKeyEvent({ code: 'Numpad9', key: '9', keyCode: 105 })
+    await flushAsync()
+    expect(getNewBindingRow()).not.toBeNull()
+    expect(getNewBindingRow()!.textContent).toContain('NUMPAD9')
+
+    // Tauri Result<(), String> rejects with a plain string, not an Error instance.
+    const conflictMessage =
+      'Клавиша NUMPAD9 уже назначена в разделе «Глобальные» (действие: Пауза воспроизведения)'
+    mockedInvoke.mockImplementation(async (cmd) => {
+      if (cmd === 'set_intercept_binding') throw conflictMessage
+      return defaultHandler(cmd)
+    })
+
+    const confirmBtn = container?.querySelector('.new-binding-row button') as HTMLButtonElement | null
+    expect(confirmBtn).not.toBeNull()
+    confirmBtn!.click()
+    await flushAsync()
+
+    // The localized prefix survives and the backend detail names key, section and action.
+    const message = getErrorMessage()?.textContent ?? ''
+    expect(message).toContain('Error:')
+    expect(message).toContain(conflictMessage)
+    expect(message).toContain('NUMPAD9')
+    expect(message).toContain('Глобальные')
+    expect(message).toContain('Пауза воспроизведения')
+  })
+})

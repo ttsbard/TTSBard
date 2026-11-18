@@ -17,19 +17,53 @@ export interface InterceptKeyEvent {
 const WINDOWS_VK_MIN = 0x08
 const WINDOWS_VK_MAX = 0xfe
 
+/**
+ * Physical `code` → canonical NumPad name (`NUMPAD0`…`NUMPAD9`, `NUMPAD_ADD`,
+ * `NUMPAD_SUBTRACT`, `NUMPAD_MULTIPLY`, `NUMPAD_DIVIDE`, `NUMPAD_DECIMAL`).
+ * NumpadEnter and other non-restricted NumPad keys return `null`.
+ */
+export function numpadKeyNameFromCode(code: string): string | null {
+  if (!code.startsWith('Numpad')) return null
+  const rest = code.slice('Numpad'.length)
+  if (rest === 'Multiply') return 'NUMPAD_MULTIPLY'
+  if (rest === 'Add') return 'NUMPAD_ADD'
+  if (rest === 'Subtract') return 'NUMPAD_SUBTRACT'
+  if (rest === 'Decimal') return 'NUMPAD_DECIMAL'
+  if (rest === 'Divide') return 'NUMPAD_DIVIDE'
+  if (/^\d$/.test(rest)) return `NUMPAD${rest}`
+  return null
+}
+
+/**
+ * Canonical NumPad name → physical DOM `event.code` (`NUMPAD5` → `Numpad5`,
+ * `NUMPAD_ADD` → `NumpadAdd`). The inverse of `numpadKeyNameFromCode` and the
+ * single shared physical mapping for every DOM-level consumer of a stored
+ * binding (main-window-local matching in `utils/localHotkeys.ts`, editor
+ * matching in `editor/keymapArbitration.ts`) — the same code set the backend
+ * `parse_key_code` accepts, so stored names stay executable on both sides.
+ * `NUMPAD_ENTER` and other names outside the restricted set return `null`,
+ * mirroring the backend where they are intentionally absent.
+ */
+export function numpadCodeFromKeyName(key: string): string | null {
+  const normalized = key.trim().toUpperCase()
+  if (!normalized.startsWith('NUMPAD')) return null
+  // Stored operator names carry a separator (`NUMPAD_ADD`); recorded digit
+  // names do not (`NUMPAD5`).
+  const rest = normalized.slice('NUMPAD'.length).replace(/^_/, '')
+  if (rest === 'ADD') return 'NumpadAdd'
+  if (rest === 'SUBTRACT') return 'NumpadSubtract'
+  if (rest === 'MULTIPLY') return 'NumpadMultiply'
+  if (rest === 'DECIMAL') return 'NumpadDecimal'
+  if (rest === 'DIVIDE') return 'NumpadDivide'
+  if (/^\d$/.test(rest)) return `Numpad${rest}`
+  return null
+}
+
 function restrictedNameFromCode(code: string): string | null {
-  if (code.startsWith('Numpad')) {
-    const rest = code.slice('Numpad'.length)
-    if (rest === 'Multiply') return 'NUMPAD_MULTIPLY'
-    if (rest === 'Add') return 'NUMPAD_ADD'
-    if (rest === 'Subtract') return 'NUMPAD_SUBTRACT'
-    if (rest === 'Decimal') return 'NUMPAD_DECIMAL'
-    if (rest === 'Divide') return 'NUMPAD_DIVIDE'
-    if (/^\d$/.test(rest)) return `NUMPAD${rest}`
-    // NumpadEnter / NumpadEqual / NumpadComma / NumpadSeparator are not part of
-    // the restricted set; they fall through to the unrestricted VK fallback.
-    return null
-  }
+  const numpad = numpadKeyNameFromCode(code)
+  if (numpad !== null) return numpad
+  // NumpadEnter / NumpadEqual / NumpadComma / NumpadSeparator are not part of
+  // the restricted set; they fall through to the unrestricted VK fallback.
   if (code === 'PageUp') return 'PAGEUP'
   if (code === 'PageDown') return 'PAGEDOWN'
   if (code === 'End') return 'END'
@@ -189,6 +223,40 @@ export function resolveInterceptKey(
   if (canonical !== null) return canonical
 
   return formatVk(vk)
+}
+
+const NUMPAD_KEY_LABELS: Record<string, string> = {
+  NUMPAD0: 'Num 0',
+  NUMPAD1: 'Num 1',
+  NUMPAD2: 'Num 2',
+  NUMPAD3: 'Num 3',
+  NUMPAD4: 'Num 4',
+  NUMPAD5: 'Num 5',
+  NUMPAD6: 'Num 6',
+  NUMPAD7: 'Num 7',
+  NUMPAD8: 'Num 8',
+  NUMPAD9: 'Num 9',
+  NUMPAD_ADD: 'Num +',
+  NUMPAD_SUBTRACT: 'Num -',
+  NUMPAD_MULTIPLY: 'Num *',
+  NUMPAD_DIVIDE: 'Num /',
+  NUMPAD_DECIMAL: 'Num .',
+}
+
+/**
+ * Readable label for a stored NumPad key name (`NUMPAD5` → `Num 5`).
+ * Non-NumPad names return `null` so callers keep their own display.
+ */
+export function formatNumpadKeyLabel(key: string): string | null {
+  return NUMPAD_KEY_LABELS[key.toUpperCase()] ?? null
+}
+
+/**
+ * Whether a stored key name is a NumPad digit (`NUMPAD0`…`NUMPAD9`).
+ * Only digits depend on the Num Lock state; the operator keys do not.
+ */
+export function isNumpadDigitKey(key: string): boolean {
+  return /^NUMPAD\d$/.test(key.toUpperCase())
 }
 
 const VK_LABELS: Record<number, string> = {

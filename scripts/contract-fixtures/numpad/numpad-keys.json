@@ -1,0 +1,24 @@
+{
+  "comment": "Shared parity table for the supported NumPad keys (ROADMAP-140 review fix, 008-numpad-parity). One row per supported key: DOM event.code, canonical stored name, Windows virtual-key code (decimal; digits 0x60..=0x69, multiply 0x6A, add 0x6B, subtract 0x6D, decimal 0x6E, divide 0x6F). Consumed by src/utils/interceptKeys.test.ts and by the config::hotkeys and soundpanel::intercept Rust tests, which verify recording, the reverse mapping, the Rust shortcut parsing and the intercept mapping against this one table. NumpadEnter is intentionally excluded from the supported set (windowsVk 0x0D belongs to the shared Enter, not a NumPad name). The top digit row is a different physical key: Digit5 carries VK 0x35, never NUMPAD5 (VK 0x65).",
+  "keys": [
+    { "domCode": "Numpad0", "canonicalName": "NUMPAD0", "windowsVk": 96 },
+    { "domCode": "Numpad1", "canonicalName": "NUMPAD1", "windowsVk": 97 },
+    { "domCode": "Numpad2", "canonicalName": "NUMPAD2", "windowsVk": 98 },
+    { "domCode": "Numpad3", "canonicalName": "NUMPAD3", "windowsVk": 99 },
+    { "domCode": "Numpad4", "canonicalName": "NUMPAD4", "windowsVk": 100 },
+    { "domCode": "Numpad5", "canonicalName": "NUMPAD5", "windowsVk": 101 },
+    { "domCode": "Numpad6", "canonicalName": "NUMPAD6", "windowsVk": 102 },
+    { "domCode": "Numpad7", "canonicalName": "NUMPAD7", "windowsVk": 103 },
+    { "domCode": "Numpad8", "canonicalName": "NUMPAD8", "windowsVk": 104 },
+    { "domCode": "Numpad9", "canonicalName": "NUMPAD9", "windowsVk": 105 },
+    { "domCode": "NumpadMultiply", "canonicalName": "NUMPAD_MULTIPLY", "windowsVk": 106 },
+    { "domCode": "NumpadAdd", "canonicalName": "NUMPAD_ADD", "windowsVk": 107 },
+    { "domCode": "NumpadSubtract", "canonicalName": "NUMPAD_SUBTRACT", "windowsVk": 109 },
+    { "domCode": "NumpadDecimal", "canonicalName": "NUMPAD_DECIMAL", "windowsVk": 110 },
+    { "domCode": "NumpadDivide", "canonicalName": "NUMPAD_DIVIDE", "windowsVk": 111 }
+  ],
+  "excluded": [
+    { "domCode": "NumpadEnter", "canonicalName": "NUMPAD_ENTER", "windowsVk": 13 }
+  ],
+  "digitRow": { "domCode": "Digit5", "canonicalName": "5", "windowsVk": 53 }
+}

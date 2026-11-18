@@ -6,6 +6,7 @@ import type { HotkeyDto } from '../types/settings'
 import { useAppSettings } from '../composables/useAppSettings'
 import { debugError } from '../utils/debug'
 import { normalizeCommandError } from '../ipc/commandError'
+import { numpadKeyNameFromCode, formatNumpadKeyLabel } from '../utils/interceptKeys'
 import { t } from '../i18n'
 
 const { settings, isLoading, reload } = useAppSettings()
@@ -85,6 +86,24 @@ const pendingToggle = ref<HotkeyName | EditorHotkeyName | null>(null)
 const keyOccupied = ref(false)
 let occupiedTimeoutId: ReturnType<typeof setTimeout> | null = null
 
+// A capture that is being persisted. The captured value stays visible in its
+// own row until the save settles, so the row never blanks out between the end
+// of recording and the end of the async save/reload.
+const saving = ref<{ name: HotkeyName | EditorHotkeyName; binding: { modifiers: HotkeyDto['modifiers']; key: string } } | null>(null)
+let saveGeneration = 0
+
+// Bindings already confirmed by a successful save whose settings refresh has
+// not landed yet. The row keeps showing them even if the refresh or the
+// recording-flag cleanup fails, and a real failure cannot resurrect the old
+// value for a binding the backend has already stored.
+const confirmedBindings = ref<Partial<Record<HotkeyName | EditorHotkeyName, { modifiers: HotkeyDto['modifiers']; key: string }>>>({})
+
+// A fresh settings snapshot was loaded after the overrides were recorded, so
+// the stored values are authoritative again and the overrides expire.
+watch(settings, () => {
+  confirmedBindings.value = {}
+})
+
 function clearOccupied() {
   if (occupiedTimeoutId !== null) clearTimeout(occupiedTimeoutId)
   occupiedTimeoutId = null
@@ -103,9 +122,20 @@ function isHotkeyEnabled(binding: HotkeyDto | undefined | null): boolean {
   return binding?.enabled !== false
 }
 
+// What the row should display as its confirmed binding: a just-saved value the
+// settings snapshot does not reflect yet, or the stored binding itself.
+function displayedBinding(name: HotkeyName | EditorHotkeyName): { modifiers: HotkeyDto['modifiers']; key: string } | undefined {
+  return confirmedBindings.value[name] ?? getBinding(name)
+}
+
 function formattedHotkey(name: HotkeyName | EditorHotkeyName): string {
-  const binding = getBinding(name)
+  const binding = displayedBinding(name)
   return binding ? formatHotkey(binding) : ''
+}
+
+function savingLabel(name: HotkeyName | EditorHotkeyName): string {
+  if (saving.value?.name !== name) return ''
+  return formatHotkey(saving.value.binding)
 }
 
 function hotkeyName(name: HotkeyName | EditorHotkeyName): string {
@@ -245,7 +275,12 @@ async function cancelRecording() {
   }
 }
 
+// ROADMAP-140: NumPad records in every scope — the OS-registered globals, the
+// main-window-local rows and the editor actions share the canonical names and
+// labels. NumpadEnter stays outside the restricted set everywhere.
 function codeToKey(code: string): string {
+  const numpad = numpadKeyNameFromCode(code)
+  if (numpad !== null) return numpad
   if (code === 'Space') return 'SPACE'
   if (code === 'Enter') return 'Enter'
   if (code === 'Tab') return 'Tab'
@@ -298,20 +333,33 @@ function handleKeyUp(e: KeyboardEvent) {
       return
     }
     clearOccupied()
-    // Save the hotkey
-    saveHotkey(recordingFor.value, {
-      modifiers: currentRecording.value.modifiers,
-      key: currentRecording.value.key
+    // Save the hotkey; the captured value stays on screen while it is in flight.
+    beginSave(recordingFor.value, {
+      modifiers: [...currentRecording.value.modifiers],
+      key: currentRecording.value.key,
     })
-
-    // Cleanup
-    document.removeEventListener('keydown', handleKeyDown)
-    document.removeEventListener('keyup', handleKeyUp)
-    currentRecording.value = null
   }
 }
 
-async function saveHotkey(name: HotkeyName | EditorHotkeyName, hotkey: HotkeyDto) {
+// Hand a finished capture over to the saving state and persist it. Recording
+// ends here; the row keeps showing the captured binding until the save settles.
+function beginSave(name: HotkeyName | EditorHotkeyName, binding: { modifiers: HotkeyDto['modifiers']; key: string }) {
+  document.removeEventListener('keydown', handleKeyDown)
+  document.removeEventListener('keyup', handleKeyUp)
+  recordingFor.value = null
+  currentRecording.value = null
+  saving.value = { name, binding }
+  const generation = ++saveGeneration
+  void saveHotkey(name, binding, generation)
+}
+
+async function saveHotkey(
+  name: HotkeyName | EditorHotkeyName,
+  hotkey: { modifiers: HotkeyDto['modifiers']; key: string },
+  generation: number,
+) {
+  // Phase 1 — persist. Only this call decides whether the assignment changed;
+  // a failure here returns the last confirmed value and explains why.
   try {
     // Persist the current switch state explicitly so the backend never has to
     // infer it while replacing the combination.
@@ -321,12 +369,11 @@ async function saveHotkey(name: HotkeyName | EditorHotkeyName, hotkey: HotkeyDto
     } else {
       await invoke('set_hotkey', { name, hotkey: payload })
     }
-    await reload()
-    // set_hotkey уже вызывает reregister_hotkeys внутри, set_editor_hotkey — нет
-    // Сбрасываем флаг записи
-    await invoke('set_hotkey_recording', { recording: false })
   } catch (e) {
-    // При ошибке нужно восстановить хоткеи вручную
+    // A newer save owns the row; its completion will settle the state.
+    if (generation !== saveGeneration) return
+    // Restore the last confirmed value immediately and explain why.
+    saving.value = null
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
     try {
       await invoke('set_hotkey_recording', { recording: false })
@@ -336,9 +383,31 @@ async function saveHotkey(name: HotkeyName | EditorHotkeyName, hotkey: HotkeyDto
     } catch {
       // Игнорируем ошибки при восстановлении хоткеев
     }
-  } finally {
-    recordingFor.value = null
-    currentRecording.value = null
+    return
+  }
+  // Phase 2 — confirmed. The backend has stored the new binding, so the row
+  // must show it from now on even if the refresh or cleanup below fails.
+  if (generation === saveGeneration) {
+    saving.value = null
+    confirmedBindings.value = { ...confirmedBindings.value, [name]: hotkey }
+  }
+  // Phase 3 — refresh. reload() never rejects: it logs into the settings
+  // error state and leaves the old snapshot in place on failure, so a failed
+  // refresh must not undo the assignment on screen; the override above keeps
+  // the stored value visible until the next successful snapshot.
+  try {
+    await reload()
+  } catch (e) {
+    // Defensive only: the composable is documented not to throw.
+    debugError('Hotkeys panel: settings refresh after save failed:', e)
+  }
+  // Phase 4 — release the recording flag. set_hotkey уже вызывает
+  // reregister_hotkeys внутри, set_editor_hotkey не регистрирует глобально.
+  // Best-effort: a failed release must not report a failed assignment.
+  try {
+    await invoke('set_hotkey_recording', { recording: false })
+  } catch (e) {
+    debugError('Hotkeys panel: recording flag release after save failed:', e)
   }
 }
 
@@ -408,13 +477,17 @@ function resetToDefaultFor(name: HotkeyName | EditorHotkeyName) {
   }
 }
 
-function formatHotkey(hotkey: HotkeyDto): string {
+function hotkeyKeyLabel(key: string): string {
+  return formatNumpadKeyLabel(key) ?? key
+}
+
+function formatHotkey(hotkey: Pick<HotkeyDto, 'modifiers' | 'key'>): string {
   const modMap: Record<string, string> = { ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', super: 'Win' }
   const mods = hotkey.modifiers.map(m => modMap[m])
   if (mods.length === 0) {
-    return hotkey.key
+    return hotkeyKeyLabel(hotkey.key)
   }
-  return `${mods.join('+')}+${hotkey.key}`
+  return `${mods.join('+')}+${hotkeyKeyLabel(hotkey.key)}`
 }
 
 function formatCurrentRecording(): string {
@@ -427,7 +500,7 @@ function formatCurrentRecording(): string {
   if (currentRecording.value.key === '') {
     return mods.length > 0 ? `${mods.join('+')}+?` : '...'
   }
-  return mods.length > 0 ? `${mods.join('+')}+${currentRecording.value.key}` : currentRecording.value.key
+  return formatHotkey(currentRecording.value)
 }
 
 function showMessage(msg: string, type: Exclude<HotkeyMessageType, null>) {
@@ -456,9 +529,13 @@ onUnmounted(async () => {
   document.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('keyup', handleKeyUp)
 
-  // Если компонент размонтируется во время записи, сбрасываем флаг и восстанавливаем хоткеи
-  if (recordingFor.value) {
-    const wasEditor = isEditorHotkeyName(recordingFor.value)
+  // Если компонент размонтируется во время записи или сохранения, сбрасываем
+  // флаг и восстанавливаем хоткеи; идущий в полёте saveHotkey завершит свою
+  // собственную последовательность очистки (idempotent).
+  if (recordingFor.value || saving.value) {
+    const wasEditor = recordingFor.value !== null
+      ? isEditorHotkeyName(recordingFor.value)
+      : saving.value !== null && isEditorHotkeyName(saving.value.name)
     try {
       await invoke('set_hotkey_recording', { recording: false })
       if (!wasEditor) {
@@ -498,7 +575,7 @@ onUnmounted(async () => {
             type="checkbox"
             :data-hotkey="row.name"
             :checked="isHotkeyEnabled(getBinding(row.name))"
-            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || saving !== null || !hotkeys"
             :aria-label="toggleTitle(row.name)"
             @change="toggleHotkeyEnabled(row.name, $event)"
           />
@@ -510,7 +587,7 @@ onUnmounted(async () => {
         </div>
         <div class="hotkey-actions">
           <span
-            v-if="hotkeys && recordingFor !== row.name"
+            v-if="hotkeys && recordingFor !== row.name && saving?.name !== row.name"
             class="hotkey-value"
             :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
           >
@@ -523,10 +600,15 @@ onUnmounted(async () => {
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
+          <!-- Save in flight: the captured value stays visible in its row -->
+          <div v-else-if="saving?.name === row.name" class="hotkey-value saving">
+            {{ savingLabel(row.name) }}
+          </div>
+
           <button
             v-if="recordingFor !== row.name"
             @click="startRecordingFor(row.name)"
-            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="recordingFor !== null || saving !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
@@ -544,7 +626,7 @@ onUnmounted(async () => {
 
           <button
             @click="resetToDefaultFor(row.name)"
-            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="!hotkeys || saving !== null || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -566,7 +648,7 @@ onUnmounted(async () => {
             type="checkbox"
             :data-hotkey="row.name"
             :checked="isHotkeyEnabled(getBinding(row.name))"
-            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || saving !== null || !hotkeys"
             :aria-label="toggleTitle(row.name)"
             @change="toggleHotkeyEnabled(row.name, $event)"
           />
@@ -577,7 +659,7 @@ onUnmounted(async () => {
         </div>
         <div class="hotkey-actions">
           <span
-            v-if="hotkeys && recordingFor !== row.name"
+            v-if="hotkeys && recordingFor !== row.name && saving?.name !== row.name"
             class="hotkey-value"
             :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
           >
@@ -589,10 +671,15 @@ onUnmounted(async () => {
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
+          <!-- Save in flight: the captured value stays visible in its row -->
+          <div v-else-if="saving?.name === row.name" class="hotkey-value saving">
+            {{ savingLabel(row.name) }}
+          </div>
+
           <button
             v-if="recordingFor !== row.name"
             @click="startRecordingFor(row.name)"
-            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="recordingFor !== null || saving !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
@@ -610,7 +697,7 @@ onUnmounted(async () => {
 
           <button
             @click="resetToDefaultFor(row.name)"
-            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="!hotkeys || saving !== null || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -636,7 +723,7 @@ onUnmounted(async () => {
             type="checkbox"
             :data-hotkey="row.name"
             :checked="isHotkeyEnabled(getBinding(row.name))"
-            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+            :disabled="isLoading || recordingFor !== null || pendingToggle !== null || saving !== null || !hotkeys"
             :aria-label="toggleTitle(row.name)"
             :aria-describedby="hotkeyHint(row.name) ? hotkeyHintId(row.name) : undefined"
             @change="toggleHotkeyEnabled(row.name, $event)"
@@ -655,7 +742,7 @@ onUnmounted(async () => {
         </div>
         <div class="hotkey-actions">
           <span
-            v-if="hotkeys && recordingFor !== row.name"
+            v-if="hotkeys && recordingFor !== row.name && saving?.name !== row.name"
             class="hotkey-value"
             :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
           >
@@ -667,10 +754,15 @@ onUnmounted(async () => {
             {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
           </div>
 
+          <!-- Save in flight: the captured value stays visible in its row -->
+          <div v-else-if="saving?.name === row.name" class="hotkey-value saving">
+            {{ savingLabel(row.name) }}
+          </div>
+
           <button
             v-if="recordingFor !== row.name"
             @click="startRecordingFor(row.name)"
-            :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="recordingFor !== null || saving !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
             class="record-btn ui-icon-button"
            :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
             <Keyboard :size="18" />
@@ -688,7 +780,7 @@ onUnmounted(async () => {
 
           <button
             @click="resetToDefaultFor(row.name)"
-            :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+            :disabled="!hotkeys || saving !== null || !isHotkeyEnabled(getBinding(row.name))"
             class="reset-btn ui-icon-button"
            :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
             <RotateCcw :size="18" />
@@ -704,7 +796,7 @@ onUnmounted(async () => {
               type="checkbox"
               :data-hotkey="row.name"
               :checked="isHotkeyEnabled(getBinding(row.name))"
-              :disabled="isLoading || recordingFor !== null || pendingToggle !== null || !hotkeys"
+              :disabled="isLoading || recordingFor !== null || pendingToggle !== null || saving !== null || !hotkeys"
               :aria-label="toggleTitle(row.name)"
               @change="toggleHotkeyEnabled(row.name, $event)"
             />
@@ -715,7 +807,7 @@ onUnmounted(async () => {
           </div>
           <div class="hotkey-actions">
             <span
-              v-if="hotkeys && recordingFor !== row.name"
+              v-if="hotkeys && recordingFor !== row.name && saving?.name !== row.name"
               class="hotkey-value"
               :class="{ disabled: !isHotkeyEnabled(getBinding(row.name)) }"
             >
@@ -727,10 +819,15 @@ onUnmounted(async () => {
               {{ keyOccupied ? t('intercept.key_occupied') : formatCurrentRecording() }}
             </div>
 
+            <!-- Save in flight: the captured value stays visible in its row -->
+            <div v-else-if="saving?.name === row.name" class="hotkey-value saving">
+              {{ savingLabel(row.name) }}
+            </div>
+
             <button
               v-if="recordingFor !== row.name"
               @click="startRecordingFor(row.name)"
-              :disabled="recordingFor !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+              :disabled="recordingFor !== null || saving !== null || isLoading || !hotkeys || !isHotkeyEnabled(getBinding(row.name))"
               class="record-btn ui-icon-button"
              :title="t('hotkeys.action.change')" :aria-label="t('hotkeys.action.change')">
               <Keyboard :size="18" />
@@ -748,7 +845,7 @@ onUnmounted(async () => {
 
             <button
               @click="resetToDefaultFor(row.name)"
-              :disabled="!hotkeys || !isHotkeyEnabled(getBinding(row.name))"
+              :disabled="!hotkeys || saving !== null || !isHotkeyEnabled(getBinding(row.name))"
               class="reset-btn ui-icon-button"
              :title="t('hotkeys.reset_title')" :aria-label="t('hotkeys.reset_title')">
               <RotateCcw :size="18" />
@@ -811,35 +908,42 @@ onUnmounted(async () => {
 }
 
 .hotkey-label {
+  /* The name column owns the remaining row width and wraps inside it. A zero
+     flex basis keeps the label's hypothetical line-break size small, so line
+     breaking is decided by the right group and this floor: the group drops to
+     its own line once the container cannot hold switch + gap + a readable
+     label (110 px) + gap + group, and never because the name or its hint is
+     long. */
+  flex: 1 1 0;
+  min-width: 110px;
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  min-width: 140px;
   color: var(--color-text-primary);
 }
 
 /* Editor rows with a contextual hint stack the name and the secondary text.
-   The switch, the shortcut value and the action buttons keep their places.
-   A modest flex basis lets the hint wrap instead of reserving its full
-   max-content width, so the grouped actions stay on the same line at the
-   panel's default width and only wrap at the existing narrow breakpoint. */
+   The switch and the grouped actions keep their places; both text lines wrap
+   inside the label's own column. */
 .hotkey-label--with-hint {
-  flex: 1 1 18rem;
   flex-direction: column;
   align-items: flex-start;
   gap: 0;
-  min-width: 0;
 }
 
 .hotkey-hint {
   max-width: 34rem;
 }
 
+/* Shortcut value, record/cancel and reset form one unsplittable group.
+   nowrap + the automatic min-width (min-content of the inner controls) make
+   the whole group indivisible: the parent row wraps it as a single unit based
+   on the container width, so the buttons never separate from the shortcut. */
 .hotkey-actions {
   margin-left: auto;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 0.5rem;
 }
@@ -865,6 +969,14 @@ onUnmounted(async () => {
 }
 
 .hotkey-value.recording {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+  color: var(--warning-text-bright);
+  animation: pulse 1s infinite;
+}
+
+/* Save in flight: same in-progress language as the recording chip. */
+.hotkey-value.saving {
   background: var(--warning-bg);
   border-color: var(--warning-border);
   color: var(--warning-text-bright);
@@ -964,20 +1076,5 @@ onUnmounted(async () => {
 .toggle-switch input:disabled + .toggle-slider {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-@media (max-width: 560px) {
-  .hotkey-row {
-    gap: 0.6rem;
-  }
-
-  .hotkey-label {
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-
-  .hotkey-actions {
-    width: 100%;
-  }
 }
 </style>
