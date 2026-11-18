@@ -45,7 +45,7 @@ function getLevelIcon(level: ErrorLevel) {
         >
           <component :is="getLevelIcon(error.level)" class="toast-icon" :size="16" aria-hidden="true" />
           <span class="toast-message">{{ error.message }}</span>
-          <button class="toast-close" :title="t('toast.close')" :aria-label="t('toast.close')" @click.stop="removeError(error.id)">×</button>
+          <button class="ui-notice-close" :title="t('toast.close')" :aria-label="t('toast.close')" @click.stop="removeError(error.id)">×</button>
         </div>
       </TransitionGroup>
     </div>
@@ -96,33 +96,6 @@ function getLevelIcon(level: ErrorLevel) {
 .toast-message {
   flex: 1;
   min-width: 0;
-}
-
-.toast-close {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: inherit;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  width: 20px;
-  height: 20px;
-  opacity: 0.6;
-  transition: opacity 0.2s;
-}
-
-.toast-close:hover {
-  opacity: 1;
-}
-
-/* The state fills are light, so the accent-colored ring has too little
-   contrast on top of them; the inherited dark text color stays visible. */
-.toast-close:focus-visible {
-  opacity: 1;
-  outline: 2px solid currentColor;
-  outline-offset: 1px;
 }
 
 /* Animations */

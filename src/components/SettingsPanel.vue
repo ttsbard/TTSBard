@@ -39,6 +39,7 @@ const tabDefinitions: TabDefinition[] = [
 const activeTab = ref<TabType>('general')
 const tabsElement = ref<HTMLElement | null>(null)
 const modelsPanelRef = ref<{ focusCategory: (category: ModelCategory) => void } | null>(null)
+const generalPanelRef = ref<{ revealUpdates: () => Promise<void> } | null>(null)
 // 1 is the safe initial layout while the panel is hidden: once the tablist has
 // a measurable width, the observer chooses 6 (single row), 3 (preferred 3+3),
 // 2, or 1 whole-tab columns.
@@ -141,7 +142,18 @@ async function openModels(category: ModelCategory): Promise<void> {
   modelsPanelRef.value?.focusCategory(category)
 }
 
-defineExpose({ openModels })
+/**
+ * Open «Настройки → Общие» on the updates card (update banner «Подробнее»):
+ * the general tab is already the default, but an explicit switch also covers
+ * a later visit from another tab. The card scrolls itself into view.
+ */
+async function openGeneralUpdates(): Promise<void> {
+  activeTab.value = 'general'
+  await nextTick()
+  await generalPanelRef.value?.revealUpdates()
+}
+
+defineExpose({ openModels, openGeneralUpdates })
 
 // Explicit notification severity. Legacy children that emit a message without a
 // severity render as neutral info; severity is never inferred from translated
@@ -211,6 +223,7 @@ function handleMessage(message: string, severity: MessageSeverity = 'info') {
 
     <!-- Tab Contents -->
     <SettingsGeneral
+      ref="generalPanelRef"
       v-show="activeTab === 'general'"
       @show-message="handleMessage"
     />

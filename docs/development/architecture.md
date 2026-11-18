@@ -57,6 +57,8 @@ flowchart LR
 | Внешний текст | `input_server/`, `commands/input_server.rs` | Loopback listener, общий intake, очередь ожидающих реплик |
 | OCR | `ocr/`, `commands/ocr.rs` | Пакеты моделей, runtime, захват, распознавание и передача в intake |
 | Локальные модели | `model_downloads.rs`, `catalog/model-catalog.json` | Каталог пакетов, загрузка и установка моделей, проверка хешей |
+| Звук по сети (VBAN) | `audio/vban/` | VBAN-вывод: worker воспроизведения, wire-формат PING0 (`protocol.rs`) и monitor доступности приёмника (`health.rs`) с IPC-контрактом статуса |
+| Обновления | `updates/`, `commands/updates.rs` | Проверка релизов GitHub и расписание (`UpdatesState`), probe артефактов и подписанная установка (`InstallState`) |
 
 ## Frontend ↔ backend
 
@@ -82,8 +84,9 @@ token, кэши и небольшие runtime-флаги.
 используются и OCR без запущенного HTTP-listener.
 
 Отдельные Tauri-managed состояния используются там, где жизненный цикл уже
-выделен из `AppState`: настройки, окна, playback, SoundPanel, история, вкладки и
-Telegram.
+выделен из `AppState`: настройки, окна, playback, SoundPanel, история, вкладки,
+Telegram и состояния обновлений (`UpdatesState` и `InstallState`, manage
+в `setup.rs`).
 
 Инварианты владения:
 

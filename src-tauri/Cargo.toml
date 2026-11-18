@@ -1,6 +1,6 @@
 [package]
 name = "ttsbard"
-version = "1.8.0"
+version = "1.8.1"
 description = "Fast text-to-speech for communication and streaming — for people with speech limitations and streamers"
 authors = ["Aleksey Efimov"]
 license = "GPL-3.0-only"
@@ -31,6 +31,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
+# In-app updates (ROADMAP-141 stage 2): downloads the signed NSIS installer via
+# latest.json and installs it. Registered only when the updater public key is
+# configured (see src-tauri/src/updates/install.rs).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -45,6 +48,7 @@ reqwest = { version = "0.12", features = ["json", "socks", "native-tls"] }
 async-openai = { version = "0.33", features = ["chat-completion"] }
 backoff = "0.4"
 base64 = "0.22"
+minisign-verify = "0.2.5"
 hex = "0.4"
 urlencoding = "2.1"
 dirs = "5"
@@ -94,6 +98,10 @@ grammers-tl-types = { git = "https://github.com/alksef/grammers-mtproxy", branch
 
 # Time utilities
 chrono = "0.4"
+
+# SemVer comparison for update checks (ROADMAP-141): release tags vs the
+# running version, including pre-release ordering rules.
+semver = "1"
 
 # Twitch IRC client (ROADMAP-104): transport + protocol lifecycle owned by the library
 twitch-irc = { version = "=6.1.1", default-features = false, features = ["transport-tcp", "transport-tcp-native-tls"] }
@@ -163,7 +171,10 @@ windows = { version = "0.58", features = [
     "Win32_UI_TextServices",
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
-    "Win32_Security_Cryptography"
+    "Win32_Security_Cryptography",
+    # Uninstall registry key lookup for the in-app update install (ROADMAP-141
+    # stage 2): the button is offered only for NSIS installations.
+    "Win32_System_Registry"
 ] }
 
 [features]

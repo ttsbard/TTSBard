@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
 
 permissions: read-all
@@ -18,11 +18,16 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Wait for CI on the tagged commit
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tags must use the format MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
           deadline=$((SECONDS + 1800))
 
           while (( SECONDS < deadline )); do
@@ -98,9 +103,8 @@ jobs:
       - name: Extract version from tag
         id: get_version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Strip 'v' prefix from tag (v1.2.3 -> 1.2.3)
-            VERSION=${GITHUB_REF_NAME#v}
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]; then
+            VERSION="$GITHUB_REF_NAME"
             echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
             echo "Using tag version: $VERSION"
           else
@@ -147,11 +151,28 @@ jobs:
           "PIPER_ESPEAKNG_DATA_DIRECTORY=$($espeakData.FullName)" >> $env:GITHUB_ENV
 
       - name: Build application
-        run: .\scripts\build.ps1 -Mode release
         shell: pwsh
         env:
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          # Tauri updater signing key (ROADMAP-141). The private key lives in
+          # GitHub Actions Secrets and never leaves the bundler; see
+          # docs/roadmap/completed/141-github-app-updates.md for the setup.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          $buildArgs = @('-Mode', 'release')
+          $hasPrivateKey = -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
+          $hasPublicKey = -not [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY)
+          if ($hasPrivateKey -ne $hasPublicKey) {
+            throw 'Configure both TAURI_SIGNING_PRIVATE_KEY (secret) and TAURI_UPDATER_PUBLIC_KEY (variable) to enable signed updates.'
+          }
+          if ($hasPrivateKey) {
+            $buildArgs += '-UpdaterArtifacts'
+            Write-Host 'Updater signing key found: producing the installer and detached signature'
+          } else {
+            Write-Host '::warning::TAURI_SIGNING_PRIVATE_KEY is not configured; the release will not support in-app updates'
+          }
+          .\scripts\build.ps1 @buildArgs
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -160,13 +181,16 @@ jobs:
           path: |
             src-tauri/target/release/*.exe
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      UPDATER_SIGNING_CONFIGURED: ${{ vars.TAURI_UPDATER_PUBLIC_KEY != '' }}
 
     steps:
       - name: Checkout repository
@@ -177,12 +201,67 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create release
+      - name: Verify NSIS release assets
+        run: |
+          VERSION="$GITHUB_REF_NAME"
+          SETUP=$(find artifacts -type f -name "TTSBard_${VERSION}_x64-setup.exe" -print -quit)
+          if [[ -z "$SETUP" ]]; then
+            echo "::error::NSIS installer artifact not found"
+            exit 1
+          fi
+          if [[ ! -s "$SETUP.sig" ]]; then
+            if [[ "$UPDATER_SIGNING_CONFIGURED" == 'true' ]]; then
+              echo "::error::The signed release is missing its NSIS installer signature"
+              exit 1
+            fi
+            echo "::warning::Publishing without an installer signature. In-app installation stays unavailable."
+          fi
+
+      # Publish only after the installers and any signatures are attached.
+      - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/**/*.exe
-          draft: false
+            artifacts/**/*-setup.exe.sig
+          draft: true
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The app reads its update description from the GitHub release body.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="$GITHUB_REF_NAME"
+          node scripts/make-update-manifest.cjs \
+            --print-notes \
+            --version "$VERSION" \
+            --changelog CHANGELOG.md > artifacts/release-notes.md
+          if [[ -s artifacts/release-notes.md ]]; then
+            echo "Release notes: $(wc -c < artifacts/release-notes.md) chars from the v$VERSION section"
+          else
+            echo "::warning::CHANGELOG.md has no section for v$VERSION; prepare the version notes and rerun"
+          fi
+
+      # Idempotent on reruns: a body that already matches the section is left
+      # alone, and an empty section never wipes an existing description.
+      - name: Set release body from CHANGELOG section
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ ! -s artifacts/release-notes.md ]]; then
+            echo "::warning::No CHANGELOG section for ${GITHUB_REF_NAME}; the release body is left unchanged"
+            exit 0
+          fi
+          CURRENT=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body 2>/dev/null || echo "")
+          if [[ "$CURRENT" == "$(cat artifacts/release-notes.md)" ]]; then
+            echo "Release body already matches the CHANGELOG section; nothing to update"
+            exit 0
+          fi
+          gh release edit "$GITHUB_REF_NAME" --notes-file artifacts/release-notes.md
+
+      - name: Publish release
+        run:
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

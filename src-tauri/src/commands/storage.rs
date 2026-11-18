@@ -1,12 +1,14 @@
 //! Пользовательские пути хранения (ROADMAP-117): каталог аудио-кеша, корень
 //! данных программы, перенос данных и открытие папки локальных данных.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::SettingsManager;
 use crate::ipc::CommandError;
+use crate::updates::install::InstallState;
+use crate::updates::UpdatesState;
 
 enum TransferCommandFailure {
     Message(String),
@@ -177,17 +179,26 @@ pub async fn storage_prepare_data_transfer(
 
 /// Выполнить перенос данных в новый корень (`None` — сброс на дефолт).
 /// Эмитирует `storage-transfer-progress` и возвращает инфо после успешного
-/// копирования и сохранения настроек.
+/// копирования и сохранения настроек. После публикации нового корня
+/// обновляет и контекст проверок обновлений: свежий снимок через
+/// `update-status-changed` (состояние теперь читается из нового каталога) и
+/// пробуждение планировщика для пересчёта периодического таймера
+/// (`crate::updates::notify_data_root_changed`).
 #[tauri::command]
 pub async fn storage_transfer_data(
     path: Option<String>,
     operation_id: String,
     settings_manager: State<'_, SettingsManager>,
+    updates_state: State<'_, Arc<UpdatesState>>,
+    install_state: State<'_, Arc<InstallState>>,
     app_handle: AppHandle,
 ) -> Result<TransferDataResult, CommandError> {
     let manager = settings_manager.inner().clone();
+    let updates = updates_state.inner().clone();
+    let install = install_state.inner().clone();
     let app = app_handle.clone();
     let operation_id = operation_id.clone();
+    let manager_for_notify = manager.clone();
 
     tokio::task::spawn_blocking(
         move || -> Result<TransferDataResult, TransferCommandFailure> {
@@ -252,6 +263,9 @@ pub async fn storage_transfer_data(
     .map_err(TransferCommandFailure::into_command_error)
     .inspect(|_| {
         crate::commands::emit_settings_changed(&app_handle);
+        // `settings-changed` does not refresh the updates context: publish
+        // the fresh snapshot of the new root and wake the scheduler here.
+        crate::updates::notify_data_root_changed(&app_handle, &manager_for_notify, &updates, &install);
     })
 }
 

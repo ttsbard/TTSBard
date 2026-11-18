@@ -23,6 +23,18 @@ export const i18n = createI18n({
   fallbackLocale: 'en',
   flatJson: true,
   messages: { en: englishMessages },
+  // Slavic plural rule for Russian («день | дня | дней»); other locales keep
+  // the default rule (documented vue-i18n pluralization recipe).
+  pluralRules: {
+    ru: (choice: number, choicesLength: number): number => {
+      const n = Math.floor(Math.abs(choice))
+      if (n % 10 === 1 && n % 100 !== 11) return 0
+      if ([2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100)) {
+        return Math.min(1, choicesLength - 1)
+      }
+      return choicesLength - 1
+    },
+  },
 })
 
 export const locale = ref('en')
@@ -77,8 +89,9 @@ function applySnapshot(snapshot: LocalizationSnapshot): boolean {
   return true
 }
 
-export function t(key: string, values?: Record<string, unknown>): string {
-  return values === undefined ? i18n.global.t(key) : i18n.global.t(key, values)
+export function t(key: string, values?: Record<string, unknown> | number): string {
+  if (values === undefined) return i18n.global.t(key)
+  return typeof values === 'number' ? i18n.global.t(key, values) : i18n.global.t(key, values)
 }
 
 export function disposeLocalization(): void {

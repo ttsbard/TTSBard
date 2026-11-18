@@ -1,8 +1,15 @@
 [CmdletBinding()]
-param([string]$Root = (Join-Path $PSScriptRoot '..'))
+param([string]$Root)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# The default must be resolved in the body: in Windows PowerShell 5.1
+# (-NoProfile -File) $PSScriptRoot is empty inside a param default
+# expression, while in the script body it is set in every host (both
+# powershell.exe and pwsh). An explicit -Root keeps working.
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $Root = Join-Path $PSScriptRoot '..'
+}
 $Root = [IO.Path]::GetFullPath($Root)
 $failures = [Collections.Generic.List[string]]::new()
 $required = @(

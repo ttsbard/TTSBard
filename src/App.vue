@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, watch, provide, computed, nextTick } from 
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Music, MonitorPlay } from 'lucide-vue-next'
+import { Info, Music, MonitorPlay } from 'lucide-vue-next'
 import Sidebar from './components/Sidebar.vue'
 import InputPanel from './components/InputPanel.vue'
 import TtsPanel from './components/TtsPanel.vue'
@@ -22,10 +22,13 @@ import ErrorToasts from './components/ErrorToasts.vue'
 import MinimalModeButton from './components/MinimalModeButton.vue'
 import MonoModeBar from './components/MonoModeBar.vue'
 import IntegrationStatusCluster from './components/titlebar/IntegrationStatusCluster.vue'
+import UpdateInstallModal from './components/settings/UpdateInstallModal.vue'
 import { t } from './i18n'
 import { interfaceFontCssStack, parseInterfaceFontSize, toInterfaceFontFamily, INTERFACE_FONT_SIZE_DEFAULT } from './utils/interfaceFont'
 import { useTelegramAuth, TELEGRAM_AUTH_KEY } from './composables/useTelegramAuth'
 import { provideAppSettings } from './composables/useAppSettings'
+import { provideAppUpdates } from './composables/useAppUpdates'
+import { provideUpdateInstall } from './composables/useUpdateInstall'
 import { useRuAccentRuntime } from './composables/useRuAccentRuntime'
 import { debugLog, debugError } from './utils/debug'
 import { matchesLocalHotkey } from './utils/localHotkeys'
@@ -57,9 +60,27 @@ type Panel = 'input' | 'tts' | 'audio' | 'preprocessor' | 'webview' | 'twitch' |
 const currentPanel = ref<Panel>('input')
 
 const inputPanelRef = ref<InstanceType<typeof InputPanel> | null>(null)
-const settingsPanelRef = ref<{ openModels: (category: ModelCategory) => void } | null>(null)
+const settingsPanelRef = ref<{ openModels: (category: ModelCategory) => void; openGeneralUpdates: () => Promise<void> } | null>(null)
 
 const { showWarning, showError } = useErrorHandler()
+
+// App-level update state (ROADMAP-141): one snapshot for the floating bubble
+// under the titlebar and the «Обновления» card in Settings. The backend checks
+// in the background (tray included) and pushes `update-status-changed` events.
+const appUpdates = provideAppUpdates()
+const updateBannerRelease = computed(() => appUpdates.panelRelease.value)
+// In-app update install (ROADMAP-141, stage 2): the context lives here so the
+// progress modal keeps running regardless of settings navigation. The
+// «Обновить» button in the card starts the pipeline; the modal renders below.
+const updateInstall = provideUpdateInstall()
+
+/** «Подробнее»: open Settings → General directly on the updates card. */
+async function openUpdatesCard() {
+  if (isMinimalMode.value && !(await modeController.toggleMinimalMode())) return
+  currentPanel.value = 'settings'
+  await nextTick()
+  await settingsPanelRef.value?.openGeneralUpdates()
+}
 
 // Single main-window mode owner: runtime mode, remembered compact view and
 // confirmed compact geometry all live here. Children read derived computeds and
@@ -144,6 +165,25 @@ useVbanHealthMonitor()
 useVbanHealthNotifications()
 
 useStartupNotifications(appSettings.settings)
+
+// One-shot readiness signal for the backend's delayed startup update check
+// (ROADMAP-141): once a non-null settings snapshot arrives and the app has
+// mounted (nextTick), tell the scheduler it may run its startup pass.
+{
+  const stopStartupReady = watch(
+    () => appSettings.settings.value,
+    async (settings) => {
+      if (!settings) return
+      stopStartupReady()
+      await nextTick()
+      try {
+        await invoke('mark_update_startup_ready')
+      } catch (e) {
+        debugError('[App] Failed to mark update startup readiness:', e)
+      }
+    },
+  )
+}
 
 // Create single shared instance of Telegram auth
 const telegramAuth = useTelegramAuth()
@@ -609,6 +649,23 @@ onUnmounted(() => {
 
     <!-- Main app content -->
     <template v-else>
+      <div v-if="updateBannerRelease" class="ui-notice update-bubble" :class="{ 'update-bubble--mono': isMono }">
+        <Info :size="16" class="update-bubble-icon" aria-hidden="true" />
+        <span class="update-bubble-text" role="status">{{ t('shell.updates.available', { version: updateBannerRelease.version }) }}</span>
+        <div class="update-bubble-actions">
+          <button type="button" class="ui-button ui-button--compact" :disabled="isModeBusy" @click="openUpdatesCard">
+            {{ t('shell.updates.details') }}
+          </button>
+          <button
+            type="button"
+            class="ui-notice-close"
+            :title="t('shell.updates.close')"
+            :aria-label="t('shell.updates.close')"
+            @click="appUpdates.dismissPanel()"
+          >×</button>
+        </div>
+      </div>
+
       <div class="app-content-wrapper">
         <Sidebar v-if="!isMinimalMode" :current-panel="currentPanel" @set-panel="setPanel" />
 
@@ -643,6 +700,10 @@ onUnmounted(() => {
       <!-- Global error toasts -->
       <ErrorToasts />
     </template>
+
+    <!-- In-app update install progress (ROADMAP-141, stage 2): rendered at the
+         app root so navigation away from the updates card cannot hide it. -->
+    <UpdateInstallModal v-if="updateInstall.active.value" />
   </div>
 </template>
 
@@ -815,6 +876,42 @@ onUnmounted(() => {
   flex: 1;
   overflow: hidden;
   width: 100%;
+}
+
+/* Keep the notice below dialogs and the system toast stack. */
+.update-bubble {
+  position: absolute;
+  top: calc(36px + 0.5rem);
+  right: 0.75rem;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem 0.55rem;
+  flex-wrap: wrap;
+  max-width: min(30rem, calc(100% - 1.5rem));
+  border: 1px solid var(--color-border);
+  background: var(--main-surface-elevated);
+}
+
+.update-bubble--mono {
+  top: calc(18px + 0.5rem);
+}
+
+.update-bubble-icon {
+  flex-shrink: 0;
+}
+
+.update-bubble-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.update-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .main-content {

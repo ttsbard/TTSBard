@@ -48,6 +48,45 @@ you can assign an action such as OCR capture to a single key. Press `Ctrl+M` for
 a smaller window. To keep just the text field, select **Switch to Mono mode**
 from the editor's **…** menu.
 
+## Update TTSBard
+
+Open **Settings → General → Updates** and click **Check now**. If a new
+version is available, the card shows its release notes.
+
+Automatic checks are configured by two independent switches in the same card:
+
+- **“Check for updates when the app starts”** — enabled by default. TTSBard
+  performs one check each time the app starts. Restoring from the tray,
+  calling a hotkey, or opening the window or settings does not run the check
+  again.
+- **“Check for updates while the app is running”** — disabled by default. Turn it
+  on and pick an interval of 1 to 7 days, 1 day by default. The check keeps
+  running while the window sits in the tray. While the switch is off, the
+  interval selector is unavailable, but the chosen value is kept.
+
+You can turn both switches off; then the version is only checked manually
+with **Check now**.
+
+The card keeps the outcome of the last completed check — “You’re up to date”,
+the found release notes, or a calm error message — until the next check,
+including across app restarts. A failed check does not hide a previously
+found release and does not change the time of the last successful check.
+There are no five-minute retries after a failure: if only the startup check
+is enabled, the next automatic attempt happens the next time TTSBard starts;
+with the schedule enabled, it happens after the chosen interval, including
+in the tray.
+
+- If you installed TTSBard with `*_x64-setup.exe`, click **Update** below the
+  release notes when a signed update is available. You can cancel while it
+  downloads. After the download and signature check, TTSBard closes and starts
+  the installer.
+- If you use a standalone `ttsbard.exe`, click **Open on GitHub**, download
+  the new `ttsbard.exe`, close TTSBard, and replace the file. This also applies
+  if you have another copy of TTSBard installed on the same PC.
+
+If your installed version only offers **Open on GitHub**, download and run
+the latest `*_x64-setup.exe` to switch to a release that supports in-app updates.
+
 ## Daily use
 
 - **Show the editor** with `Ctrl+Shift+F3` or the key assigned to **Main window**

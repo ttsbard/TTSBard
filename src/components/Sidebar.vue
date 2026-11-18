@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, h, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { APP_VERSION } from '../version'
 import { debugError } from '../utils/debug'
 import { t } from '../i18n'
 import {
@@ -155,7 +154,6 @@ function toggleCollapse() {
     </nav>
 
     <div class="sidebar-footer">
-      <div v-if="!isCollapsed" class="version-info">{{ APP_VERSION }}</div>
       <button
         class="sidebar-button quit-button"
         @click="quitApp"
@@ -357,15 +355,6 @@ function toggleCollapse() {
   margin-top: auto;
 }
 
-.version-info {
-  /* Agreed metadata role: 0.85rem/400; mono kept as this surface's family. */
-  font-size: var(--ui-text-size-hint);
-  font-weight: var(--ui-text-weight-hint);
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  padding: 0 1rem;
-}
-
 .quit-button {
   justify-content: center;
   color: var(--color-danger);
@@ -376,10 +365,6 @@ function toggleCollapse() {
 .quit-button:hover {
   background: var(--danger-bg-hover);
   color: var(--danger-text-bright);
-}
-
-.sidebar-collapsed .version-info {
-  display: none;
 }
 
 .sidebar-collapsed .quit-button {

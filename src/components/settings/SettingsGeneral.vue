@@ -1,12 +1,30 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDirectoryDialog } from '@tauri-apps/plugin-dialog';
-import { AlertTriangle, FolderOpen, FolderCog, RotateCcw } from 'lucide-vue-next';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import MarkdownIt from 'markdown-it';
+import {
+  AlertTriangle,
+  Check,
+  ExternalLink,
+  FolderOpen,
+  FolderCog,
+  Loader2,
+  RotateCcw
+} from 'lucide-vue-next';
 import { useGeneralSettings, useWindowsSettings, useLoggingSettings } from '../../composables/useAppSettings';
+import { useAppUpdates } from '../../composables/useAppUpdates';
+import { useUpdateInstall } from '../../composables/useUpdateInstall';
 import { presentCommandError } from '../../ipc/commandError';
+import {
+  UPDATE_CHECK_ERROR_LOCALE_KEY,
+  UPDATES_MAX_INTERVAL_DAYS,
+  UPDATES_MIN_INTERVAL_DAYS
+} from '../../ipc/appUpdates';
 import { availableLanguages, locale, setLanguage, t } from '../../i18n';
 import { saveStartCompactToStorage } from '../../composables/compactModeState';
+import { APP_VERSION } from '../../version';
 import DataTransferModal from './DataTransferModal.vue';
 
 const DEFAULT_CONFIG_DIR_DISPLAY = '%APPDATA%\\ttsbard';
@@ -153,6 +171,128 @@ async function openLocalDataFolder() {
     localDataOpening.value = false;
   }
 }
+
+// ==================== Updates (ROADMAP-141) ====================
+
+// App-level update state: the same snapshot that drives the banner under the
+// titlebar. Background checks arrive as events even while the card is closed.
+const appUpdates = useAppUpdates();
+
+const updatesStatus = computed(() => appUpdates.status.value);
+const updatesChecking = computed(() => appUpdates.checking.value);
+const updatesCommandError = computed(() => appUpdates.commandError.value);
+// Derived from the snapshot: the last completed attempt (any initiator)
+// finished without a failure and found nothing newer. Stays until the next
+// completed attempt, even while a new check is in flight.
+const updatesUpToDate = computed(() => appUpdates.upToDate.value);
+const currentVersion = computed(() => updatesStatus.value?.current_version ?? APP_VERSION);
+// Snapshot fallbacks mirror the backend defaults for a missing snapshot.
+const startupCheckEnabled = computed(() => updatesStatus.value?.startup_check_enabled ?? true);
+const periodicCheckEnabled = computed(() => updatesStatus.value?.periodic_check_enabled ?? false);
+const checkIntervalDays = computed(() => updatesStatus.value?.check_interval_days ?? 1);
+
+// Any failed check (startup, periodic or manual) shows the same calm plate;
+// the stable code stays in the snapshot and the backend log. The last found
+// release keeps rendering below: both are shown together.
+const updatesAttemptError = computed(() =>
+  updatesStatus.value?.last_attempt_error ? t(UPDATE_CHECK_ERROR_LOCALE_KEY) : null
+);
+// Time of the last completed attempt, kept apart from the last success time:
+// a failed attempt never overwrites the success stamp.
+const lastAttemptDisplay = computed(() => {
+  const status = updatesStatus.value;
+  if (!status?.last_attempt_at) return '';
+  if (!status.last_attempt_error && status.last_attempt_at === status.last_check_at) return '';
+  return formatCheckTime(status.last_attempt_at);
+});
+
+// The card announces a release only while it is newer than the running
+// version; an installed version removes the block again.
+const updatesRelease = computed(() =>
+  updatesStatus.value?.update_available ? updatesStatus.value.latest : null
+);
+// The «Обновить» button appears only for a supported NSIS installation with
+// updater artifacts (backend `install_available`); the progress modal itself
+// is hosted by App.vue via useUpdateInstall.
+const updatesInstallAvailable = computed(() => updatesStatus.value?.install_available === true);
+const updateInstall = useUpdateInstall();
+const releaseMarkdown = new MarkdownIt({ html: false });
+releaseMarkdown.renderer.rules.image = () => '';
+releaseMarkdown.renderer.rules.link_open = () => '';
+releaseMarkdown.renderer.rules.link_close = () => '';
+const releaseNotesHtml = computed(() => releaseMarkdown.render(updatesRelease.value?.notes ?? ''));
+
+const intervalOptions = computed(() => {
+  const options: Array<{ value: number; label: string }> = [];
+  for (let days = UPDATES_MIN_INTERVAL_DAYS; days <= UPDATES_MAX_INTERVAL_DAYS; days++) {
+    options.push({ value: days, label: t('general.updates.interval.days', days) });
+  }
+  return options;
+});
+
+function formatCheckTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = String(date.getFullYear()).padStart(4, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${day}.${month}.${year} ${hours}:${minutes}`;
+}
+
+const lastCheckDisplay = computed(() => {
+  const iso = updatesStatus.value?.last_check_at;
+  return iso ? formatCheckTime(iso) : t('general.updates.last_check.never');
+});
+
+const updatesCardEl = ref<HTMLElement | null>(null);
+
+function onStartupCheckChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  void appUpdates.setStartupCheck(input.checked).then(() => {
+    // A failed save sends no snapshot, so Vue never re-renders the bound
+    // `:checked`; snap the native input back to the persisted state so it
+    // never shows an unsaved value.
+    input.checked = startupCheckEnabled.value;
+  });
+}
+
+function onPeriodicCheckChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  void appUpdates.setPeriodicCheck(input.checked).then(() => {
+    input.checked = periodicCheckEnabled.value;
+  });
+}
+
+function onIntervalChange(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const days = Number(select.value);
+  if (!Number.isInteger(days)) return;
+  void appUpdates.setIntervalDays(days).then(() => {
+    select.value = String(checkIntervalDays.value);
+  });
+}
+
+async function openReleasePage() {
+  const url = updatesRelease.value?.url;
+  if (!url) return;
+  try {
+    await openUrl(url);
+  } catch (e) {
+    showMessage(presentCommandError(e, t('general.updates.errors.generic')), 'error');
+  }
+}
+
+/**
+ * Scroll to the card from the update banner.
+ */
+async function revealUpdates() {
+  await nextTick();
+  updatesCardEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+defineExpose({ revealUpdates });
 
 onMounted(refreshDataInfo);
 
@@ -474,6 +614,123 @@ watch(loggingSettings, (newSettings) => {
       </span>
     </section>
 
+    <!-- Updates (ROADMAP-141): current version moved here from the sidebar -->
+    <section ref="updatesCardEl" class="settings-group ui-section updates-section">
+      <h3 class="settings-group-title ui-group-title">{{ t('general.groups.updates') }}</h3>
+
+      <div class="updates-version-row">
+        <div class="updates-current-version">
+          <span class="ui-label ui-label--secondary">{{ t('general.updates.current_version') }}</span>
+          <span class="ui-metadata updates-version">{{ currentVersion }}</span>
+        </div>
+        <button
+          type="button"
+          class="ui-button ui-button--primary updates-check-button"
+          :disabled="updatesChecking"
+          @click="appUpdates.checkNow()"
+        >
+          <Loader2 v-if="updatesChecking" :size="16" class="ui-spin" />
+          {{ updatesChecking ? t('general.updates.checking') : t('general.updates.check_now') }}
+        </button>
+      </div>
+
+      <dl class="updates-check-times">
+        <div>
+          <dt class="ui-label ui-label--secondary">{{ t('general.updates.last_check.label') }}</dt>
+          <dd class="ui-metadata updates-last-check">{{ lastCheckDisplay }}</dd>
+        </div>
+        <div v-if="lastAttemptDisplay">
+          <dt class="ui-label ui-label--secondary">{{ t('general.updates.last_attempt.label') }}</dt>
+          <dd class="ui-metadata updates-last-attempt">{{ lastAttemptDisplay }}</dd>
+        </div>
+      </dl>
+
+      <!-- Calm persistent plate for the failed attempt, inside the card; a
+           found release keeps rendering below next to it. -->
+      <div v-if="updatesAttemptError" class="setting-warning updates-error-plate" role="status">
+        <AlertTriangle :size="14" />
+        <span class="updates-error-text">{{ updatesAttemptError }}</span>
+      </div>
+      <span v-else-if="updatesUpToDate" class="updates-ok">
+        <Check :size="14" /> {{ t('general.updates.up_to_date') }}
+      </span>
+      <div v-if="updatesRelease" class="updates-release">
+        <div class="updates-release-head">
+          <span class="updates-release-title">{{ t('general.updates.available', { version: updatesRelease.version }) }}</span>
+          <button
+            type="button"
+            class="ui-button ui-button--compact ui-button--leading-icon"
+            @click="openReleasePage"
+          >
+            <ExternalLink :size="16" />
+            {{ t('general.updates.open_release') }}
+          </button>
+        </div>
+        <div v-if="releaseNotesHtml" class="updates-notes" tabindex="0" v-html="releaseNotesHtml"></div>
+        <!-- In-app install (ROADMAP-141, stage 2): only for a supported NSIS
+             installation with an available updater artifact (see
+             `install_available`); standalone builds keep the GitHub link. -->
+        <div v-if="updatesInstallAvailable" class="updates-install-row">
+          <button
+            type="button"
+            class="ui-button ui-button--primary updates-install-button"
+            :disabled="updateInstall.active.value"
+            @click="updateInstall.start()"
+          >
+            {{ t('general.updates.install.label') }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Two independent automatic checks (ROADMAP-141, stage 2): the
+           startup switch and the periodic schedule. The interval selector is
+           enabled only while the schedule is on and keeps its value when it
+           is turned off. -->
+      <div class="updates-auto">
+        <label class="ui-choice-label setting-label">
+          <input
+            :checked="startupCheckEnabled"
+            @change="onStartupCheckChange"
+            type="checkbox"
+            class="ui-choice-input"
+          />
+          <span>{{ t('general.updates.startup_check.label') }}</span>
+        </label>
+      </div>
+
+      <div class="updates-interval">
+        <label class="ui-choice-label setting-label">
+          <input
+            :checked="periodicCheckEnabled"
+            @change="onPeriodicCheckChange"
+            type="checkbox"
+            class="ui-choice-input"
+          />
+          <span>{{ t('general.updates.periodic_check.label') }}</span>
+        </label>
+        <div class="updates-interval-field">
+          <label class="ui-label ui-label--secondary" for="updates-interval">
+            {{ t('general.updates.interval.label') }}
+          </label>
+          <select
+            id="updates-interval"
+            class="ui-select updates-interval-select"
+            :value="checkIntervalDays"
+            :disabled="!periodicCheckEnabled"
+            @change="onIntervalChange"
+          >
+            <option v-for="option in intervalOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </div>
+      </div>
+
+      <span v-if="updatesCommandError" class="setting-warning updates-error">
+        <AlertTriangle :size="14" /> {{ updatesCommandError }}
+      </span>
+    </section>
+
     <DataTransferModal
       v-if="transferTarget !== undefined"
       :target-path="transferTarget"
@@ -623,6 +880,203 @@ watch(loggingSettings, (newSettings) => {
   gap: 0.5rem;
   flex: 0 0 auto;
   flex-wrap: wrap;
+}
+
+/* ==================== Updates (ROADMAP-141) ==================== */
+
+.updates-version-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-row-gap) var(--ui-row-label-gap-side);
+}
+
+.updates-current-version,
+.updates-check-times > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.updates-check-times {
+  display: grid;
+  gap: 0.25rem;
+  margin: var(--ui-row-gap) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.updates-check-times dd {
+  margin: 0;
+}
+
+.updates-auto,
+.updates-release {
+  margin-top: var(--ui-row-gap);
+}
+
+.updates-version,
+.updates-last-check,
+.updates-last-attempt {
+  color: var(--color-text-primary);
+}
+
+.updates-version {
+  font-family: var(--font-mono);
+}
+
+.updates-check-button {
+  margin-inline-start: auto;
+}
+
+.updates-interval {
+  display: grid;
+  gap: var(--ui-hint-gap);
+}
+
+.updates-interval-field {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-row-label-gap-side);
+  flex-wrap: wrap;
+  margin-inline-start: calc(var(--ui-choice-size) + 2 * var(--ui-choice-gap));
+}
+
+.updates-auto:has(+ *),
+.updates-interval:has(+ *) {
+  margin-bottom: 8px;
+}
+
+.updates-interval-select {
+  max-width: 100%;
+}
+
+.setting-warning.updates-error {
+  margin-left: 0;
+  margin-top: 0;
+}
+
+/* Calm persistent plate for a failed check: a bordered box inside the card,
+   not a popup, toast or bubble; the text wraps within the card width. */
+.updates-error-plate {
+  align-items: flex-start;
+  margin-left: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+}
+
+.updates-error-plate svg {
+  flex: 0 0 auto;
+  margin-top: 0.15em;
+}
+
+.updates-error-plate .updates-error-text {
+  overflow-wrap: anywhere;
+}
+
+/* Outcome of a finished manual check that found nothing newer; mirrors the
+   error line above with the success color. */
+.updates-ok {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: var(--ui-hint-gap);
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  color: var(--success-text-bright);
+}
+
+/* «Подробнее» from the update bubble scrolls the card below the bubble
+   overlay (4rem clears its position under the titlebar at any interface
+   font size). */
+.updates-section {
+  scroll-margin-top: 4rem;
+}
+
+.updates-release {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.updates-release-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  flex-wrap: wrap;
+}
+
+.updates-release-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.updates-notes {
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  font-size: var(--ui-text-size-hint);
+  font-weight: var(--ui-text-weight-hint);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.updates-notes :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.updates-notes :deep(> :last-child) {
+  margin-bottom: 0;
+}
+
+/* Install button: centered under the scrollable release notes, no caption. */
+.updates-install-row {
+  display: flex;
+  justify-content: center;
+}
+
+.updates-install-button {
+  min-width: 10rem;
+}
+
+/* The global `* { margin: 0; padding: 0 }` reset strips list indentation, so
+   outside markers hang left of the content box and get clipped by this
+   scroll container's edge. Restore the logical list padding (nested lists
+   receive their own shift from the same rule). */
+.updates-notes :deep(ul),
+.updates-notes :deep(ol) {
+  margin: 0.4em 0;
+  padding-left: 1.5rem;
+}
+
+.updates-notes :deep(li) {
+  margin: 0.15em 0;
+}
+
+.updates-notes :deep(p) {
+  margin: 0.5em 0;
+}
+
+.updates-notes :deep(pre) {
+  white-space: pre-wrap;
+}
+
+/* Explicit vertical spacing after headings (the first-child rule above
+   removes the leading gap of a heading that opens the notes). */
+.updates-notes :deep(:is(h1, h2, h3, h4, h5, h6)) {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.9em 0 0.4em;
 }
 
 @media (max-width: 520px) {

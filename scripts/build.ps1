@@ -31,7 +31,11 @@ param(
 
     [string]$RustBinDir,
 
-    [string]$ConfigFile
+    [string]$ConfigFile,
+
+    # Подписанные updater-артефакты (*.sig) для Tauri Updater (ROADMAP-141):
+    # Требует TAURI_UPDATER_PUBLIC_KEY и TAURI_SIGNING_PRIVATE_KEY в окружении.
+    [switch]$UpdaterArtifacts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +45,15 @@ function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-WarnLine($msg) { Write-Host "    ! $msg" -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "    X $msg" -ForegroundColor Red }
+
+if ($UpdaterArtifacts -and $Mode -eq 'release') {
+    foreach ($name in @('TAURI_SIGNING_PRIVATE_KEY', 'TAURI_UPDATER_PUBLIC_KEY')) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+            Write-Err "-UpdaterArtifacts requires the $name environment variable"
+            exit 1
+        }
+    }
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
@@ -535,8 +548,23 @@ if ($Mode -eq 'debug') {
     # --debug: бэкенд в debug-профайле, фронтенд-бандл, готовый exe, БЕЗ инсталляторов.
     npm run tauri -- build --debug --no-bundle
 } else {
-    Write-Step "Building (tauri build, release)..."
-    npm run tauri -- build
+    if ($UpdaterArtifacts) {
+        Write-Step "Building (tauri build, release, updater artifacts)..."
+        $updaterConfig = @{
+            bundle = @{ createUpdaterArtifacts = $true }
+            plugins = @{ updater = @{ pubkey = $env:TAURI_UPDATER_PUBLIC_KEY.Trim() } }
+        } | ConvertTo-Json -Depth 5 -Compress
+        $updaterConfigPath = Join-Path ([IO.Path]::GetTempPath()) ("ttsbard-updater-{0}.json" -f [guid]::NewGuid())
+        try {
+            [IO.File]::WriteAllText($updaterConfigPath, $updaterConfig)
+            npm run tauri -- build --config $updaterConfigPath
+        } finally {
+            [IO.File]::Delete($updaterConfigPath)
+        }
+    } else {
+        Write-Step "Building (tauri build, release)..."
+        npm run tauri -- build
+    }
 }
 
 if ($LASTEXITCODE -ne 0) {

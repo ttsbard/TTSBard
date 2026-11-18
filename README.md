@@ -15,6 +15,9 @@ After sending, keep typing, hide the window or return focus to the previous app.
 [First launch](docs/en/user/guide.md#first-launch) ·
 [Short PDF overview](docs/en/ttsbard-overview.pdf)
 
+For in-app updates, install TTSBard with the `*_x64-setup.exe` installer.
+Update a standalone `ttsbard.exe` manually. [Update instructions](docs/en/user/guide.md#update-ttsbard)
+
 ### Quick start
 
 Choose and test your audio device in **Audio → Devices**, then set up a voice.
@@ -132,6 +135,9 @@ TTSBard — Windows-приложение для общения с помощью
 [Скачать TTSBard](https://github.com/ttsbard/TTSBard/releases) ·
 [Первый запуск](docs/ru/user/guide.md#первый-запуск) ·
 [Краткий обзор в PDF](docs/ru/ttsbard-overview.pdf)
+
+Для обновления из приложения установите TTSBard через `*_x64-setup.exe`.
+Отдельно скачанный `ttsbard.exe` обновляется вручную. [Инструкция по обновлению](docs/ru/user/guide.md#обновление-ttsbard)
 
 ### Быстрый старт
 

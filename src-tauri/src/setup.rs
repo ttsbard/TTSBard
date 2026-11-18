@@ -226,6 +226,29 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
         info!("Speech queue worker started");
     }
 
+    // Start the update check scheduler (ROADMAP-141, stage 2): one startup
+    // attempt per process when the saved switch is on, then periodic checks
+    // on the persisted interval from the last completed attempt — including
+    // while the main window is closed to the tray; failed checks are never
+    // retried. Settings store the schedule and the last attempt outcome.
+    // UpdatesState coordinates checks and sends status to the UI.
+    //
+    // InstallState reports whether signed updates can be installed and owns
+    // the install pipeline.
+    {
+        let updates_state = Arc::new(crate::updates::UpdatesState::new());
+        app.manage(updates_state.clone());
+        let install_state = crate::updates::install::setup_install_state(app);
+        crate::updates::spawn_update_scheduler(
+            app.handle().clone(),
+            settings_manager.inner().clone(),
+            updates_state,
+            install_state,
+            app_state.inner().shutdown.clone(),
+        );
+        info!("Update check scheduler started");
+    }
+
     thread::spawn(move || {
         info!("Event thread started, waiting for events...");
         for event in event_rx {

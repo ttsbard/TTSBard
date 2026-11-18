@@ -4227,6 +4227,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8516,7 +8522,7 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "ttsbard"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -8544,6 +8550,7 @@ dependencies = [
  "image",
  "lazy_static",
  "lewton",
+ "minisign-verify",
  "ndarray 0.15.6",
  "netdev",
  "ort",
@@ -8557,6 +8564,7 @@ dependencies = [
  "rosc",
  "ruaccent_rs",
  "russian_numbers",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",

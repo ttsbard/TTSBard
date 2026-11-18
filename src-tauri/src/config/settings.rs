@@ -1826,6 +1826,86 @@ pub struct StorageSettings {
     pub legacy_models_migrated: bool,
 }
 
+// ==================== Update Check Settings ====================
+
+/// Минимальный интервал автопроверки обновлений, дней (ROADMAP-141).
+pub const UPDATES_MIN_INTERVAL_DAYS: u32 = 1;
+/// Максимальный интервал автопроверки обновлений, дней.
+pub const UPDATES_MAX_INTERVAL_DAYS: u32 = 7;
+
+/// Последний найденный стабильный релиз (ROADMAP-141). Форма совпадает с
+/// wire-DTO `latest` в `UpdateStatusDto`; заметки уже очищены до plain text.
+/// Хранится в `<data_root>/updates/state.json` (см. `crate::updates::state`)
+/// вместе со временем успешной проверки, чтобы карточка и панель
+/// восстанавливались после перезапуска до срока следующей проверки.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateRelease {
+    /// Версия релиза без ведущего `v`, разборчивая как SemVer.
+    pub version: String,
+    /// Заголовок релиза (`name`), если задан.
+    pub name: Option<String>,
+    /// Описание релиза (`body`) как plain text; UI отображает read-only.
+    pub notes: String,
+    /// Страница релиза на github.com (из `html_url`).
+    pub url: String,
+    /// RFC3339 время публикации, как сообщил GitHub.
+    pub published_at: Option<String>,
+}
+
+fn default_updates_startup_check_enabled() -> bool {
+    true
+}
+
+fn default_updates_periodic_check_enabled() -> bool {
+    false
+}
+
+fn default_updates_check_interval_days() -> u32 {
+    UPDATES_MIN_INTERVAL_DAYS
+}
+
+/// Настройки проверки обновлений через GitHub Releases (ROADMAP-141, этап 2)
+/// — только расписание.
+///
+/// Две независимые галочки: одна стартовая попытка на процесс и периодическая
+/// проверка по интервалу. Состояние проверок (найденный релиз, времена и код
+/// последней попытки, скрытая версия) хранится отдельно в
+/// `<data_root>/updates/state.json` (см. `crate::updates::state`), поэтому
+/// проверки не переписывают settings.json. Пользовательские решения
+/// 2026-11-18: «миграция не нужна, это новый функционал» — отсутствующие поля
+/// получают новые дефолты; legacy-ключи внутри секции `updates` (старый
+/// `auto_check_enabled` и прежние поля состояния) не читаются и ни на что не
+/// влияют.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateSettings {
+    /// Одна асинхронная проверка при запуске процесса (не при открытии окна).
+    #[serde(default = "default_updates_startup_check_enabled")]
+    pub startup_check_enabled: bool,
+    /// Периодическая проверка во время работы, включая работу в трее.
+    #[serde(default = "default_updates_periodic_check_enabled")]
+    pub periodic_check_enabled: bool,
+    /// Интервал периодической проверки в днях (1..=7).
+    #[serde(default = "default_updates_check_interval_days")]
+    pub check_interval_days: u32,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            startup_check_enabled: default_updates_startup_check_enabled(),
+            periodic_check_enabled: default_updates_periodic_check_enabled(),
+            check_interval_days: default_updates_check_interval_days(),
+        }
+    }
+}
+
+impl UpdateSettings {
+    /// Ограничить интервал автопроверки допустимым диапазоном.
+    pub fn clamp_interval_days(days: u32) -> u32 {
+        days.clamp(UPDATES_MIN_INTERVAL_DAYS, UPDATES_MAX_INTERVAL_DAYS)
+    }
+}
+
 // ==================== Main App Settings ====================
 
 /// All application settings
@@ -1895,6 +1975,13 @@ pub struct AppSettings {
     /// Скрывать свёрнутое главное окно с панели задач (в трей)
     #[serde(default)]
     pub hide_on_minimize: bool,
+    /// Проверка обновлений через GitHub Releases (ROADMAP-141). Backend-only
+    /// секция расписания (только переключатели и интервал): в IPC DTO не
+    /// выводится, фронтенд получает её через `get_update_status` /
+    /// `update-status-changed`. Состояние проверок хранится вне этого файла —
+    /// в `crate::updates::state`.
+    #[serde(default)]
+    pub updates: UpdateSettings,
 }
 
 impl Default for AppSettings {
@@ -1924,6 +2011,7 @@ impl Default for AppSettings {
             show_playback_on_start: false,
             start_compact: false,
             hide_on_minimize: false,
+            updates: UpdateSettings::default(),
         }
     }
 }
@@ -2025,6 +2113,22 @@ impl AppSettings {
                 );
             }
         }
+
+        // Validate update check interval (ROADMAP-141): загрузочный путь
+        // нормализует повреждённое значение вместо отклонения файла.
+        {
+            let old = self.updates.check_interval_days;
+            self.updates.check_interval_days = UpdateSettings::clamp_interval_days(old);
+            if self.updates.check_interval_days != old {
+                warn!(
+                    interval_days = old,
+                    clamped = self.updates.check_interval_days,
+                    min = UPDATES_MIN_INTERVAL_DAYS,
+                    max = UPDATES_MAX_INTERVAL_DAYS,
+                    "clamped updates check_interval_days"
+                );
+            }
+        }
     }
 }
 
@@ -2052,6 +2156,11 @@ pub struct SettingsManager {
     /// In-memory cache of the ElevenLabs catalog so repeated reads never hit
     /// the disk. `None` until first loaded (or after an API-key change).
     elevenlabs_catalog_cache: Arc<std::sync::RwLock<Option<ElevenLabsCatalogCache>>>,
+    /// Persisted update-check state (`<data_root>/updates/state.json`), kept
+    /// out of settings.json so check attempts never rewrite user settings.
+    /// Clones share one store; the path is resolved per operation (see
+    /// `crate::updates::state`).
+    update_state: Arc<crate::updates::state::UpdateStateStore>,
 }
 
 impl Clone for SettingsManager {
@@ -2060,6 +2169,7 @@ impl Clone for SettingsManager {
             config_dir: self.config_dir.clone(),
             cache: Arc::clone(&self.cache),
             elevenlabs_catalog_cache: Arc::clone(&self.elevenlabs_catalog_cache),
+            update_state: Arc::clone(&self.update_state),
         }
     }
 }
@@ -2078,19 +2188,34 @@ impl SettingsManager {
             config_dir,
             cache: Arc::new(RwLock::new(settings)),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         })
     }
 
     /// Create a SettingsManager with a custom config directory (for testing).
+    /// The update state file is isolated under `<config_dir>/updates/` so
+    /// tests never touch the user's data root.
     #[cfg(test)]
     pub fn with_config_dir(config_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&config_dir).context("Failed to create config dir")?;
         let settings = Self::load_from_disk(&config_dir)?;
+        let update_state = Arc::new(crate::updates::state::UpdateStateStore::with_state_dir(
+            config_dir.join("updates"),
+        ));
         Ok(Self {
             config_dir,
             cache: Arc::new(RwLock::new(settings)),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state,
         })
+    }
+
+    /// Simulate the mid-run «Данные программы» switch of `commands::storage`
+    /// (there: `publish_data_root`): retarget the shared state store so every
+    /// manager clone resolves the new directory from now on.
+    #[cfg(test)]
+    pub(crate) fn set_update_state_dir_for_tests(&self, dir: PathBuf) {
+        self.update_state.set_dir(Some(dir));
     }
 
     /// Get the path to settings.json
@@ -3872,6 +3997,182 @@ impl SettingsManager {
         self.update_field("/hide_on_minimize", &value)
     }
 
+    // ========== Update Check Settings (ROADMAP-141) ==========
+
+    /// Get the persisted update check schedule (switches and interval only;
+    /// the check state lives in `crate::updates::state`).
+    pub fn get_update_settings(&self) -> UpdateSettings {
+        self.cache.read().updates.clone()
+    }
+
+    /// Enable or disable the one-shot check at process startup.
+    pub fn set_updates_startup_check_enabled(&self, value: bool) -> Result<()> {
+        self.update_field("/updates/startup_check_enabled", &value)
+    }
+
+    /// Enable or disable the periodic check. The selected interval is
+    /// preserved so re-enabling keeps the previous schedule.
+    pub fn set_updates_periodic_check_enabled(&self, value: bool) -> Result<()> {
+        self.update_field("/updates/periodic_check_enabled", &value)
+    }
+
+    /// Set the periodic check interval in days, clamped to 1..=7.
+    pub fn set_updates_check_interval_days(&self, days: u32) -> Result<u32> {
+        let days = UpdateSettings::clamp_interval_days(days);
+        self.update_field("/updates/check_interval_days", &days)?;
+        Ok(days)
+    }
+
+    /// Read the persisted update check state (found release, success and
+    /// attempt times, error code, dismissed version). Never fails: a missing
+    /// or broken state file reads as empty.
+    #[cfg(test)]
+    pub fn get_update_state(&self) -> crate::updates::state::UpdateStateRecord {
+        self.update_state.load()
+    }
+
+    /// [`Self::get_update_state`] paired with the state-file directory the
+    /// record was read from, resolved in one step (`None` — the root cannot
+    /// be resolved). Consumers needing the record and its root together use
+    /// this pair, so a mid-run «Данные программы» switch cannot mix one
+    /// root's directory with the other root's record.
+    pub fn get_update_state_with_dir(
+        &self,
+    ) -> (
+        Option<PathBuf>,
+        crate::updates::state::UpdateStateRecord,
+    ) {
+        self.update_state.load_with_dir()
+    }
+
+    /// The state-file identity of the effective data root: the directory
+    /// whose `state.json` this manager reads and writes (`<root>/updates`).
+    /// In-flight checks capture it at their start and compare it against
+    /// in-memory attempt records, so a root switch mid-run cannot mix two
+    /// roots' state (see `crate::updates`). `None` — the root cannot be
+    /// resolved.
+    pub fn update_state_dir(&self) -> Option<PathBuf> {
+        self.update_state.resolved_dir()
+    }
+
+    /// Persist a completed successful check (RFC3339 UTC time plus the found
+    /// release) as one atomic read-modify-write of the update state file. The
+    /// attempt record moves to the same time and clears the error, so the
+    /// schedule base and the shown result stay consistent; a restart restores
+    /// the card and the panel until the next due time. settings.json is not
+    /// touched.
+    ///
+    /// Effective-root entry point, used by the install pipeline tests; the
+    /// production check path pins the root captured at its start via
+    /// [`Self::set_updates_check_result_in`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_updates_check_result(
+        &self,
+        checked_at: String,
+        release: UpdateRelease,
+    ) -> Result<()> {
+        self.set_updates_check_result_in(None, checked_at, release)
+    }
+
+    /// [`Self::set_updates_check_result`] bound to an explicit state
+    /// directory: an in-flight check passes the directory captured at its
+    /// start, so the completion lands in the original root even when the
+    /// effective root changed while the request ran. `None` — the effective
+    /// root.
+    pub fn set_updates_check_result_in(
+        &self,
+        dir: Option<&Path>,
+        checked_at: String,
+        release: UpdateRelease,
+    ) -> Result<()> {
+        let store;
+        let target = match dir {
+            Some(dir) => {
+                store = crate::updates::state::UpdateStateStore::with_state_dir(dir.to_path_buf());
+                &store
+            }
+            None => &*self.update_state,
+        };
+        target.update(move |state| {
+            state.last_check_at = Some(checked_at.clone());
+            state.last_release = Some(release);
+            state.last_attempt_at = Some(checked_at);
+            state.last_attempt_error = None;
+        })
+    }
+
+    /// Persist a completed failed check as one atomic read-modify-write of the
+    /// update state file: the attempt time moves and the stable error code is
+    /// stored, while the last successful check time and the known release
+    /// stay untouched. The code survives restarts, so a saved attempt time can
+    /// never masquerade as a fresh success.
+    ///
+    /// Effective-root entry point used by the check tests; the production
+    /// check path pins the root captured at its start via
+    /// [`Self::set_updates_attempt_failure_in`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_updates_attempt_failure(
+        &self,
+        attempted_at: String,
+        error_code: &str,
+    ) -> Result<()> {
+        self.set_updates_attempt_failure_in(None, attempted_at, error_code)
+    }
+
+    /// [`Self::set_updates_attempt_failure`] bound to an explicit state
+    /// directory (see [`Self::set_updates_check_result_in`]).
+    pub fn set_updates_attempt_failure_in(
+        &self,
+        dir: Option<&Path>,
+        attempted_at: String,
+        error_code: &str,
+    ) -> Result<()> {
+        let code = error_code.to_string();
+        let store;
+        let target = match dir {
+            Some(dir) => {
+                store = crate::updates::state::UpdateStateStore::with_state_dir(dir.to_path_buf());
+                &store
+            }
+            None => &*self.update_state,
+        };
+        target.update(move |state| {
+            state.last_attempt_at = Some(attempted_at);
+            state.last_attempt_error = Some(code);
+        })
+    }
+
+    /// Remember the version whose update panel the user closed. The panel stays
+    /// hidden for this version across re-checks and restarts; a newer release
+    /// shows it again. `None` restores the panel for every version.
+    ///
+    /// Test-only effective-root entry point: the write goes through the shared
+    /// store and resolves the data root at write time. The dismiss command
+    /// instead pins the root captured at its start via
+    /// [`Self::set_updates_dismissed_version_in`].
+    #[cfg(test)]
+    pub fn set_updates_dismissed_version(&self, version: Option<String>) -> Result<()> {
+        self.update_state.update(move |state| {
+            state.dismissed_version = version;
+        })
+    }
+
+    /// [`Self::set_updates_dismissed_version`] bound to an explicit state
+    /// directory: `dir` is the `updates` state directory captured before the
+    /// blocking persistence was dispatched, so a data-root switch that happens
+    /// meanwhile cannot send the dismissal to another root. The write goes to
+    /// exactly this directory — no dynamic resolution.
+    pub fn set_updates_dismissed_version_in(
+        &self,
+        dir: &Path,
+        version: Option<String>,
+    ) -> Result<()> {
+        let store = crate::updates::state::UpdateStateStore::with_state_dir(dir.to_path_buf());
+        store.update(move |state| {
+            state.dismissed_version = version;
+        })
+    }
+
     // ========== VTube Studio Settings ==========
 
     pub fn get_vtube_studio_settings(&self) -> VTubeStudioSettings {
@@ -5073,11 +5374,13 @@ mod tests {
             config_dir: config_dir.clone(),
             cache: Arc::new(RwLock::new(default_settings.clone())),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
         let manager_b = SettingsManager {
             config_dir: config_dir.clone(),
             cache: Arc::new(RwLock::new(default_settings)),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
@@ -5130,6 +5433,7 @@ mod tests {
             config_dir: config_dir.clone(),
             cache: Arc::new(RwLock::new(default_settings.clone())),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
         assert!(manager.get_openai_api_key().is_none());
 
@@ -5375,6 +5679,7 @@ mod tests {
             config_dir: config_dir.clone(),
             cache: Arc::clone(&cache),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
 
         manager.set_openai_voice("nova".to_string()).unwrap();
@@ -5385,6 +5690,7 @@ mod tests {
             config_dir: bad_config_dir,
             cache,
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
         let result = bad_manager.set_openai_voice("alloy".to_string());
         assert!(result.is_err(), "persist to nonexistent dir must fail");
@@ -5430,6 +5736,7 @@ mod tests {
             config_dir: bad_config_dir,
             cache: Arc::clone(&cache),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
 
         let result = bad_manager.set_webview_section(false, 9999, true, true);
@@ -5840,6 +6147,349 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// New-schedule defaults: settings.json without the `updates` section
+    /// deserializes with startup=true, periodic=false and a 1 day interval
+    /// (ROADMAP-141 stage 2, new feature). Check state is not part of the
+    /// settings at all (it lives in `crate::updates::state`).
+    #[test]
+    fn settings_deserializes_without_updates_section() {
+        let old_json = r#"{
+            "audio": { "speaker_device": null, "speaker_enabled": true, "speaker_volume": 80, "virtual_mic_device": null, "virtual_mic_volume": 100 },
+            "tts": { "provider": "openai", "openai": { "api_key": "sk-test", "voice": "alloy" }, "local": { "url": "http://127.0.0.1:8124" }, "fish": { "api_key": null, "voices": [], "reference_id": "", "format": "mp3", "temperature": 0.7, "sample_rate": 44100, "use_proxy": false }, "telegram": { "api_id": null, "proxy_mode": "none", "voices": [], "current_voice_id": "" }, "network": { "proxy": { "proxy_url": null }, "mtproxy": { "host": null, "port": 8888, "secret": null, "dc_id": null } } },
+            "twitch": { "enabled": false, "username": "", "token": "", "channel": "", "start_on_boot": false }
+        }"#;
+        let settings: AppSettings = serde_json::from_str(old_json)
+            .expect("old AppSettings (without updates section) must deserialize");
+        assert!(settings.updates.startup_check_enabled);
+        assert!(!settings.updates.periodic_check_enabled);
+        assert_eq!(
+            settings.updates.check_interval_days,
+            UPDATES_MIN_INTERVAL_DAYS
+        );
+        assert_eq!(
+            settings.updates,
+            UpdateSettings {
+                startup_check_enabled: true,
+                periodic_check_enabled: false,
+                check_interval_days: UPDATES_MIN_INTERVAL_DAYS,
+            }
+        );
+
+        // A damaged interval is normalized by validate() instead of being kept.
+        let mut settings = settings;
+        settings.updates.check_interval_days = 99;
+        settings.validate();
+        assert_eq!(
+            settings.updates.check_interval_days, UPDATES_MAX_INTERVAL_DAYS,
+            "out-of-range interval must clamp to the upper bound"
+        );
+    }
+
+    /// Per the user's decision («миграция не нужна, это новый функционал»):
+    /// a stage-1 file with the legacy `auto_check_enabled` key loads with the
+    /// new-field defaults — the legacy key is ignored, not mapped, and the
+    /// legacy state keys (the former `last_*` fields) are dropped by
+    /// deserialization instead of being carried anywhere.
+    #[test]
+    fn updates_legacy_auto_check_key_is_ignored_without_migration() {
+        let json = r#"{
+            "audio": { "speaker_device": null, "speaker_enabled": true, "speaker_volume": 80, "virtual_mic_device": null, "virtual_mic_volume": 100 },
+            "tts": { "provider": "openai", "openai": { "api_key": "sk-test", "voice": "alloy" }, "local": { "url": "http://127.0.0.1:8124" }, "fish": { "api_key": null, "voices": [], "reference_id": "", "format": "mp3", "temperature": 0.7, "sample_rate": 44100, "use_proxy": false }, "telegram": { "api_id": null, "proxy_mode": "none", "voices": [], "current_voice_id": "" }, "network": { "proxy": { "proxy_url": null }, "mtproxy": { "host": null, "port": 8888, "secret": null, "dc_id": null } } },
+            "twitch": { "enabled": false, "username": "", "token": "", "channel": "", "start_on_boot": false },
+            "updates": {
+                "auto_check_enabled": false,
+                "check_interval_days": 3,
+                "last_check_at": "2026-11-10T09:00:00Z",
+                "last_attempt_at": "2026-11-10T09:00:00Z",
+                "last_attempt_error": "network",
+                "last_release": { "version": "1.8.0", "name": null, "notes": "", "url": "https://github.com/ttsbard/TTSBard/releases/tag/v1.8.0", "published_at": null },
+                "dismissed_version": "1.8.0"
+            }
+        }"#;
+        let settings: AppSettings =
+            serde_json::from_str(json).expect("stage-1 updates section must deserialize");
+        assert!(
+            settings.updates.startup_check_enabled,
+            "missing startup flag gets the new default, not the legacy switch"
+        );
+        assert!(
+            !settings.updates.periodic_check_enabled,
+            "missing periodic flag gets the new default regardless of legacy auto_check_enabled"
+        );
+        assert_eq!(settings.updates.check_interval_days, 3);
+        // No legacy state key leaks into the settings struct: the only fields
+        // left are the three schedule fields with their file values.
+        assert_eq!(
+            settings.updates,
+            UpdateSettings {
+                startup_check_enabled: true,
+                periodic_check_enabled: false,
+                check_interval_days: 3,
+            }
+        );
+        // The serialized form carries exactly the three schedule keys; the
+        // legacy keys of the source file are gone after a round-trip.
+        let serialized = serde_json::to_value(&settings.updates).unwrap();
+        let updates = serialized.as_object().expect("updates must serialize to an object");
+        let mut keys: Vec<&str> = updates.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["check_interval_days", "periodic_check_enabled", "startup_check_enabled"]);
+    }
+
+    /// Update check setters persist and survive a manager reload from the same
+    /// config dir: both toggles round-trip independently in settings.json,
+    /// while the check state (result, attempt record, dismissal) lives in
+    /// `<config_dir>/updates/state.json` and never leaks into settings.json.
+    #[test]
+    fn update_settings_persist_and_reload() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-updates-set-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        // Defaults on a fresh installation: startup only, 1 day interval and
+        // an empty check state (no state file yet).
+        let updates = manager.get_update_settings();
+        assert!(updates.startup_check_enabled);
+        assert!(!updates.periodic_check_enabled);
+        assert_eq!(updates.check_interval_days, UPDATES_MIN_INTERVAL_DAYS);
+        assert_eq!(manager.get_update_state(), Default::default());
+
+        // Both toggles are independent saved values.
+        manager.set_updates_startup_check_enabled(false).unwrap();
+        manager.set_updates_periodic_check_enabled(true).unwrap();
+        let stored = manager.set_updates_check_interval_days(5).unwrap();
+        assert_eq!(stored, 5, "in-range interval is stored as-is");
+        manager
+            .set_updates_check_result(
+                "2026-11-18T10:00:00Z".to_string(),
+                UpdateRelease {
+                    version: "1.9.0".to_string(),
+                    name: Some("TTSBard 1.9.0".to_string()),
+                    notes: "What is new".to_string(),
+                    url: "https://github.com/ttsbard/TTSBard/releases/tag/v1.9.0".to_string(),
+                    published_at: Some("2026-11-16T08:00:00Z".to_string()),
+                },
+            )
+            .unwrap();
+        manager
+            .set_updates_dismissed_version(Some("1.9.0".to_string()))
+            .unwrap();
+
+        // The schedule is served from the settings; the check state is served
+        // from the state store.
+        let updates = manager.get_update_settings();
+        assert!(!updates.startup_check_enabled);
+        assert!(updates.periodic_check_enabled);
+        assert_eq!(updates.check_interval_days, 5);
+        let state = manager.get_update_state();
+        // A successful result is also the fresh attempt record: same time,
+        // no error.
+        assert_eq!(
+            state.last_attempt_at.as_deref(),
+            Some("2026-11-18T10:00:00Z")
+        );
+        assert_eq!(state.last_attempt_error, None);
+        assert_eq!(state.last_check_at.as_deref(), Some("2026-11-18T10:00:00Z"));
+        assert_eq!(
+            state.last_release.as_ref().map(|r| r.version.as_str()),
+            Some("1.9.0")
+        );
+        assert_eq!(state.dismissed_version.as_deref(), Some("1.9.0"));
+
+        // settings.json serializes only the settings: the `updates` section
+        // holds exactly the three schedule keys.
+        let raw_settings: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        let section = raw_settings
+            .pointer("/updates")
+            .and_then(Value::as_object)
+            .expect("updates section must exist");
+        let mut keys: Vec<&str> = section.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["check_interval_days", "periodic_check_enabled", "startup_check_enabled"],
+            "settings.json must not carry update check state"
+        );
+        // The check state lives in its own file under the config dir
+        // (isolated test root; production uses the data root).
+        let raw_state: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("updates").join("state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            raw_state
+                .pointer("/last_release/version")
+                .and_then(Value::as_str),
+            Some("1.9.0")
+        );
+        assert_eq!(
+            raw_state.pointer("/dismissed_version").and_then(Value::as_str),
+            Some("1.9.0")
+        );
+
+        // Out-of-range input clamps instead of storing a broken schedule.
+        let stored = manager.set_updates_check_interval_days(30).unwrap();
+        assert_eq!(stored, UPDATES_MAX_INTERVAL_DAYS);
+
+        // Reload from disk: everything the caches reported is on disk too,
+        // including both toggles and the attempt record (card/panel restore
+        // after restart).
+        let reloaded = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let updates = reloaded.get_update_settings();
+        assert!(!updates.startup_check_enabled);
+        assert!(updates.periodic_check_enabled);
+        assert_eq!(updates.check_interval_days, UPDATES_MAX_INTERVAL_DAYS);
+        let state = reloaded.get_update_state();
+        assert_eq!(state.last_attempt_at.as_deref(), Some("2026-11-18T10:00:00Z"));
+        assert_eq!(state.last_attempt_error, None);
+        assert_eq!(state.last_check_at.as_deref(), Some("2026-11-18T10:00:00Z"));
+        assert_eq!(
+            state.last_release.map(|r| r.version),
+            Some("1.9.0".to_string())
+        );
+        assert_eq!(state.dismissed_version.as_deref(), Some("1.9.0"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The dismissal is bound to the state directory captured before the
+    /// write, like the check-result and attempt-failure setters: a manager
+    /// whose effective root has moved to root B still writes the dismissed
+    /// version into root A when given A's captured directory, and root B
+    /// stays untouched. Reloaded from A, the dismissal is back.
+    #[test]
+    fn updates_dismissal_goes_to_the_captured_root() {
+        fn temp_root(tag: &str) -> std::path::PathBuf {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "ttsbard-updates-dismiss-{}-{}-{}",
+                std::process::id(),
+                tag,
+                unique
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+        let root_a = temp_root("a");
+        let root_b = temp_root("b");
+
+        // Capture A's state directory, then let the effective root switch to
+        // B (a fresh manager bound to B) before the write lands.
+        let captured_dir = SettingsManager::with_config_dir(root_a.clone())
+            .unwrap()
+            .update_state_dir();
+        let manager_b = SettingsManager::with_config_dir(root_b.clone()).unwrap();
+        manager_b
+            .set_updates_dismissed_version_in(
+                captured_dir.as_deref().expect("the test root must resolve"),
+                Some("1.9.0".to_string()),
+            )
+            .unwrap();
+
+        // The dismissal is in A's state file, not B's.
+        let raw_a: Value = serde_json::from_str(
+            &std::fs::read_to_string(captured_dir.as_ref().unwrap().join("state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            raw_a.pointer("/dismissed_version").and_then(Value::as_str),
+            Some("1.9.0"),
+            "the dismissal must land in the captured root"
+        );
+        assert!(
+            !root_b.join("updates").join("state.json").exists(),
+            "the root effective after the switch must stay untouched"
+        );
+
+        // A manager reloaded from A restores the panel suppression.
+        let reloaded_a = SettingsManager::with_config_dir(root_a.clone()).unwrap();
+        assert_eq!(
+            reloaded_a.get_update_state().dismissed_version.as_deref(),
+            Some("1.9.0")
+        );
+
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
+    }
+
+    /// A failed attempt persists its own time and stable error code in one
+    /// atomic write without touching the last successful check time, the
+    /// known release or the dismissed version, and survives a reload.
+    #[test]
+    fn updates_attempt_failure_keeps_success_fields_and_round_trips() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-updates-fail-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+
+        manager
+            .set_updates_check_result(
+                "2026-11-17T10:00:00Z".to_string(),
+                UpdateRelease {
+                    version: "1.8.9".to_string(),
+                    name: None,
+                    notes: String::new(),
+                    url: "https://github.com/ttsbard/TTSBard/releases/tag/v1.8.9".to_string(),
+                    published_at: None,
+                },
+            )
+            .unwrap();
+        manager
+            .set_updates_attempt_failure("2026-11-18T12:30:00Z".to_string(), "rate_limited")
+            .unwrap();
+
+        let state = manager.get_update_state();
+        assert_eq!(
+            state.last_attempt_at.as_deref(),
+            Some("2026-11-18T12:30:00Z"),
+            "failed attempt moves the attempt time"
+        );
+        assert_eq!(
+            state.last_attempt_error.as_deref(),
+            Some("rate_limited"),
+            "failed attempt stores its stable code"
+        );
+        assert_eq!(
+            state.last_check_at.as_deref(),
+            Some("2026-11-17T10:00:00Z"),
+            "failed attempt keeps the last successful check time"
+        );
+        assert_eq!(
+            state.last_release.as_ref().map(|r| r.version.as_str()),
+            Some("1.8.9"),
+            "failed attempt keeps the known release"
+        );
+
+        let reloaded = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        let state = reloaded.get_update_state();
+        assert_eq!(state.last_attempt_at.as_deref(), Some("2026-11-18T12:30:00Z"));
+        assert_eq!(state.last_attempt_error.as_deref(), Some("rate_limited"));
+        assert_eq!(state.last_check_at.as_deref(), Some("2026-11-17T10:00:00Z"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// set_ui_language follows the catalog tag rule: tags with empty segments or
     /// tags that cannot name a catalog file are rejected without persisting.
     #[test]
@@ -5901,6 +6551,7 @@ mod tests {
             config_dir: config_dir.clone(),
             cache: Arc::clone(&cache),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
 
         manager.set_ui_language("de".to_string()).unwrap();
@@ -5911,6 +6562,7 @@ mod tests {
             config_dir: bad_config_dir,
             cache,
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
         let result = bad_manager.set_ui_language("fr".to_string());
         assert!(result.is_err(), "persist to nonexistent dir must fail");
@@ -9142,6 +9794,7 @@ mod tests {
             config_dir: dir.join("missing-subdir"),
             cache: manager.cache_arc(),
             elevenlabs_catalog_cache: Arc::new(std::sync::RwLock::new(None)),
+            update_state: Arc::new(crate::updates::state::UpdateStateStore::new()),
         };
 
         let mut changed = initial.clone();

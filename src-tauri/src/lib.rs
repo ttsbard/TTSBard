@@ -41,6 +41,7 @@ mod telegram;
 mod thread_manager;
 mod tts;
 mod twitch;
+mod updates;
 pub mod vrchat;
 mod vtube_studio;
 mod webview;
@@ -846,6 +847,17 @@ pub fn run() {
             commands::vban::test_vban_output,
             commands::vban::get_vban_status,
             commands::vban::get_vban_health,
+            // Update check commands (ROADMAP-141)
+            commands::updates::get_update_status,
+            commands::updates::mark_update_startup_ready,
+            commands::updates::check_for_updates,
+            commands::updates::set_updates_startup_check,
+            commands::updates::set_updates_periodic_check,
+            commands::updates::set_updates_check_interval,
+            commands::updates::dismiss_update_panel,
+            // In-app update install commands (ROADMAP-141, stage 2)
+            commands::updates::install_update,
+            commands::updates::cancel_update_install,
         ])
         .setup({
             let settings_clone = settings.clone();

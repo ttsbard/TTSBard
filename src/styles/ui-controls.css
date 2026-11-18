@@ -121,6 +121,33 @@
   animation: ui-notice-in 0.3s ease-out;
 }
 
+.ui-notice-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.ui-notice-close:hover {
+  opacity: 1;
+}
+
+/* The state fills are light, so the accent-colored ring has too little
+   contrast on top of them; the inherited dark text color stays visible. */
+.ui-notice-close:focus-visible {
+  opacity: 1;
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
 .ui-notice--success {
   background: var(--ui-notice-bg-success);
   color: var(--ui-notice-text-success);

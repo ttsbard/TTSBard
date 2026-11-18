@@ -183,17 +183,22 @@ async fn stop_network_services(app_handle: &AppHandle, state: &AppState) {
 /// waits, notifies the WebView and emits `app-exit` before exiting. Only the
 /// first call wins; subsequent calls are ignored via `begin_shutdown`.
 pub(crate) async fn coordinate_shutdown(app_handle: AppHandle) {
-    let Some(state) = app_handle.try_state::<AppState>() else {
-        error!("coordinate_shutdown: AppState not available, exiting immediately");
-        app_handle.exit(0);
-        return;
-    };
-
-    if !state.begin_shutdown() {
+    if !prepare_shutdown(&app_handle).await {
         info!("Shutdown already in progress - ignoring duplicate request");
         return;
     }
+    app_handle.exit(0);
+}
 
+/// Persist the state the next app run needs, without tearing anything down.
+///
+/// Saves the main window position and flushes the editor tabs through the
+/// bounded handshake. Both steps are reversible: the app stays fully
+/// functional afterwards, which is what the in-app update install
+/// (ROADMAP-141 stage 2) relies on — it saves the state, launches the NSIS
+/// installer and only then exits, so a failed installer launch must not have
+/// cancelled the shutdown token or stopped the network services.
+pub(crate) async fn save_state_before_exit(app_handle: &AppHandle) {
     if let Some(windows_manager) = app_handle.try_state::<WindowsManager>() {
         if let Some(main_window) = app_handle.get_webview_window("main") {
             if let Ok(pos) = main_window.outer_position() {
@@ -207,6 +212,37 @@ pub(crate) async fn coordinate_shutdown(app_handle: AppHandle) {
         }
     }
 
+    // Flush editor tabs in the main webview before cancelling services so the
+    // latest tab state is persisted for the quit_app/ExitRequested path. The
+    // window close path already awaits its own flush via onCloseRequested.
+    request_tab_flush(app_handle).await;
+}
+
+/// Run the graceful exit preparation without exiting the process.
+///
+/// This is the body of [`coordinate_shutdown`] up to (but excluding) the
+/// final `exit(0)`: persist the main window position and the editor tabs
+/// ([`save_state_before_exit`]), stop the keyboard hook, cancel the shutdown
+/// token, stop the network services with bounded waits and notify the
+/// WebView. Used by the normal quit paths through [`coordinate_shutdown`].
+///
+/// Returns `false` when a shutdown is already in progress (the caller should
+/// not run its own exit sequence twice); `true` otherwise, including the
+/// degenerate case of a missing `AppState` where there is simply nothing to
+/// prepare.
+pub(crate) async fn prepare_shutdown(app_handle: &AppHandle) -> bool {
+    let Some(state) = app_handle.try_state::<AppState>() else {
+        error!("prepare_shutdown: AppState not available, nothing to prepare");
+        return true;
+    };
+
+    if !state.begin_shutdown() {
+        info!("Shutdown already in progress - ignoring duplicate request");
+        return false;
+    }
+
+    save_state_before_exit(app_handle).await;
+
     {
         let mut hook_guard = state.soundpanel_hook.lock();
         if let Some(ref mut hook_manager) = *hook_guard {
@@ -215,28 +251,22 @@ pub(crate) async fn coordinate_shutdown(app_handle: AppHandle) {
         *hook_guard = None;
     }
 
-    // Flush editor tabs in the main webview before cancelling services so the
-    // latest tab state is persisted for the quit_app/ExitRequested path. The
-    // window close path already awaits its own flush via onCloseRequested.
-    request_tab_flush(&app_handle).await;
-
     state.shutdown.cancel();
     info!("Shutdown token cancelled — all servers notified");
 
     // Stop the OCR runtime without waiting for an in-flight recognition: the
     // shutdown stop defers the real stop to a background task when the
     // transition lock is held, so app exit is never delayed by OCR.
-    crate::commands::ocr::stop_ocr_runtime_for_shutdown(&app_handle, state.inner()).await;
+    crate::commands::ocr::stop_ocr_runtime_for_shutdown(app_handle, state.inner()).await;
 
     // Wait for the registered network service teardowns with a bounded timeout
     // instead of a blind grace-period sleep.
-    stop_network_services(&app_handle, state.inner()).await;
+    stop_network_services(app_handle, state.inner()).await;
 
     state.webview.send_event(crate::events::AppEvent::Quit);
 
     let _ = app_handle.emit("app-exit", ());
-
-    app_handle.exit(0);
+    true
 }
 
 #[cfg(test)]
