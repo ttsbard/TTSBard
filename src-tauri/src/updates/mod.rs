@@ -2723,8 +2723,8 @@ mod tests {
     /// and be computed from the new root. Either way the switch's event
     /// lands last and carries the new root's state: a stale A event never
     /// follows the B root-switch event.
-    #[tokio::test]
-    async fn root_switch_broadcast_is_serialized_with_check_completion() {
+    #[test]
+    fn root_switch_broadcast_is_serialized_with_check_completion() {
         let dir_a = temp_config_dir("order-switch-a");
         let dir_b = temp_config_dir("order-switch-b");
         let manager = SettingsManager::with_config_dir(dir_a.clone()).unwrap();
@@ -2776,12 +2776,9 @@ mod tests {
         let task_manager = manager.clone();
         let task_state = Arc::clone(&state);
         let task_install = Arc::clone(&install);
-        // The emitter blocks on an OS-level channel while holding the
-        // broadcast mutex, so the check runs on a dedicated OS thread with
-        // its own multi-thread runtime: on the current-thread test runtime
-        // a blocking receive inside the spawned task would starve the very
-        // thread driving it. Completion is signalled on a channel so the
-        // wait stays bounded.
+        // The check runs on a separate thread so the test can release its
+        // emitter while it holds the broadcast mutex. Completion is
+        // signalled on a channel so the wait stays bounded.
         let (final_done, final_done_rx) = std::sync::mpsc::channel();
         let task = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2803,8 +2800,6 @@ mod tests {
             });
             final_done.send(()).expect("the completion signal is sent");
         });
-        wait_until(|| state.is_checking(), "the check to start").await;
-
         // The completion entered its emit while holding the mutex.
         final_in_emit_rx
             .recv_timeout(Duration::from_secs(5))
