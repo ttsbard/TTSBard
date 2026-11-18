@@ -57,7 +57,12 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
     // Windows are declared in tauri.conf.json with "create": false and are
     // built here so that the settings-recovery flow can boot a minimal
     // process without them (ROADMAP-123).
-    create_configured_windows(app, settings.start_compact, windows.main.compact_view)?;
+    create_configured_windows(
+        app,
+        settings.start_compact,
+        windows.main.compact_view,
+        settings_manager.get_editor_height(),
+    )?;
 
     let app_state = app.state::<AppState>();
     let telegram_state = app.state::<TelegramState>();
@@ -719,6 +724,7 @@ fn create_configured_windows(
     app: &App,
     start_compact: bool,
     compact_view: crate::config::CompactView,
+    editor_height: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for label in ["main", "soundpanel", "playback-control", "ocr-selection"] {
         let config = app
@@ -735,6 +741,7 @@ fn create_configured_windows(
             builder = builder.initialization_script(build_main_window_initialization_script(
                 start_compact,
                 compact_view,
+                editor_height,
             ));
         }
         builder
@@ -1398,18 +1405,20 @@ fn missing_piper_notification(model_name: &str) -> String {
 
 /// Builds the initialization script injected into the main window before any frontend script runs.
 ///
-/// Injects `window.__TTSBARD_START_COMPACT__` and `window.__TTSBARD_COMPACT_VIEW__`
-/// to guarantee no-flash startup window mode and view resolution.
+/// Injects `window.__TTSBARD_START_COMPACT__`, `window.__TTSBARD_COMPACT_VIEW__`
+/// and `window.__TTSBARD_EDITOR_HEIGHT__`
+/// to guarantee no-flash startup window mode, view resolution and editor height.
 pub fn build_main_window_initialization_script(
     start_compact: bool,
     compact_view: crate::config::CompactView,
+    editor_height: u32,
 ) -> String {
     let view_str = match compact_view {
         crate::config::CompactView::Mono => "mono",
         crate::config::CompactView::Compact => "compact",
     };
     format!(
-        "window.__TTSBARD_START_COMPACT__ = {start_compact};\nwindow.__TTSBARD_COMPACT_VIEW__ = \"{view_str}\";"
+        "window.__TTSBARD_START_COMPACT__ = {start_compact};\nwindow.__TTSBARD_COMPACT_VIEW__ = \"{view_str}\";\nwindow.__TTSBARD_EDITOR_HEIGHT__ = {editor_height};"
     )
 }
 
@@ -1862,20 +1871,20 @@ mod tests {
         use crate::config::CompactView;
 
         assert_eq!(
-            build_main_window_initialization_script(false, CompactView::Compact),
-            "window.__TTSBARD_START_COMPACT__ = false;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"compact\";"
+            build_main_window_initialization_script(false, CompactView::Compact, 216),
+            "window.__TTSBARD_START_COMPACT__ = false;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"compact\";\nwindow.__TTSBARD_EDITOR_HEIGHT__ = 216;"
         );
         assert_eq!(
-            build_main_window_initialization_script(false, CompactView::Mono),
-            "window.__TTSBARD_START_COMPACT__ = false;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"mono\";"
+            build_main_window_initialization_script(false, CompactView::Mono, 216),
+            "window.__TTSBARD_START_COMPACT__ = false;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"mono\";\nwindow.__TTSBARD_EDITOR_HEIGHT__ = 216;"
         );
         assert_eq!(
-            build_main_window_initialization_script(true, CompactView::Compact),
-            "window.__TTSBARD_START_COMPACT__ = true;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"compact\";"
+            build_main_window_initialization_script(true, CompactView::Compact, 216),
+            "window.__TTSBARD_START_COMPACT__ = true;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"compact\";\nwindow.__TTSBARD_EDITOR_HEIGHT__ = 216;"
         );
         assert_eq!(
-            build_main_window_initialization_script(true, CompactView::Mono),
-            "window.__TTSBARD_START_COMPACT__ = true;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"mono\";"
+            build_main_window_initialization_script(true, CompactView::Mono, 216),
+            "window.__TTSBARD_START_COMPACT__ = true;\nwindow.__TTSBARD_COMPACT_VIEW__ = \"mono\";\nwindow.__TTSBARD_EDITOR_HEIGHT__ = 216;"
         );
     }
 

@@ -756,13 +756,27 @@ const usernamesRecord = computed(() => {
 
 // Full-mode editor height resize state. The height separator drives only the
 // editor height setting (200..1200 CSS px), persisted via set_editor_height.
-const editorHeight = ref(editorSettings.value?.editor_height ?? 340)
+// Saved height injected by the backend initialization script (no-flash startup).
+const bootEditorHeight = (window as { __TTSBARD_EDITOR_HEIGHT__?: unknown })
+  .__TTSBARD_EDITOR_HEIGHT__
+const editorHeight = ref(
+  editorSettings.value?.editor_height ??
+    (typeof bootEditorHeight === 'number' ? bootEditorHeight : 340),
+)
 const isResizing = ref(false)
 const resizeStartY = ref(0)
 const resizeStartHeight = ref(0)
+// Set when the user finishes a resize; the first full-snapshot value after that
+// must not overwrite the local height.
+let editorHeightUserAdjusted = false
 
 watch(() => editorSettings.value?.editor_height, (newVal) => {
-  if (newVal !== undefined && newVal !== editorHeight.value && !isResizing.value) {
+  if (newVal === undefined) return
+  if (editorHeightUserAdjusted) {
+    editorHeightUserAdjusted = false
+    return
+  }
+  if (newVal !== editorHeight.value && !isResizing.value) {
     editorHeight.value = newVal
   }
 }, { immediate: true })
@@ -784,6 +798,9 @@ function onResizePointerMove(e: PointerEvent) {
 function onResizePointerUp(_e: PointerEvent) {
   if (!isResizing.value) return
   isResizing.value = false
+  if (editorSettings.value?.editor_height === undefined) {
+    editorHeightUserAdjusted = true
+  }
   const heightToSave = editorHeight.value
   invoke('set_editor_height', { height: heightToSave }).catch(() => {})
 }
