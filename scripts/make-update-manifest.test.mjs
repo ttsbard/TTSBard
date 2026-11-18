@@ -93,7 +93,7 @@ test('--print-notes writes the section that the release body and the manifest sh
     const manifest = JSON.parse(readFileSync(out, 'utf8'))
     assert.equal(manifest.version, '1.9.0')
     assert.equal(manifest.notes, printed.stdout.trim())
-    assert.match(manifest.platforms['windows-x86_64'].url, /releases\/download\/v1\.9\.0\/setup\.exe$/)
+    assert.match(manifest.platforms['windows-x86_64'].url, /releases\/download\/1\.9\.0\/setup\.exe$/)
     assert.ok(manifest.platforms['windows-x86_64'].signature.trim().length > 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -135,6 +135,6 @@ test('buildManifest keeps the fixed platform key and repo override', () => {
   assert.deepEqual(Object.keys(manifest.platforms), ['windows-x86_64'])
   assert.equal(
     manifest.platforms['windows-x86_64'].url,
-    'https://github.com/acme/TTSBard/releases/download/v2.0.0/TTSBard_2.0.0_x64-setup.exe',
+    'https://github.com/acme/TTSBard/releases/download/2.0.0/TTSBard_2.0.0_x64-setup.exe',
   )
 })

@@ -110,7 +110,7 @@ function buildManifest({ version, setupPath, signature, notes, repo }) {
     platforms: {
       'windows-x86_64': {
         signature,
-        url: `https://github.com/${repository}/releases/download/v${version}/${fileName}`,
+        url: `https://github.com/${repository}/releases/download/${version}/${fileName}`,
       },
     },
   }

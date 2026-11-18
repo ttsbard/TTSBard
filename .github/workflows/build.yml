@@ -223,6 +223,8 @@ jobs:
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           files: |
             artifacts/**/*.exe
             artifacts/**/*-setup.exe.sig
@@ -240,9 +242,9 @@ jobs:
             --version "$VERSION" \
             --changelog CHANGELOG.md > artifacts/release-notes.md
           if [[ -s artifacts/release-notes.md ]]; then
-            echo "Release notes: $(wc -c < artifacts/release-notes.md) chars from the v$VERSION section"
+            echo "Release notes: $(wc -c < artifacts/release-notes.md) chars from the [$VERSION] section"
           else
-            echo "::warning::CHANGELOG.md has no section for v$VERSION; prepare the version notes and rerun"
+            echo "::warning::CHANGELOG.md has no section for [$VERSION]; prepare the version notes and rerun"
           fi
 
       # Idempotent on reruns: a body that already matches the section is left
