@@ -24,8 +24,7 @@ combination and save. Sound panel, main window, playback actions/control and
 return-focus bindings can be customized.
 
 You can assign NumPad keys to global shortcuts, local main-window actions and
-editor actions. For example, `1` above the letters and `NumPad 1` can trigger
-different actions. Turn on Num Lock for global shortcuts that use NumPad
+editor actions. Turn on Num Lock for global shortcuts that use NumPad
 digits or the decimal key. Local shortcuts also work with Num Lock off.
 
 ### Local editor shortcuts
