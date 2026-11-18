@@ -12,6 +12,24 @@ function runTest({ sourceText, populated, omitNull, rootExportName = 'AppSetting
 }
 
 describe('checkSettingsParity (production entry point)', () => {
+  it('accepts an optional boolean emitted only for the non-default value', () => {
+    const result = runTest({
+      sourceText: 'export interface AppSettingsDto { enabled?: boolean }',
+      populated: { enabled: false },
+      omitNull: {},
+    })
+    assert.deepStrictEqual(result.errors, [])
+  })
+
+  it('rejects a boolean value when the optional TypeScript field is a string', () => {
+    const result = runTest({
+      sourceText: 'export interface AppSettingsDto { enabled?: string }',
+      populated: { enabled: false },
+      omitNull: {},
+    })
+    assert.ok(result.errors.some(error => error.includes('enabled') && error.includes('boolean')))
+  })
+
   it('passes when fixtures match TypeScript types exactly', () => {
     const source = `
       export interface AppSettingsDto {

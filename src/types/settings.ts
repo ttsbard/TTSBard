@@ -40,6 +40,8 @@ export interface EditorHotkeySettingsDto {
   accent_homographs: HotkeyDto
   approve_next_incoming: HotkeyDto
   edit_next_incoming: HotkeyDto
+  toggle_virtual_mic: HotkeyDto
+  toggle_vban: HotkeyDto
 }
 
 export interface HotkeySettingsDto {
@@ -257,6 +259,12 @@ export interface AudioSettingsDto {
   speaker_enabled: boolean
   speaker_volume: number
   virtual_mic_device: string | null
+  /**
+   * Editor output toggle (ROADMAP-142). Legacy configs without the field load
+   * enabled: feeding always required a selected device, so old behavior is
+   * preserved.
+   */
+  virtual_mic_enabled: boolean
   virtual_mic_volume: number
   /** Old persisted configs are normalized by the backend before serialization. */
   vban: VbanSettingsDto

@@ -35,3 +35,5 @@
 
 Each subject has one detailed guide per language. Getting-started pages link
 to it. Historical plans do not describe the current interface.
+
+- [Quick audio output controls](audio-outputs.md) — application-wide microphone and VBAN switching from the main window, including Sound panel.

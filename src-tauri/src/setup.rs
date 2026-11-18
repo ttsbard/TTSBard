@@ -337,9 +337,12 @@ pub fn init_app(app: &App, mut settings: AppSettings) -> Result<(), Box<dyn std:
     {
         let sp_worker_shutdown = app_state.inner().shutdown.clone();
         let sp_worker_vban = app_state.inner().vban.clone();
-        if let Err(error) =
-            soundpanel_state.start_queue_worker(sp_worker_shutdown, Some(sp_worker_vban))
-        {
+        let sp_worker_settings = app_state.inner().settings_cache.clone();
+        if let Err(error) = soundpanel_state.start_queue_worker(
+            sp_worker_shutdown,
+            Some(sp_worker_vban),
+            Some(sp_worker_settings),
+        ) {
             error!(error = %error, "Failed to start SoundPanel queue worker");
         }
     }

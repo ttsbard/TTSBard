@@ -27,6 +27,7 @@ import { presentCommandError } from '../ipc/commandError'
 import { submitSpeech } from '../ipc/speech'
 import { deliverTwitchMessage } from '../ipc/twitchDelivery'
 import { matchesEditorHotkey } from './editor/keymapArbitration'
+import { resolveEditorScopeAction } from './editor/editorScopeActions'
 import { incomingSurfaceHotkey, resolveIncomingTabTransition, type EditorHotkeyAction, type TabCycleDirection } from './editor/incomingHotkeys'
 import { Volume2, Clock, Keyboard, Twitch, ArrowDownToLine, Undo2 } from 'lucide-vue-next'
 import { enterOutcomeLabel, nextQuickMode, submitActionState, resolveKeepText } from './editor/submitAffordance'
@@ -439,6 +440,8 @@ async function cycleQuickMode() {
     console.error('[InputPanel] Failed to save quick editor mode:', e)
   }
 }
+
+
 
 async function reloadPreprocessorData() {
   try {
@@ -888,79 +891,72 @@ async function handleEditorScopeKeydown(event: KeyboardEvent) {
     return
   }
 
-  if (matchesEditorHotkey(bindings.submit_keep_focus, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    await handleSubmit('keep_focus')
-    return
-  }
-  if (matchesEditorHotkey(bindings.submit_keep_text, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    await handleSubmit('keep_text')
-    return
-  }
+  // The decision lives in editorScopeActions (unit-tested); the effects —
+  // prevent/stop and the exact action — stay here on the real component path.
+  const action = resolveEditorScopeAction(bindings, event)
+  if (action === null) return
 
-  const direction: TabCycleDirection | null = matchesEditorHotkey(bindings.next_tab, event)
-    ? 'next'
-    : matchesEditorHotkey(bindings.previous_tab, event)
-      ? 'previous'
-      : null
-  if (direction) {
-    event.preventDefault()
-    event.stopPropagation()
-    cycleTabs(direction)
-    await nextTick()
-    focusEditor()
-    return
-  }
-
-  if (matchesEditorHotkey(bindings.approve_next_incoming, event)) {
-    const firstPending = incomingPendingItems.value[0]
-    if (!firstPending) return
-    event.preventDefault()
-    event.stopPropagation()
-    void approveIncoming(firstPending.id)
-    return
-  }
-  if (matchesEditorHotkey(bindings.edit_next_incoming, event)) {
-    const firstPending = incomingPendingItems.value[0]
-    if (!firstPending) return
-    event.preventDefault()
-    event.stopPropagation()
-    await onEditIncoming(firstPending.id)
-    return
-  }
-
-  if (matchesEditorHotkey(bindings.accent_homographs, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    await previewHomographs()
-    return
-  }
-
-  if (matchesEditorHotkey(bindings.cycle_route, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    cycleRoute()
-    return
-  }
-  if (matchesEditorHotkey(bindings.toggle_typing, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    toggleTypingEnabled()
-    return
-  }
-  if (matchesEditorHotkey(bindings.cycle_quick_mode, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    await cycleQuickMode()
-    return
-  }
-  if (matchesEditorHotkey(bindings.toggle_history, event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    toggleHistory()
+  switch (action) {
+    case 'submit_keep_focus':
+      event.preventDefault()
+      event.stopPropagation()
+      await handleSubmit('keep_focus')
+      return
+    case 'submit_keep_text':
+      event.preventDefault()
+      event.stopPropagation()
+      await handleSubmit('keep_text')
+      return
+    case 'next_tab':
+    case 'previous_tab':
+      event.preventDefault()
+      event.stopPropagation()
+      cycleTabs(action === 'next_tab' ? 'next' : 'previous')
+      await nextTick()
+      focusEditor()
+      return
+    case 'approve_next_incoming': {
+      // The empty-queue key press passes through to the editor unprefented,
+      // exactly as in the historical chain.
+      const firstPending = incomingPendingItems.value[0]
+      if (!firstPending) return
+      event.preventDefault()
+      event.stopPropagation()
+      void approveIncoming(firstPending.id)
+      return
+    }
+    case 'edit_next_incoming': {
+      const firstPending = incomingPendingItems.value[0]
+      if (!firstPending) return
+      event.preventDefault()
+      event.stopPropagation()
+      await onEditIncoming(firstPending.id)
+      return
+    }
+    case 'accent_homographs':
+      event.preventDefault()
+      event.stopPropagation()
+      await previewHomographs()
+      return
+    case 'cycle_route':
+      event.preventDefault()
+      event.stopPropagation()
+      cycleRoute()
+      return
+    case 'toggle_typing':
+      event.preventDefault()
+      event.stopPropagation()
+      toggleTypingEnabled()
+      return
+    case 'cycle_quick_mode':
+      event.preventDefault()
+      event.stopPropagation()
+      await cycleQuickMode()
+      return
+    case 'toggle_history':
+      event.preventDefault()
+      event.stopPropagation()
+      toggleHistory()
   }
 }
 
@@ -1067,17 +1063,6 @@ defineExpose({ focusEditor })
         >
           <Clock v-if="isMinimalMode" :size="14" />
           <template v-else>{{ t('history.title') }}</template>
-        </button>
-        <button
-          v-if="!isMinimalMode"
-          class="action-btn ai-btn"
-          :class="{ loading: isCorrecting || isCompleting || isCheckingGrammar }"
-          :disabled="isCorrecting || isCompleting || isCheckingGrammar || !text.trim() || !isAiButtonEnabled"
-          @click="correctText"
-          :title="t('editor.ai_correct.title')"
-          :aria-label="t('editor.ai_correct.aria')"
-        >
-          AI
         </button>
         <RouteSelector
           :route="currentRoute"
@@ -1352,10 +1337,6 @@ defineExpose({ focusEditor })
   background: var(--color-bg-elevated);
   color: var(--color-text-primary);
   border-color: var(--color-border-strong);
-}
-
-.ai-btn.loading {
-  animation: pulse 1.5s ease-in-out infinite;
 }
 
 .speak-btn {

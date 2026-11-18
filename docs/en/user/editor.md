@@ -255,3 +255,5 @@ outside or switching tabs also closes the menu.
 F7/Shift+F7 navigate current errors within the editor.
 If the dictionary fails to load, an unavailable message appears and underlines
 stop. After fixing the files, checking resumes automatically on the next input.
+
+The microphone and VBAN controls belong to the main window rather than the editor. Their shortcuts are in the Main window group and also disable the output for Sound panel. See [audio output controls](audio-outputs.md).

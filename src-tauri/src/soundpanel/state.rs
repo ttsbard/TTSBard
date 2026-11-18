@@ -189,10 +189,13 @@ impl SoundQueue {
 /// Синхронно воспроизводит один элемент и только затем берёт следующий.
 /// Завершается при отмене `shutdown`, не начиная новый элемент после отмены.
 /// Общий runtime VBAN прокидывается в каждый клип для сетевого выхода.
+/// Живой кэш настроек (ROADMAP-142) даёт клипам актуальное состояние
+/// переключателя микрофона вместо снимка, накопленного в очереди.
 fn run_queue_worker(
     receiver: Receiver<QueueItem>,
     shutdown: CancellationToken,
     vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+    settings_cache: Option<Arc<parking_lot::RwLock<crate::config::AppSettings>>>,
 ) {
     let clip_shutdown = shutdown.clone();
     run_queue_worker_with(receiver, shutdown, move |item| {
@@ -200,6 +203,7 @@ fn run_queue_worker(
             &item.path,
             &item.audio_settings,
             vban.as_deref(),
+            settings_cache.as_deref(),
             Some(&clip_shutdown),
         );
     });
@@ -488,13 +492,15 @@ impl SoundPanelState {
     ///
     /// Worker забирает элементы FIFO и синхронно воспроизводит каждый через
     /// `soundpanel::audio::play_audio_file`, не создавая поток на каждый звук.
-    /// Общий runtime VBAN передаётся для сетевого выхода клипов. Завершается
-    /// при отмене переданного `CancellationToken`. Вызывается ровно один раз
-    /// из `setup::init_app`.
+    /// Общий runtime VBAN передаётся для сетевого выхода клипов, общий кэш
+    /// настроек — для живого гейта микрофонного переключателя (ROADMAP-142).
+    /// Завершается при отмене переданного `CancellationToken`. Вызывается
+    /// ровно один раз из `setup::init_app`.
     pub fn start_queue_worker(
         &self,
         shutdown: CancellationToken,
         vban: Option<Arc<crate::audio::vban::VbanOutput>>,
+        settings_cache: Option<Arc<parking_lot::RwLock<crate::config::AppSettings>>>,
     ) -> Result<(), String> {
         let receiver = self
             .queue_receiver
@@ -504,7 +510,7 @@ impl SoundPanelState {
             .ok_or_else(|| "SoundPanel queue worker already started".to_string())?;
 
         std::thread::spawn(move || {
-            run_queue_worker(receiver, shutdown, vban);
+            run_queue_worker(receiver, shutdown, vban, settings_cache);
         });
 
         info!(

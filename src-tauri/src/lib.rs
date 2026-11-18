@@ -66,7 +66,7 @@ use commands::telegram::{
 };
 use commands::{
     apply_openai_proxy_settings, close_playback_control_window, close_soundpanel_window,
-    disable_virtual_mic, enable_virtual_mic, get_audio_effects, get_audio_output_format_pending,
+    get_audio_effects, get_audio_output_format_pending,
     get_audio_settings, get_dsp_settings, get_editor_font_family, get_editor_font_size_px,
     get_editor_height, get_editor_hotkeys, get_editor_quick, get_editor_spellcheck_enabled,
     get_editor_spellcheck_source, get_editor_typing_idle_timeout_ms,
@@ -96,7 +96,8 @@ use commands::{
     set_openai_voice, set_playback_appearance_source, set_pocket_voice, set_show_playback_on_start,
     set_soundpanel_appearance_source, set_speaker_device, set_speaker_enabled, set_speaker_volume,
     set_start_compact, set_tts_provider, set_ui_font_family, set_ui_font_size,
-    set_virtual_mic_device, set_virtual_mic_volume, speak_text_raw_export,
+    set_virtual_mic_device, set_virtual_mic_enabled, set_virtual_mic_volume,
+    speak_text_raw_export,
     start_homograph_accentor_startup_load, stop_preview, test_audio_device,
     toggle_playback_control_window, toggle_soundpanel_window, unregister_hotkeys, update_theme,
     validate_pocket_reference, window::remove_main_bounds, window::resize_main_window,
@@ -558,8 +559,7 @@ pub fn run() {
             set_speaker_enabled,
             set_speaker_volume,
             set_virtual_mic_device,
-            enable_virtual_mic,
-            disable_virtual_mic,
+            set_virtual_mic_enabled,
             set_virtual_mic_volume,
             test_audio_device,
             get_audio_output_format_pending,

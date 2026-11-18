@@ -225,29 +225,18 @@ pub async fn set_virtual_mic_device(
     Ok(())
 }
 
-/// Enable virtual mic
+/// Включить или выключить выход виртуального микрофона (ROADMAP-142).
+///
+/// Persist-first переключатель редактора: сохранённое устройство и громкость
+/// не трогаются, включение восстанавливает подачу с прежними настройками.
 #[tauri::command]
-pub async fn enable_virtual_mic(
+pub async fn set_virtual_mic_enabled(
     app_handle: AppHandle,
-    settings_manager: State<'_, SettingsManager>,
-) -> Result<(), String> {
-    // Enable by setting a device
-    super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_virtual_mic_device(Some("".to_string()))
-    })
-    .await?;
-    super::emit_settings_changed(&app_handle);
-    Ok(())
-}
-
-/// Disable virtual mic
-#[tauri::command]
-pub async fn disable_virtual_mic(
-    app_handle: AppHandle,
+    enabled: bool,
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_virtual_mic_device(None)
+        manager.set_virtual_mic_enabled(enabled)
     })
     .await?;
     super::emit_settings_changed(&app_handle);

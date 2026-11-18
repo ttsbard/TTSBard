@@ -43,6 +43,11 @@ pub struct AudioSettings {
     #[serde(default = "default_speaker_volume")]
     pub speaker_volume: u8,
     pub virtual_mic_device: Option<String>,
+    /// Редакторный переключатель выхода (ROADMAP-142). Отсутствующее поле в
+    /// старом конфиге читается включённым: подача и раньше требовала
+    /// выбранного устройства, поэтому поведение legacy-конфигов не меняется.
+    #[serde(default = "default_virtual_mic_enabled")]
+    pub virtual_mic_enabled: bool,
     #[serde(default = "default_virtual_mic_volume")]
     pub virtual_mic_volume: u8,
     /// Сетевой выход VBAN. Отсутствующая секция в старом конфиге даёт
@@ -57,6 +62,9 @@ fn default_speaker_enabled() -> bool {
 fn default_speaker_volume() -> u8 {
     80
 }
+fn default_virtual_mic_enabled() -> bool {
+    true
+}
 fn default_virtual_mic_volume() -> u8 {
     100
 }
@@ -69,6 +77,7 @@ impl Default for AudioSettings {
             speaker_enabled: true,
             speaker_volume: 80,
             virtual_mic_device: None,
+            virtual_mic_enabled: true,
             virtual_mic_volume: 100,
             vban: VbanSettings::default(),
         }
@@ -2633,6 +2642,14 @@ impl SettingsManager {
     /// Set virtual mic device
     pub fn set_virtual_mic_device(&self, device_id: Option<String>) -> Result<()> {
         self.update_field("/audio/virtual_mic_device", &device_id)
+    }
+
+    /// Включённость выхода виртуального микрофона (ROADMAP-142).
+    ///
+    /// Переключатель редактора: не трогает сохранённое устройство, так что
+    /// включение возвращает подачу с прежними настройками.
+    pub fn set_virtual_mic_enabled(&self, enabled: bool) -> Result<()> {
+        self.update_field("/audio/virtual_mic_enabled", &enabled)
     }
 
     /// Set virtual mic volume
@@ -5970,6 +5987,74 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(old_json)
             .expect("old AppSettings (without hide_on_minimize field) must deserialize");
         assert!(!settings.hide_on_minimize);
+    }
+
+    /// ROADMAP-142: старый конфиг без `audio.virtual_mic_enabled` читается
+    /// включённым выходом. Подача и раньше требовала выбранного устройства,
+    /// поэтому поведение legacy-конфигов не меняется ни для одного из двух
+    /// возможных значений устройства.
+    #[test]
+    fn audio_settings_without_mic_toggle_field_defaults_to_enabled() {
+        let json = r#"{
+            "speaker_device": "Speakers",
+            "speaker_enabled": true,
+            "speaker_volume": 80,
+            "virtual_mic_device": "CABLE Input",
+            "virtual_mic_volume": 100
+        }"#;
+        let audio: AudioSettings = serde_json::from_str(json).unwrap();
+        assert!(audio.virtual_mic_enabled);
+        assert_eq!(audio.virtual_mic_device.as_deref(), Some("CABLE Input"));
+
+        let empty: AudioSettings = serde_json::from_str(
+            r#"{ "speaker_device": null, "speaker_enabled": true, "speaker_volume": 80,
+                 "virtual_mic_device": null, "virtual_mic_volume": 100 }"#,
+        )
+        .unwrap();
+        assert!(empty.virtual_mic_enabled);
+        assert!(empty.virtual_mic_device.is_none());
+    }
+
+    /// ROADMAP-142: переключатель редактора пишет диск persist-first,
+    /// обновляет общий кэш (его читает такт опроса PlaybackManager) и не
+    /// трогает сохранённое устройство — включение восстанавливает подачу.
+    #[test]
+    fn set_virtual_mic_enabled_persists_keeps_device_and_refreshes_cache() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ttsbard-mic-toggle-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SettingsManager::with_config_dir(dir.clone()).unwrap();
+        manager
+            .set_virtual_mic_device(Some("CABLE Input".to_string()))
+            .unwrap();
+
+        manager.set_virtual_mic_enabled(false).unwrap();
+        assert!(!manager.load().unwrap().audio.virtual_mic_enabled);
+        assert!(!manager.cache_arc().read().audio.virtual_mic_enabled);
+
+        let from_disk: AppSettings =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert!(!from_disk.audio.virtual_mic_enabled);
+        assert_eq!(
+            from_disk.audio.virtual_mic_device.as_deref(),
+            Some("CABLE Input")
+        );
+
+        manager.set_virtual_mic_enabled(true).unwrap();
+        let restored = manager.load().unwrap().audio;
+        assert!(restored.virtual_mic_enabled);
+        assert_eq!(restored.virtual_mic_device.as_deref(), Some("CABLE Input"));
+        assert!(manager.cache_arc().read().audio.virtual_mic_enabled);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

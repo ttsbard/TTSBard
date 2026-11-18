@@ -22,6 +22,7 @@ const audioSettings = ref({
   speaker_enabled: true,
   speaker_volume: 80,
   virtual_mic_device: null as string | null,
+  virtual_mic_enabled: true,
   virtual_mic_volume: 100,
 });
 
@@ -166,19 +167,26 @@ async function enableVirtualMic() {
     await invoke('set_virtual_mic_device', { deviceId });
     selectedVirtualMicDevice.value = deviceId;
     audioSettings.value.virtual_mic_device = deviceId;
+    await setVirtualMicEnabled(true);
   } catch (error) {
     debugError('Failed to enable virtual mic:', error);
-    errorMessage.value = presentCommandError(error, t('audio.error.enable_virtual_mic'));
+    errorMessage.value = presentCommandError(error, t('audio.error.set_virtual_mic_device'));
   }
 }
 
+// ROADMAP-142: the switch keeps the selected device and volume, so enabling
+// restores the output with its previous hardware settings.
 async function disableVirtualMic() {
+  await setVirtualMicEnabled(false);
+}
+
+async function setVirtualMicEnabled(enabled: boolean) {
   try {
-    await invoke('disable_virtual_mic');
-    audioSettings.value.virtual_mic_device = null;
+    await invoke('set_virtual_mic_enabled', { enabled });
+    audioSettings.value.virtual_mic_enabled = enabled;
   } catch (error) {
-    debugError('Failed to disable virtual mic:', error);
-    errorMessage.value = presentCommandError(error, t('audio.error.disable_virtual_mic'));
+    debugError('Failed to set virtual mic enabled:', error);
+    errorMessage.value = presentCommandError(error, t('audio.error.set_virtual_mic_enabled'));
   }
 }
 
@@ -258,6 +266,7 @@ watch(audioSettingsFromComposable, (newSettings) => {
     speaker_enabled: newSettings.speaker_enabled,
     speaker_volume: newSettings.speaker_volume,
     virtual_mic_device: audioSettings.value.virtual_mic_device ?? newSettings.virtual_mic_device ?? null,
+    virtual_mic_enabled: newSettings.virtual_mic_enabled,
     virtual_mic_volume: newSettings.virtual_mic_volume,
   };
 }, { immediate: true });
@@ -351,14 +360,14 @@ watch(audioSettingsFromComposable, (newSettings) => {
           <div class="toggle-buttons">
             <button
               @click="enableVirtualMic()"
-              :class="{ active: !!audioSettings.virtual_mic_device }"
+              :class="{ active: audioSettings.virtual_mic_enabled }"
               class="toggle-btn"
             >
               <Mic :size="14" /> {{ t('audio.on') }}
             </button>
             <button
               @click="disableVirtualMic()"
-              :class="{ active: !audioSettings.virtual_mic_device }"
+              :class="{ active: !audioSettings.virtual_mic_enabled }"
               class="toggle-btn"
             >
               <Mic :size="14" /> {{ t('audio.off') }}
@@ -366,12 +375,12 @@ watch(audioSettingsFromComposable, (newSettings) => {
           </div>
         </div>
 
-        <div class="devices-row" :class="{ disabled: !audioSettings.virtual_mic_device }">
+        <div class="devices-row" :class="{ disabled: !audioSettings.virtual_mic_enabled }">
           <label class="ui-label">{{ t('audio.device') }}</label>
           <div class="input-with-action">
             <select
               class="ui-select"
-              :disabled="!audioSettings.virtual_mic_device"
+              :disabled="!audioSettings.virtual_mic_enabled"
               @change="setVirtualMicDevice(($event.target as HTMLSelectElement).value || null)"
             >
               <option value="">{{ t('audio.mic.none') }}</option>
@@ -386,7 +395,7 @@ watch(audioSettingsFromComposable, (newSettings) => {
             </select>
             <button
               @click="testVirtualMic"
-              :disabled="!audioSettings.virtual_mic_device || isTestingVirtualMic || isSettingFormat"
+              :disabled="!audioSettings.virtual_mic_enabled || !audioSettings.virtual_mic_device || isTestingVirtualMic || isSettingFormat"
               class="ui-icon-button ui-icon-button--adjacent test-btn"
               :title="t('audio.test_playback')"
               :aria-label="t('audio.test_playback')"
@@ -397,7 +406,7 @@ watch(audioSettingsFromComposable, (newSettings) => {
           </div>
         </div>
 
-        <div class="devices-row" :class="{ disabled: !audioSettings.virtual_mic_device }">
+        <div class="devices-row" :class="{ disabled: !audioSettings.virtual_mic_enabled || !audioSettings.virtual_mic_device }">
           <label class="ui-label">{{ t('audio.volume') }}</label>
           <div class="volume-control">
             <input
@@ -406,7 +415,7 @@ watch(audioSettingsFromComposable, (newSettings) => {
               max="100"
               :value="audioSettings.virtual_mic_volume"
               @input="setVirtualMicVolume(($event.target as HTMLInputElement).valueAsNumber)"
-              :disabled="!audioSettings.virtual_mic_device"
+              :disabled="!audioSettings.virtual_mic_enabled || !audioSettings.virtual_mic_device"
             />
             <span class="volume-value">{{ audioSettings.virtual_mic_volume }}%</span>
           </div>

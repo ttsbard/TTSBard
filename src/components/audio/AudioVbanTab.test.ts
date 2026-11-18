@@ -45,6 +45,7 @@ function createAudio(vban: VbanSettingsDto = {
     speaker_enabled: true,
     speaker_volume: 80,
     virtual_mic_device: null,
+    virtual_mic_enabled: true,
     virtual_mic_volume: 100,
     vban,
   }

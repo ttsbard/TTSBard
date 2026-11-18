@@ -139,6 +139,7 @@
     "speaker_enabled": false,
     "speaker_volume": 0,
     "virtual_mic_device": null,
+    "virtual_mic_enabled": false,
     "virtual_mic_volume": 0,
     "vban": {
       "enabled": false,
@@ -364,6 +365,14 @@
         "key": ""
       },
       "edit_next_incoming": {
+        "modifiers": [],
+        "key": ""
+      },
+      "toggle_virtual_mic": {
+        "modifiers": [],
+        "key": ""
+      },
+      "toggle_vban": {
         "modifiers": [],
         "key": ""
       }

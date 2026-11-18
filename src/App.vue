@@ -22,6 +22,7 @@ import ErrorToasts from './components/ErrorToasts.vue'
 import MinimalModeButton from './components/MinimalModeButton.vue'
 import MonoModeBar from './components/MonoModeBar.vue'
 import IntegrationStatusCluster from './components/titlebar/IntegrationStatusCluster.vue'
+import OutputControlsGroup from './components/titlebar/OutputControlsGroup.vue'
 import UpdateInstallModal from './components/settings/UpdateInstallModal.vue'
 import { t } from './i18n'
 import { interfaceFontCssStack, parseInterfaceFontSize, toInterfaceFontFamily, INTERFACE_FONT_SIZE_DEFAULT } from './utils/interfaceFont'
@@ -610,6 +611,9 @@ onUnmounted(() => {
       </div>
       <div class="titlebar-controls">
         <IntegrationStatusCluster class="integration-gap" />
+        <!-- Shared audio output switches: any section, normal/compact (hidden
+             with the titlebar in Mono); not a drag region. -->
+        <OutputControlsGroup />
         <button
           v-if="!hideExtraWindowButtons"
           class="titlebar-btn floating-window"

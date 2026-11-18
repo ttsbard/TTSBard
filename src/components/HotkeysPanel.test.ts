@@ -5,6 +5,10 @@ import HotkeysPanel from './HotkeysPanel.vue'
 import { invoke } from '@tauri-apps/api/core'
 import { t } from '../i18n'
 import { APP_SETTINGS_KEY, type AppSettingsDto } from '../types/settings'
+import {
+  isMainWindowOutputControlsRecording,
+  setMainWindowOutputControlsRecording,
+} from '../composables/useMainWindowOutputControls'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -80,6 +84,8 @@ function createInitialSettings(hotkeysOverrides?: Record<string, unknown>): AppS
         accent_homographs: { key: 'A', modifiers: ['ctrl'] },
         approve_next_incoming: { key: 'Y', modifiers: ['ctrl'] },
         edit_next_incoming: { key: 'I', modifiers: ['ctrl'] },
+        toggle_virtual_mic: { key: '', modifiers: [] },
+        toggle_vban: { key: '', modifiers: [] },
       },
       ...hotkeysOverrides,
     },
@@ -148,6 +154,7 @@ async function mountHotkeysPanel(options: {
 }
 
 afterEach(async () => {
+  setMainWindowOutputControlsRecording(false)
   if (appInstance) {
     appInstance.unmount()
     appInstance = null
@@ -345,7 +352,7 @@ describe('HotkeysPanel per-hotkey enable switch', () => {
     const { container } = await mountHotkeysPanel()
     const toggles = container.querySelectorAll('.toggle-switch input')
 
-    expect(toggles).toHaveLength(21)
+    expect(toggles).toHaveLength(23)
     for (const toggle of Array.from(toggles)) {
       expect(toggle.getAttribute('aria-label')).toBeTruthy()
     }
@@ -826,5 +833,75 @@ describe('HotkeysPanel review: save/refresh/cleanup separation', () => {
       name: 'main_window',
       hotkey: { key: 'NUMPAD_ADD', modifiers: [], enabled: true },
     })
+  })
+})
+
+
+describe('main output recording guard lifecycle (ROADMAP-142 move)', () => {
+  function micHotkeyOverride(): Record<string, unknown> {
+    const base = {
+      edit_word: { key: '', modifiers: [] },
+      submit_continue: { key: '', modifiers: [] },
+      submit_keep_text: { key: '', modifiers: [] },
+      submit_keep_focus: { key: '', modifiers: [] },
+      next_spelling_error: { key: '', modifiers: [] },
+      previous_spelling_error: { key: '', modifiers: [] },
+      next_tab: { key: '', modifiers: [] },
+      previous_tab: { key: '', modifiers: [] },
+      cycle_route: { key: '', modifiers: [] },
+      toggle_typing: { key: '', modifiers: [] },
+      cycle_quick_mode: { key: '', modifiers: [] },
+      toggle_history: { key: '', modifiers: [] },
+      accent_homographs: { key: '', modifiers: [] },
+      approve_next_incoming: { key: '', modifiers: [] },
+      edit_next_incoming: { key: '', modifiers: [] },
+      toggle_virtual_mic: { key: 'M', modifiers: ['ctrl'] },
+      toggle_vban: { key: '', modifiers: [] },
+    }
+    return { editor: base }
+  }
+
+  async function clickMicRecordButton() {
+    const checkbox = document.querySelector<HTMLInputElement>(
+      'input[data-hotkey="toggle_virtual_mic"]',
+    )!
+    const row = checkbox.closest('.hotkey-row')!
+    ;(row.querySelector<HTMLButtonElement>('.record-btn')!).click()
+    await flushAsync()
+  }
+
+  it('blocks the output action window during a deferred recording start', async () => {
+    // The backend start never resolves in this test: the frontend guard must
+    // already be up while the IPC is pending.
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === 'set_hotkey_recording' ? new Promise(() => {}) : Promise.resolve(undefined),
+    )
+    mountHotkeysPanel({ hotkeys: micHotkeyOverride() })
+    expect(isMainWindowOutputControlsRecording()).toBe(false)
+
+    await clickMicRecordButton()
+    expect(isMainWindowOutputControlsRecording()).toBe(true)
+  })
+
+  it('releases the guard when a failed backend cleanup cancels recording', async () => {
+    let failCancel = false
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'set_hotkey_recording') {
+        if (failCancel) return Promise.reject(new Error('cleanup IPC failed'))
+        return Promise.resolve(undefined)
+      }
+      return Promise.resolve(undefined)
+    })
+    mountHotkeysPanel({ hotkeys: micHotkeyOverride() })
+
+    await clickMicRecordButton()
+    expect(isMainWindowOutputControlsRecording()).toBe(true)
+
+    // Cancel (Escape) while the backend cleanup IPC fails: the frontend
+    // guard is released regardless, so the output action stays usable.
+    failCancel = true
+    ;(document.querySelector<HTMLButtonElement>('.cancel-btn')!).click()
+    await flushAsync()
+    expect(isMainWindowOutputControlsRecording()).toBe(false)
   })
 })

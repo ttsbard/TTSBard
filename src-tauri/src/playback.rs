@@ -546,6 +546,27 @@ fn vban_start_decision(
     Some((Arc::clone(vban), gain))
 }
 
+/// ROADMAP-142: актуальная включённость микрофонного выхода.
+///
+/// Читает общий кэш настроек — тот же источник, что у команды
+/// переключателя, поэтому гейт видит выключение сразу после persist.
+fn live_mic_enabled(settings_cache: &RwLock<crate::config::AppSettings>) -> bool {
+    settings_cache.read().audio.virtual_mic_enabled
+}
+
+/// ROADMAP-142: открывать ли микрофонный sink для этой фразы.
+///
+/// Конфигурация захватывается при постановке в очередь и может остаться
+/// включённой на момент фактического старта; включённость проверяется по
+/// актуальным настройкам (как у VBAN), чтобы не допустить даже короткой
+/// подачи до следующего такта опроса.
+fn mic_start_allowed(
+    captured_mic: Option<&OutputConfig>,
+    settings_cache: &RwLock<crate::config::AppSettings>,
+) -> bool {
+    captured_mic.is_some() && live_mic_enabled(settings_cache)
+}
+
 /// Pure network-track decision for the drain loop (testable without audio).
 ///
 /// `done` — дорожка больше не звучит (Finished/Stopped/Failed или её нет),
@@ -821,8 +842,10 @@ impl PlaybackManager {
                         // a silent holder cannot pin the graph or pending status.
                         spk_holder = None;
                     }
-                    if let Some(ref c) = mic_cfg {
-                        ensure_output(&mut mic_holder, c, &audio, &cached_devices, "mic");
+                    if mic_start_allowed(mic_cfg.as_ref(), &settings_cache) {
+                        if let Some(ref c) = mic_cfg {
+                            ensure_output(&mut mic_holder, c, &audio, &cached_devices, "mic");
+                        }
                     } else {
                         mic_holder = None;
                     }
@@ -1001,6 +1024,19 @@ impl PlaybackManager {
             }
 
             if playing && !stopped {
+                // ROADMAP-142: выключенный переключатель микрофона снимает
+                // живую дорожку в пределах такта опроса (~50 мс) — локальное
+                // изменение текущего runtime. Блок выполняется и на паузе
+                // (playing остаётся true), так что паузный mic-holder
+                // снимается тем же гейтом; включение обратно текущую фразу
+                // не перезапускает — подача вернётся со следующей фразы.
+                // Спикер и сеть этот гейт не трогает: сеть останавливает
+                // VbanOutput::configure(None), спикер остаётся вне задачи.
+                // Дроп holder-а останавливает sink; при микрофоне-единственном
+                // выходе фраза завершается штатно по следующим тактам.
+                if mic_holder.is_some() && !live_mic_enabled(&settings_cache) {
+                    mic_holder = None;
+                }
                 let spk_done = spk_holder.as_ref().map(|h| h.sink.empty()).unwrap_or(true);
                 let mic_done = mic_holder.as_ref().map(|h| h.sink.empty()).unwrap_or(true);
                 let spk_paused = spk_holder
@@ -3151,6 +3187,42 @@ mod tests {
         let decision = vban_start_decision(Some(&output), &enabled, Some(1.0));
         assert!(decision.is_some());
         output.shutdown();
+    }
+
+    /// ROADMAP-142: гейт микрофонного выхода читает актуальный кэш, а не
+    /// конфигурацию, захваченную при постановке фразы в очередь.
+    #[test]
+    fn mic_start_allowed_follows_the_live_toggle_not_the_captured_config() {
+        let captured = Some(OutputConfig {
+            device_id: Some("mic_x".into()),
+            volume: 0.3,
+        });
+
+        let enabled_cache = start_settings(true);
+        enabled_cache.write().audio.virtual_mic_enabled = true;
+        assert!(mic_start_allowed(captured.as_ref(), &enabled_cache));
+        assert!(!mic_start_allowed(None, &enabled_cache), "нет конфигурации — нет выхода");
+
+        // Фраза захвачена при включённом выходе, но переключатель уже выключен:
+        // старт запрещён, даже если captured-конфиг ещё содержит устройство.
+        let disabled_cache = start_settings(true);
+        disabled_cache.write().audio.virtual_mic_enabled = false;
+        assert!(
+            !mic_start_allowed(captured.as_ref(), &disabled_cache),
+            "выключенный сейчас выход не открывает sink"
+        );
+    }
+
+    /// ROADMAP-142: live-гейт читает тот же общий кэш, который обновляет
+    /// set_virtual_mic_enabled, поэтому такт опроса видит переключение без
+    /// перезагрузки менеджера.
+    #[test]
+    fn live_mic_enabled_reads_the_shared_cache() {
+        let cache = start_settings(true);
+        cache.write().audio.virtual_mic_enabled = false;
+        assert!(!live_mic_enabled(&cache));
+        cache.write().audio.virtual_mic_enabled = true;
+        assert!(live_mic_enabled(&cache));
     }
 
     #[test]

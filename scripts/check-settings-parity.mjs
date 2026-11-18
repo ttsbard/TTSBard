@@ -42,6 +42,7 @@ function matchesCategory(tsDesc, cat) {
     case 'boolean':
       return (inner.kind === 'primitive' && inner.tsPrimitive === 'boolean')
         || (inner.kind === 'literal' && inner.literalType === 'boolean')
+        || (inner.kind === 'literal-union' && inner.literals.length > 0 && inner.literals.every(l => l.literalType === 'boolean'))
     case 'array':
       return inner.kind === 'array'
     case 'object':

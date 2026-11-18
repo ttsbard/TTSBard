@@ -1389,6 +1389,8 @@ pub struct EditorHotkeySettingsDto {
     pub accent_homographs: HotkeyDto,
     pub approve_next_incoming: HotkeyDto,
     pub edit_next_incoming: HotkeyDto,
+    pub toggle_virtual_mic: HotkeyDto,
+    pub toggle_vban: HotkeyDto,
 }
 
 impl From<EditorHotkeySettings> for EditorHotkeySettingsDto {
@@ -1409,6 +1411,8 @@ impl From<EditorHotkeySettings> for EditorHotkeySettingsDto {
             accent_homographs: h.accent_homographs.into(),
             approve_next_incoming: h.approve_next_incoming.into(),
             edit_next_incoming: h.edit_next_incoming.into(),
+            toggle_virtual_mic: h.toggle_virtual_mic.into(),
+            toggle_vban: h.toggle_vban.into(),
         }
     }
 }
@@ -1431,6 +1435,8 @@ impl From<EditorHotkeySettingsDto> for EditorHotkeySettings {
             accent_homographs: dto.accent_homographs.into(),
             approve_next_incoming: dto.approve_next_incoming.into(),
             edit_next_incoming: dto.edit_next_incoming.into(),
+            toggle_virtual_mic: dto.toggle_virtual_mic.into(),
+            toggle_vban: dto.toggle_vban.into(),
         }
     }
 }
@@ -1872,6 +1878,7 @@ mod tests {
             speaker_enabled: true,
             speaker_volume: 80,
             virtual_mic_device: Some("CABLE Input".into()),
+            virtual_mic_enabled: true,
             virtual_mic_volume: 100,
             vban: Default::default(),
         };
@@ -2129,6 +2136,16 @@ mod tests {
                     key: "I".into(),
                     enabled: true,
                 },
+                toggle_virtual_mic: HotkeyDto {
+                    modifiers: vec![],
+                    key: String::new(),
+                    enabled: false,
+                },
+                toggle_vban: HotkeyDto {
+                    modifiers: vec![],
+                    key: String::new(),
+                    enabled: false,
+                },
             },
         };
 
@@ -2311,6 +2328,7 @@ mod tests {
             speaker_enabled: false,
             speaker_volume: 0,
             virtual_mic_device: None,
+            virtual_mic_enabled: false,
             virtual_mic_volume: 0,
             vban: Default::default(),
         };
@@ -2548,6 +2566,16 @@ mod tests {
                     enabled: true,
                 },
                 edit_next_incoming: HotkeyDto {
+                    modifiers: vec![],
+                    key: String::new(),
+                    enabled: true,
+                },
+                toggle_virtual_mic: HotkeyDto {
+                    modifiers: vec![],
+                    key: String::new(),
+                    enabled: true,
+                },
+                toggle_vban: HotkeyDto {
                     modifiers: vec![],
                     key: String::new(),
                     enabled: true,

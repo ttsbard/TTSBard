@@ -4,9 +4,14 @@
 //!
 //! Воспроизводит звук на тех же настроенных выходах, что и обычная TTS-озвучка:
 //! динамики (когда `audio.speaker_enabled == true`) и виртуальный микрофон
-//! (когда задан `audio.virtual_mic_device`). Оба выхода подготавливаются до
-//! ожидания завершения любого из них, поэтому sink стартуют одновременно.
-//! Ошибка на одном устройстве не отменяет другой выход.
+//! (когда выход включён переключателем ROADMAP-142 и задан
+//! `audio.virtual_mic_device`). Оба выхода подготавливаются до ожидания
+//! завершения любого из них, поэтому sink стартуют одновременно. Ошибка на
+//! одном устройстве не отменяет другой выход.
+//!
+//! Переключатель микрофона (ROADMAP-142) проверяется по живому кэшу настроек
+//! на старте клипа и в такте опроса: выключение снимает только локальный
+//! mic-sink звучащего клипа, спикер и VBAN не останавливаются.
 //!
 //! Дополнительно клип уходит в общий сетевой выход VBAN (когда включён в
 //! актуальном runtime): сеть работает и при выключенных, и при отказавших
@@ -23,8 +28,10 @@ use crate::audio::{
     decode_audio, open_output_sink, resolve_output_device, AudioPcm, OutputConfig,
     OutputDeviceStream,
 };
-use crate::config::AudioSettings;
+use crate::config::{AppSettings, AudioSettings};
 use cpal::traits::DeviceTrait;
+use parking_lot::RwLock;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -50,16 +57,35 @@ pub(crate) fn build_output_configs(
         None
     };
 
-    let virtual_mic_config =
+    // ROADMAP-142: выключенный переключатель убирает выход из новых клипов,
+    // сохранённое устройство остаётся нетронутым.
+    let virtual_mic_config = if audio_settings.virtual_mic_enabled {
         audio_settings
             .virtual_mic_device
             .as_ref()
             .map(|device_id| OutputConfig {
                 device_id: Some(device_id.clone()),
                 volume: audio_settings.virtual_mic_volume as f32 / 100.0,
-            });
+            })
+    } else {
+        None
+    };
 
     (speaker_config, virtual_mic_config)
+}
+
+/// ROADMAP-142: актуальная включённость микрофонного выхода клипа.
+///
+/// Живой кэш настроек (когда передан воркером) главнее снимка, захваченного
+/// при постановке клипа в очередь: накопленный клип не проигрывает устаревшее
+/// включённое состояние. Без кэша (тесты) снимок остаётся источником.
+fn live_clip_mic_enabled(
+    audio_settings: &AudioSettings,
+    settings_cache: Option<&RwLock<AppSettings>>,
+) -> bool {
+    settings_cache
+        .map(|cache| cache.read().audio.virtual_mic_enabled)
+        .unwrap_or(audio_settings.virtual_mic_enabled)
 }
 
 /// Интервал опроса статуса network-only клипа.
@@ -119,11 +145,16 @@ fn decode_vban_clip(path: &str) -> Result<Arc<AudioPcm>, String> {
 /// preparation and the entire network track, polling shutdown in both phases.
 /// Only this queue thread can start the prepared track, so abandoned decoder
 /// results cannot start after this function returns or preempt the next clip.
+///
+/// `gate_tick` runs every poll iteration before completion checks: it drops
+/// the local mic sink when the output toggle flipped off mid-clip (ROADMAP-142),
+/// so «local present/done» reflects the cut within one poll interval.
 fn wait_for_clip_outputs(
     mut preparation: Option<Receiver<Result<Arc<AudioPcm>, String>>>,
     vban: Option<&VbanOutput>,
-    local_present: bool,
+    mut local_present: impl FnMut() -> bool,
     mut local_done: impl FnMut() -> bool,
+    mut gate_tick: impl FnMut(),
     shutdown: Option<&CancellationToken>,
 ) {
     let mut network: Option<VbanPlayback> = None;
@@ -134,6 +165,7 @@ fn wait_for_clip_outputs(
             }
             return;
         }
+        gate_tick();
         if let Some(rx) = &preparation {
             match rx.try_recv() {
                 Ok(result) => {
@@ -160,13 +192,13 @@ fn wait_for_clip_outputs(
                 Err(TryRecvError::Empty) => {}
             }
         }
-        if local_present && local_done() {
+        if local_present() && local_done() {
             // Consume already-ready PCM first: a very short local sound may
             // end during sink setup and must still reach the network. A copy
             // that is still preparing is abandoned without delaying FIFO.
             return;
         }
-        if !local_present && preparation.is_none() {
+        if !local_present() && preparation.is_none() {
             match &network {
                 Some(handle) if !is_terminal_network_status(&handle.status()) => {}
                 Some(handle) => {
@@ -187,12 +219,19 @@ fn wait_for_clip_outputs(
 ///
 /// Поддерживаемые форматы: MP3, WAV, OGG, FLAC (через rodio).
 ///
+/// ROADMAP-142: включённость микрофонного выхода проверяется по живому кэшу
+/// `settings_cache` (если он передан воркером) на старте клипа и в каждом
+/// такте опроса: выключение снимает только локальный mic-sink звучащего
+/// клипа; спикер и VBAN-дорожка не останавливаются. Клипы, накопленные со
+/// старым снимком настроек, не проигрывают устаревшее включённое состояние.
+///
 /// `shutdown` позволяет прервать ожидание network-only клипа при завершении
 /// приложения; `None` используется тестами без токена.
 pub fn play_audio_file(
     path: &str,
     audio_settings: &AudioSettings,
     vban: Option<&VbanOutput>,
+    settings_cache: Option<&RwLock<AppSettings>>,
     shutdown: Option<&CancellationToken>,
 ) {
     info!(path, "Playing audio");
@@ -203,7 +242,16 @@ pub fn play_audio_file(
         return;
     }
 
-    let (speaker_config, virtual_mic_config) = build_output_configs(audio_settings);
+    // Микрофонный выход учитывает живой переключатель: снимок из очереди
+    // может быть устаревшим. Спикер следует своим сохранённым полям снимка.
+    let mic_live_enabled = live_clip_mic_enabled(audio_settings, settings_cache);
+    let (speaker_config, virtual_mic_config) = if mic_live_enabled {
+        let (speaker, mic) = build_output_configs(audio_settings);
+        (speaker, mic)
+    } else {
+        let (speaker, _) = build_output_configs(audio_settings);
+        (speaker, None)
+    };
 
     // Consult live output state, not the settings captured when this clip was
     // queued. Reading/decoding the network copy cannot delay local sink setup.
@@ -220,31 +268,52 @@ pub fn play_audio_file(
     };
 
     let path = path.to_string();
-    let mut outputs: Vec<(OutputDeviceStream, rodio::Sink)> = Vec::new();
+    // RefCell: sinks live on this queue thread only; the closures below share
+    // them for presence/done checks and the mid-clip mic cut.
+    let outputs = RefCell::new(Vec::<(OutputDeviceStream, rodio::Sink)>::new());
+    let mic_slot = RefCell::new(Option::<usize>::None);
 
     if let Some(config) = speaker_config {
         match setup_output(&path, &config, "Speaker") {
-            Ok(pair) => outputs.push(pair),
+            Ok(pair) => outputs.borrow_mut().push(pair),
             Err(e) => error!(error = %e, "Speaker playback failed"),
         }
     }
 
     if let Some(config) = virtual_mic_config {
         match setup_output(&path, &config, "Virtual Mic") {
-            Ok(pair) => outputs.push(pair),
+            Ok(pair) => {
+                *mic_slot.borrow_mut() = Some(outputs.borrow().len());
+                outputs.borrow_mut().push(pair);
+            }
             Err(e) => error!(error = %e, "Virtual mic playback failed"),
         }
     }
 
-    match queue_wait(outputs.len(), preparation.is_some()) {
+    // Bind the decision first: a call expression in a match scrutinee keeps
+    // its temporaries (the RefCell borrow) alive for the whole match, while
+    // the arms below borrow `outputs` again.
+    let wait = queue_wait(outputs.borrow().len(), preparation.is_some());
+    match wait {
         QueueWait::None => {
             error!("No output could be started (speaker, virtual mic and VBAN all failed)");
         }
         QueueWait::NetworkOnly | QueueWait::LocalSinks => wait_for_clip_outputs(
             preparation,
             vban,
-            !outputs.is_empty(),
-            || outputs.iter().all(|(_, sink)| sink.empty()),
+            || !outputs.borrow().is_empty(),
+            || outputs.borrow().iter().all(|(_, sink)| sink.empty()),
+            || {
+                // Выключенный переключатель снимает только mic-sink; дроп
+                // пары stream+sink останавливает подачу в пределах такта.
+                let disabled = !live_clip_mic_enabled(audio_settings, settings_cache);
+                if disabled {
+                    if let Some(slot) = mic_slot.borrow_mut().take() {
+                        outputs.borrow_mut().remove(slot);
+                        info!(target: "soundpanel", "Virtual mic sink cut by the output toggle");
+                    }
+                }
+            },
             shutdown,
         ),
     }
@@ -308,6 +377,7 @@ mod tests {
             speaker_device: None,
             speaker_volume: 80,
             virtual_mic_device: mic.map(str::to_string),
+            virtual_mic_enabled: true,
             virtual_mic_volume: 60,
             vban: crate::config::VbanSettings::default(),
         }
@@ -418,6 +488,59 @@ mod tests {
         assert!(mic.is_none());
     }
 
+    /// ROADMAP-142: новый клип не получает микрофонный выход при выключенном
+    /// переключателе; сохранённое устройство остаётся в настройках.
+    #[test]
+    fn outputs_mic_toggle_gates_clip_mic_output() {
+        let mut audio = make_audio(true, Some("mic1"));
+        audio.virtual_mic_enabled = false;
+        let (speaker, mic) = build_output_configs(&audio);
+
+        assert!(speaker.is_some());
+        assert!(mic.is_none());
+        assert_eq!(audio.virtual_mic_device.as_deref(), Some("mic1"));
+    }
+
+    /// ROADMAP-142: живой кэш настроек главнее снимка, накопленного в
+    /// очереди, — клип не проигрывает устаревшее включённое состояние
+    /// микрофона. Без кэша (тесты, независимые запуски) действует снимок.
+    #[test]
+    fn live_clip_mic_gate_prefers_the_cache_over_the_queued_snapshot() {
+        let enabled_snapshot = make_audio(true, Some("mic1"));
+        assert!(enabled_snapshot.virtual_mic_enabled);
+
+        let cache = parking_lot::RwLock::new(crate::config::AppSettings::default());
+        cache.write().audio.virtual_mic_enabled = false;
+        assert!(
+            !live_clip_mic_enabled(&enabled_snapshot, Some(&cache)),
+            "queued clip must not feed the mic after the toggle flipped off"
+        );
+
+        cache.write().audio.virtual_mic_enabled = true;
+        assert!(live_clip_mic_enabled(&enabled_snapshot, Some(&cache)));
+
+        assert!(live_clip_mic_enabled(&enabled_snapshot, None));
+        let mut disabled_snapshot = make_audio(true, Some("mic1"));
+        disabled_snapshot.virtual_mic_enabled = false;
+        assert!(!live_clip_mic_enabled(&disabled_snapshot, None));
+    }
+
+    /// ROADMAP-142: такт опроса вызывает gate_tick до проверки завершения —
+    /// структурная гарантия того, что выключение видно в каждом такте.
+    #[test]
+    fn wait_loop_polls_the_mic_gate_tick() {
+        let ticks = std::cell::Cell::new(0usize);
+        wait_for_clip_outputs(
+            None,
+            None,
+            || false,
+            || false,
+            || ticks.set(ticks.get() + 1),
+            None,
+        );
+        assert_eq!(ticks.get(), 1, "gate tick runs before the completion branch");
+    }
+
     // ── VBAN клипы (ROADMAP-138) ──
 
     #[test]
@@ -438,7 +561,7 @@ mod tests {
 
         let mut audio = make_audio(false, None);
         audio.vban.enabled = false;
-        play_audio_file(path.to_str().unwrap(), &audio, None, None);
+        play_audio_file(path.to_str().unwrap(), &audio, None, None, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -461,7 +584,7 @@ mod tests {
 
         let mut audio = make_audio(false, None);
         audio.vban.enabled = true;
-        play_audio_file(path.to_str().unwrap(), &audio, None, None);
+        play_audio_file(path.to_str().unwrap(), &audio, None, None, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -471,7 +594,7 @@ mod tests {
         let mut audio = make_audio(true, None);
         audio.vban.enabled = true;
         // Несуществующий файл: ранний выход до построения выходов.
-        play_audio_file("Z:/definitely/missing/clip.mp3", &audio, None, None);
+        play_audio_file("Z:/definitely/missing/clip.mp3", &audio, None, None, None);
     }
 
     #[test]
@@ -497,7 +620,7 @@ mod tests {
         let mut queued_audio = make_audio(false, None);
         assert!(!queued_audio.vban.enabled);
         let (listener, output) = loopback_output("SPLIVE");
-        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None);
+        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None, None);
         let mut buf = [0u8; 2048];
         let (len, _) = listener
             .recv_from(&mut buf)
@@ -512,7 +635,7 @@ mod tests {
         // Disabling also wins over an older enabled snapshot.
         queued_audio.vban.enabled = true;
         output.configure(None);
-        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None);
+        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None, None);
         listener
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
@@ -526,7 +649,7 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel(1);
         // A decoder has not produced anything. The local sink is already done:
         // completion must return without receiving or waiting for that decoder.
-        wait_for_clip_outputs(Some(rx), None, true, || true, None);
+        wait_for_clip_outputs(Some(rx), None, || true, || true, || {}, None);
         let pcm = Arc::new(AudioPcm {
             samples: vec![0.0; 2],
             sample_rate: 48_000,
@@ -548,7 +671,7 @@ mod tests {
             channels: 1,
         })))
         .unwrap();
-        wait_for_clip_outputs(Some(rx), Some(&output), true, || true, None);
+        wait_for_clip_outputs(Some(rx), Some(&output), || true, || true, || {}, None);
         let mut buf = [0u8; 2048];
         listener
             .recv_from(&mut buf)
@@ -561,7 +684,7 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel(1);
         let shutdown = CancellationToken::new();
         shutdown.cancel();
-        wait_for_clip_outputs(Some(rx), None, false, || false, Some(&shutdown));
+        wait_for_clip_outputs(Some(rx), None, || false, || false, || {}, Some(&shutdown));
         assert!(tx.send(Err("late decode failure".to_string())).is_err());
     }
 
@@ -610,6 +733,7 @@ mod tests {
             first.to_str().unwrap(),
             &audio,
             Some(&output),
+            None,
             Some(&shutdown),
         );
         let first_elapsed = started.elapsed();
@@ -619,6 +743,7 @@ mod tests {
             second.to_str().unwrap(),
             &audio,
             Some(&output),
+            None,
             Some(&shutdown),
         );
         let second_elapsed = started.elapsed();
@@ -685,6 +810,7 @@ mod tests {
                 &clip_path,
                 &worker_audio,
                 Some(worker_output.as_ref()),
+                None,
                 Some(&worker_shutdown),
             );
             let _ = done_tx.send(());
@@ -728,7 +854,7 @@ mod tests {
         let output = VbanOutput::new(); // no configure: start fails
         let audio = network_only_audio();
         let started = Instant::now();
-        play_audio_file(clip.to_str().unwrap(), &audio, Some(&output), None);
+        play_audio_file(clip.to_str().unwrap(), &audio, Some(&output), None, None);
         let elapsed = started.elapsed();
 
         output.shutdown();

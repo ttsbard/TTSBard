@@ -7,6 +7,7 @@ import { useAppSettings } from '../composables/useAppSettings'
 import { debugError } from '../utils/debug'
 import { normalizeCommandError } from '../ipc/commandError'
 import { numpadKeyNameFromCode, formatNumpadKeyLabel } from '../utils/interceptKeys'
+import { setMainWindowOutputControlsRecording } from '../composables/useMainWindowOutputControls'
 import { t } from '../i18n'
 
 const { settings, isLoading, reload } = useAppSettings()
@@ -26,7 +27,7 @@ const hotkeys = computed(() => settings.value?.hotkeys)
 
 type HotkeyName = 'main_window' | 'sound_panel' | 'playback_control_window' | 'return_previous_window' | 'toggle_minimal_mode' | 'ocr_capture'
 
-const EDITOR_HOTKEY_NAMES = ['edit_word', 'submit_continue', 'submit_keep_text', 'submit_keep_focus', 'next_spelling_error', 'previous_spelling_error', 'next_tab', 'previous_tab', 'cycle_route', 'toggle_typing', 'cycle_quick_mode', 'toggle_history', 'accent_homographs', 'approve_next_incoming', 'edit_next_incoming'] as const
+const EDITOR_HOTKEY_NAMES = ['edit_word', 'submit_continue', 'submit_keep_text', 'submit_keep_focus', 'next_spelling_error', 'previous_spelling_error', 'next_tab', 'previous_tab', 'cycle_route', 'toggle_typing', 'cycle_quick_mode', 'toggle_history', 'accent_homographs', 'approve_next_incoming', 'edit_next_incoming', 'toggle_virtual_mic', 'toggle_vban'] as const
 type EditorHotkeyName = (typeof EDITOR_HOTKEY_NAMES)[number]
 
 function isEditorHotkeyName(name: string): name is EditorHotkeyName {
@@ -47,9 +48,14 @@ const GLOBAL_HOTKEY_ROWS: HotkeyRow[] = [
   { name: 'ocr_capture', icon: ScanLine },
 ]
 
+// The output toggles are main-window-local actions (matched at the main
+// window level on every section); their bindings stay editor-stored for
+// storage compatibility, so recording/save/reset still use the editor path.
 const MAIN_WINDOW_HOTKEY_ROWS: HotkeyRow[] = [
   { name: 'toggle_minimal_mode' },
   { name: 'return_previous_window' },
+  { name: 'toggle_virtual_mic' },
+  { name: 'toggle_vban' },
 ]
 
 const EDITOR_HOTKEY_ROWS: HotkeyRow[] = [
@@ -79,6 +85,8 @@ const HINTED_EDITOR_HOTKEYS: readonly EditorHotkeyName[] = [
   'cycle_route',
   'toggle_typing',
   'cycle_quick_mode',
+  'toggle_virtual_mic',
+  'toggle_vban',
 ]
 
 const recordingFor = ref<HotkeyName | EditorHotkeyName | null>(null)
@@ -181,6 +189,10 @@ async function startRecording(name: HotkeyName) {
   if (!props.active || recordingStartPending) return
   const generation = recordingGeneration
   recordingStartPending = true
+  // Frontend guard goes up before the backend answers: the window between
+  // the record click and the IPC response is protected too, and the guard is
+  // released on every exit path regardless of IPC success.
+  setMainWindowOutputControlsRecording(true)
   try {
     // Устанавливаем флаг записи (блокирует выполнение хоткеев)
     await invoke('set_hotkey_recording', { recording: true })
@@ -190,6 +202,7 @@ async function startRecording(name: HotkeyName) {
 
     if (!props.active || generation !== recordingGeneration) {
       await invoke('set_hotkey_recording', { recording: false })
+      setMainWindowOutputControlsRecording(false)
       await invoke('reregister_hotkeys_cmd')
       return
     }
@@ -203,7 +216,8 @@ async function startRecording(name: HotkeyName) {
     document.addEventListener('keyup', handleKeyUp)
   } catch (e) {
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
-    // Сбрасываем флаг при ошибке
+    // Сбрасываем флаг при ошибке — независимо от успеха backend cleanup.
+    setMainWindowOutputControlsRecording(false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
     } catch {}
@@ -217,12 +231,15 @@ async function startEditorRecording(name: EditorHotkeyName) {
   if (!props.active || recordingStartPending) return
   const generation = recordingGeneration
   recordingStartPending = true
+  // Same frontend guard contract as startRecording: up before awaits.
+  setMainWindowOutputControlsRecording(true)
   try {
     // Устанавливаем флаг записи (блокирует выполнение хоткеев)
     await invoke('set_hotkey_recording', { recording: true })
 
     if (!props.active || generation !== recordingGeneration) {
       await invoke('set_hotkey_recording', { recording: false })
+      setMainWindowOutputControlsRecording(false)
       return
     }
 
@@ -237,7 +254,8 @@ async function startEditorRecording(name: EditorHotkeyName) {
     document.addEventListener('keyup', handleKeyUp)
   } catch (e) {
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
-    // Сбрасываем флаг при ошибке
+    // Сбрасываем флаг при ошибке — независимо от успеха backend cleanup.
+    setMainWindowOutputControlsRecording(false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
     } catch {}
@@ -262,6 +280,10 @@ async function cancelRecording() {
 
   document.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('keyup', handleKeyUp)
+
+  // Frontend guard is released unconditionally: a failed backend cleanup
+  // must not leave the main-window output toggles blocked forever.
+  setMainWindowOutputControlsRecording(false)
 
   // Сбрасываем флаг записи и восстанавливаем хоткеи
   try {
@@ -346,6 +368,9 @@ function handleKeyUp(e: KeyboardEvent) {
 function beginSave(name: HotkeyName | EditorHotkeyName, binding: { modifiers: HotkeyDto['modifiers']; key: string }) {
   document.removeEventListener('keydown', handleKeyDown)
   document.removeEventListener('keyup', handleKeyUp)
+  // Key capture ends here: release the frontend guard now, before the save
+  // sequence, so a later IPC failure cannot keep it stuck.
+  setMainWindowOutputControlsRecording(false)
   recordingFor.value = null
   currentRecording.value = null
   saving.value = { name, binding }
@@ -536,6 +561,8 @@ onUnmounted(async () => {
     const wasEditor = recordingFor.value !== null
       ? isEditorHotkeyName(recordingFor.value)
       : saving.value !== null && isEditorHotkeyName(saving.value.name)
+    // Unconditional: a failed backend cleanup must not leave the guard up.
+    setMainWindowOutputControlsRecording(false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
       if (!wasEditor) {

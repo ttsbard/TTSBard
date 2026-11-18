@@ -51,6 +51,8 @@ pub struct EditorHotkeySettings {
     pub accent_homographs: Hotkey,
     pub approve_next_incoming: Hotkey,
     pub edit_next_incoming: Hotkey,
+    pub toggle_virtual_mic: Hotkey,
+    pub toggle_vban: Hotkey,
 }
 
 impl Default for EditorHotkeySettings {
@@ -71,6 +73,8 @@ impl Default for EditorHotkeySettings {
             accent_homographs: Hotkey::default_accent_homographs(),
             approve_next_incoming: Hotkey::default_approve_next_incoming(),
             edit_next_incoming: Hotkey::default_edit_next_incoming(),
+            toggle_virtual_mic: Hotkey::default_toggle_virtual_mic(),
+            toggle_vban: Hotkey::default_toggle_vban(),
         }
     }
 }
@@ -92,6 +96,8 @@ pub const EDITOR_ACTION_IDS: &[&str] = &[
     "accent_homographs",
     "approve_next_incoming",
     "edit_next_incoming",
+    "toggle_virtual_mic",
+    "toggle_vban",
 ];
 
 impl EditorHotkeySettings {
@@ -117,6 +123,8 @@ impl EditorHotkeySettings {
             "accent_homographs" => "расстановки ударений",
             "approve_next_incoming" => "подтверждения отправки входящего",
             "edit_next_incoming" => "редактирования входящего",
+            "toggle_virtual_mic" => "переключения виртуального микрофона",
+            "toggle_vban" => "переключения VBAN-выхода",
             _ => "действия редактора",
         }
     }
@@ -138,6 +146,8 @@ impl EditorHotkeySettings {
             "accent_homographs" => Some(&self.accent_homographs),
             "approve_next_incoming" => Some(&self.approve_next_incoming),
             "edit_next_incoming" => Some(&self.edit_next_incoming),
+            "toggle_virtual_mic" => Some(&self.toggle_virtual_mic),
+            "toggle_vban" => Some(&self.toggle_vban),
             _ => None,
         }
     }
@@ -159,6 +169,8 @@ impl EditorHotkeySettings {
             "accent_homographs" => Some(&mut self.accent_homographs),
             "approve_next_incoming" => Some(&mut self.approve_next_incoming),
             "edit_next_incoming" => Some(&mut self.edit_next_incoming),
+            "toggle_virtual_mic" => Some(&mut self.toggle_virtual_mic),
+            "toggle_vban" => Some(&mut self.toggle_vban),
             _ => None,
         }
     }
@@ -542,6 +554,27 @@ impl Hotkey {
             modifiers: vec![HotkeyModifier::Ctrl],
             key: "I".to_string(),
             enabled: true,
+        }
+    }
+
+    /// Create the unassigned virtual-mic output toggle (ROADMAP-142).
+    ///
+    /// Ships without a combination and switched off: the toggles live in the
+    /// editor action bar, a shortcut is opt-in.
+    pub fn default_toggle_virtual_mic() -> Self {
+        Self {
+            modifiers: Vec::new(),
+            key: String::new(),
+            enabled: false,
+        }
+    }
+
+    /// Create the unassigned VBAN output toggle (ROADMAP-142).
+    pub fn default_toggle_vban() -> Self {
+        Self {
+            modifiers: Vec::new(),
+            key: String::new(),
+            enabled: false,
         }
     }
 
@@ -963,6 +996,43 @@ mod tests {
         assert_eq!(hk.modifiers[0], HotkeyModifier::Ctrl);
         assert_eq!(hk.format_display(), "Ctrl+W");
         assert!(!hk.enabled, "Ctrl+W must ship switched off");
+    }
+
+    /// ROADMAP-142: переключатели выходов поставляются без занятого сочетания
+    /// и выключенными; оба действия валидны для сохранения и сброса.
+    #[test]
+    fn test_default_output_toggles_ship_unassigned_and_disabled() {
+        for hk in [
+            Hotkey::default_toggle_virtual_mic(),
+            Hotkey::default_toggle_vban(),
+        ] {
+            assert!(
+                hk.is_empty(),
+                "output toggle must ship without a combination"
+            );
+            assert!(!hk.enabled, "output toggle must ship switched off");
+        }
+
+        assert!(EditorHotkeySettings::is_valid_action_id(
+            "toggle_virtual_mic"
+        ));
+        assert!(EditorHotkeySettings::is_valid_action_id("toggle_vban"));
+        let settings = EditorHotkeySettings::default();
+        assert_eq!(
+            settings.get_by_id("toggle_virtual_mic").unwrap(),
+            &Hotkey::default_toggle_virtual_mic()
+        );
+        assert_eq!(
+            settings.get_by_id("toggle_vban").unwrap(),
+            &Hotkey::default_toggle_vban()
+        );
+        // Legacy config without the new fields: #[serde(default)] fills them
+        // with the same unassigned defaults.
+        let legacy = r#"{"edit_word": {"modifiers": ["ctrl"], "key": "W"}}"#;
+        let parsed: EditorHotkeySettings = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.toggle_virtual_mic.is_empty());
+        assert!(!parsed.toggle_virtual_mic.enabled);
+        assert!(parsed.toggle_vban.is_empty());
     }
 
     #[test]

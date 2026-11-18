@@ -157,6 +157,7 @@
     "speaker_enabled": true,
     "speaker_volume": 80,
     "virtual_mic_device": "CABLE Input",
+    "virtual_mic_enabled": true,
     "virtual_mic_volume": 100,
     "vban": {
       "enabled": false,
@@ -435,6 +436,16 @@
           "ctrl"
         ],
         "key": "I"
+      },
+      "toggle_virtual_mic": {
+        "modifiers": [],
+        "key": "",
+        "enabled": false
+      },
+      "toggle_vban": {
+        "modifiers": [],
+        "key": "",
+        "enabled": false
       }
     }
   },

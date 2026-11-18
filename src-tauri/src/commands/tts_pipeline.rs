@@ -640,13 +640,19 @@ pub(crate) fn compute_output_configs(
         None
     };
 
-    let virtual_mic_config = audio_settings.virtual_mic_device.as_ref().map(|device_id| {
-        let base_volume = audio_settings.virtual_mic_volume as f32 / 100.0;
-        OutputConfig {
-            device_id: Some(device_id.clone()),
-            volume: base_volume * dsp_gain,
-        }
-    });
+    // ROADMAP-142: выключенный переключатель убирает выход, не трогая
+    // сохранённое устройство; подача требует и включённости, и устройства.
+    let virtual_mic_config = if audio_settings.virtual_mic_enabled {
+        audio_settings.virtual_mic_device.as_ref().map(|device_id| {
+            let base_volume = audio_settings.virtual_mic_volume as f32 / 100.0;
+            OutputConfig {
+                device_id: Some(device_id.clone()),
+                volume: base_volume * dsp_gain,
+            }
+        })
+    } else {
+        None
+    };
 
     (speaker_config, virtual_mic_config)
 }
@@ -1098,6 +1104,7 @@ mod tests {
             speaker_device: None,
             speaker_volume: 80,
             virtual_mic_device: mic_device.map(str::to_string),
+            virtual_mic_enabled: true,
             virtual_mic_volume: 60,
             vban: VbanSettings::default(),
         }
@@ -1142,6 +1149,23 @@ mod tests {
 
         assert!(speaker.is_none());
         assert!(mic.is_none());
+    }
+
+    /// ROADMAP-142: выключенный переключатель убирает микрофонный выход,
+    /// но сохранённое устройство и настройки спикера не трогаются.
+    #[test]
+    fn output_configs_mic_toggle_gates_mic_output_only() {
+        let mut audio = make_audio_settings(true, Some("mic1"));
+        audio.virtual_mic_enabled = false;
+        let (speaker, mic) = compute_output_configs(&audio, &AudioEffectsSettings::default());
+
+        assert!(speaker.is_some(), "speaker must ignore the mic toggle");
+        assert!(mic.is_none(), "disabled toggle must drop the mic output");
+        assert_eq!(
+            audio.virtual_mic_device.as_deref(),
+            Some("mic1"),
+            "toggling must keep the selected device"
+        );
     }
 
     #[test]

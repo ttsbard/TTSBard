@@ -88,3 +88,5 @@ Color/transparency are saved in `windows.json`; sets/assignments in
 | `PageUp` / `PageDown` | Previous/next set |
 | `F1–F12` | Select set by position |
 | `Escape` | Return focus and hide unless pinned |
+
+Disabling the microphone or VBAN output in the main window also affects Sound panel, including a clip already playing. Bring up the main window to switch outputs; its local output shortcuts do not run in the separate Sound panel window. See [audio output controls](audio-outputs.md).
