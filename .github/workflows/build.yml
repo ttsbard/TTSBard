@@ -162,14 +162,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
-          $buildArgs = @('-Mode', 'release')
+          $buildArgs = @{ Mode = 'release' }
           $hasPrivateKey = -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
           $hasPublicKey = -not [string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBLIC_KEY)
           if ($hasPrivateKey -ne $hasPublicKey) {
             throw 'Configure both TAURI_SIGNING_PRIVATE_KEY (secret) and TAURI_UPDATER_PUBLIC_KEY (variable) to enable signed updates.'
           }
           if ($hasPrivateKey) {
-            $buildArgs += '-UpdaterArtifacts'
+            $buildArgs.UpdaterArtifacts = $true
             Write-Host 'Updater signing key found: producing the installer and detached signature'
           } else {
             Write-Host '::warning::TAURI_SIGNING_PRIVATE_KEY is not configured; the release will not support in-app updates'
