@@ -71,7 +71,7 @@ GitHub Release. Бард читает версию, время публикац�
 
 В смоуке от 18 ноября 2026 года подписанный установщик запустился на Windows.
 Переход между разными внутренними версиями и установка сборки из GitHub
-Actions ждут проверки. Подробности зафиксированы в [ROADMAP-141](../roadmap/active/141-github-app-updates.md).
+Actions ждут проверки. Подробности зафиксированы в [ROADMAP-141](../roadmap/completed/141-github-app-updates.md).
 
 Проверки документации, форматирования, Clippy, TypeScript/IPC и тесты выполняет
 отдельный workflow `CI` при push в `master` или pull request. Clippy и Rust-тесты
