@@ -141,14 +141,17 @@ pub fn replay_phrase_from_cache(
     // Получаем текущие настройки из кэша
     let settings = state.settings_cache.read().clone();
 
-    // Вычисляем live-настройки вывода
-    let (speaker_config, mic_config) = crate::commands::tts_pipeline::compute_output_configs(
-        &settings.audio,
-        &settings.audio_effects,
-    );
-    let vban_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
-        &settings.audio_effects,
-    ));
+    // Вычисляем live-настройки вывода. ROADMAP-142 review follow-up: при
+    // активном воспроизведении replay уходит в playback-очередь
+    // (enqueue_state → queue.push_back), поэтому микрофон — eligible-кандидат
+    // независимо от переключателя на момент вызова: включение до фактического
+    // старта очереди даёт mic с захваченным устройством и DSP-gain; живой
+    // гейт решает на старте. None (нет устройства) остаётся запретом.
+    let (speaker_config, mic_config, vban_gain) =
+        crate::commands::tts_pipeline::replay_output_configs(
+            &settings.audio,
+            &settings.audio_effects,
+        );
 
     let replay_id = format!("hist_{}", entry.cache_key);
     let enqueued = pb.enqueue_with_outputs(

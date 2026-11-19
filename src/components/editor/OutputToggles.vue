@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { Mic, AudioLines, ChevronUp, ChevronDown, Check } from 'lucide-vue-next'
 import { t } from '../../i18n'
 
@@ -25,6 +25,7 @@ const props = defineProps<{
   virtualMicAvailable: boolean
   vbanAvailable: boolean
   compact: boolean
+  micro?: boolean
   /** Settings snapshot has arrived; the switch never invents a state. */
   ready: boolean
   /** A persist-first toggle is in flight on one of the outputs. */
@@ -56,6 +57,56 @@ interface OutputRow {
 const open = ref(false)
 const triggerRef = ref<HTMLButtonElement | null>(null)
 const rowRefs = ref<HTMLButtonElement[]>([])
+const menuRef = ref<HTMLUListElement | null>(null)
+
+// ---------------------------------------------------------------------------
+// Viewport clamp (ROADMAP-143 review): the popover's CSS default aligns its
+// right edge with the trigger (right: 0). In the titlebar that is correct,
+// but under the editor the trigger sits on the left of the action bar, so a
+// wide menu could leave the window on the left; a plain left: 0 would have
+// the same problem on the right. When open, the offset is measured once and
+// clamped inside the viewport with a small gap; the plain CSS stays in force
+// whenever the default alignment already fits. No dependency, no polling:
+// re-measured on window resize and on row changes (e.g. a language switch)
+// while open, never measured while closed.
+// ---------------------------------------------------------------------------
+
+const VIEWPORT_GAP = 8
+
+/** Inline `left` for the open menu, or null to keep the plain right: 0 CSS. */
+const menuLeft = ref<number | null>(null)
+// Open/close bumps the epoch: a placement pass whose nextTick resolves after
+// a close (or a re-open) must not write an offset for the gone/other menu.
+let menuPlacementEpoch = 0
+
+async function placeMenu() {
+  const epoch = menuPlacementEpoch
+  await nextTick()
+  if (epoch !== menuPlacementEpoch || !open.value) return
+  const trigger = triggerRef.value
+  const menu = menuRef.value
+  if (!trigger || !menu) return
+  const containerRect = trigger.getBoundingClientRect()
+  const width = menu.offsetWidth
+  if (containerRect.width <= 0 || width <= 0) return
+  // Default alignment is right edges flush: viewport-left = trigger.right -
+  // menu width. Clamp that into [gap, viewport right - gap - width]; when the
+  // clamp is a no-op the inline style stays off and the plain CSS applies.
+  const ideal = containerRect.width - width
+  const min = VIEWPORT_GAP - containerRect.left
+  const max = window.innerWidth - VIEWPORT_GAP - containerRect.left - width
+  const clamped = Math.min(Math.max(ideal, min), max)
+  menuLeft.value = clamped === ideal ? null : clamped
+}
+
+function onWindowResize() {
+  void placeMenu()
+}
+
+function setResizeListener(active: boolean) {
+  if (active) window.addEventListener('resize', onWindowResize)
+  else window.removeEventListener('resize', onWindowResize)
+}
 
 const rows = computed<OutputRow[]>(() => [
   {
@@ -78,6 +129,12 @@ const buttonAriaLabel = computed(() =>
     vban: rows.value[1]!.enabled ? t('editor.outputs.on') : t('editor.outputs.off'),
   }),
 )
+
+// Labels (and therefore the menu width) can change under an open menu — a
+// language switch, a compact flip. Keep the clamped bounds in that case too.
+watch(rows, () => {
+  if (open.value) void placeMenu()
+})
 
 function unavailableHint(id: OutputRowId): string {
   return id === 'virtual_mic'
@@ -106,8 +163,11 @@ function focusRow(index: number) {
 async function openMenu() {
   if (!props.ready || open.value) return
   open.value = true
+  menuPlacementEpoch += 1
   // The owner refreshes availability data (device list) per menu open.
   emit('open')
+  setResizeListener(true)
+  void placeMenu()
   await nextTick()
   focusFirstAvailable()
 }
@@ -115,6 +175,9 @@ async function openMenu() {
 function closeMenu(refocusTrigger: boolean) {
   if (!open.value) return
   open.value = false
+  menuPlacementEpoch += 1
+  menuLeft.value = null
+  setResizeListener(false)
   if (refocusTrigger) triggerRef.value?.focus()
 }
 
@@ -226,11 +289,16 @@ function onDocumentClick(event: MouseEvent) {
 }
 
 onMounted(() => document.addEventListener('click', onDocumentClick))
-onUnmounted(() => document.removeEventListener('click', onDocumentClick))
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+  // A close always removes the resize listener; this covers a component
+  // unmounted with the menu still open.
+  setResizeListener(false)
+})
 </script>
 
 <template>
-  <div class="output-toggles" :class="{ compact }">
+  <div class="output-toggles" :class="{ compact, micro }">
     <button
       ref="triggerRef"
       type="button"
@@ -267,8 +335,10 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick))
 
     <ul
       v-if="open"
+      ref="menuRef"
       class="output-menu ui-menu"
       :class="direction === 'down' ? 'output-menu--down' : 'output-menu--up'"
+      :style="menuLeft !== null ? { left: `${menuLeft}px`, right: 'auto' } : undefined"
       role="menu"
       :aria-label="t('editor.outputs.menu_aria')"
     >
@@ -349,6 +419,24 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick))
   gap: 0.2rem;
 }
 
+/* Mono keeps its 18px bar; only the trigger shrinks, never the menu. */
+.output-toggles.micro .output-toggles-btn {
+  height: 14px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  gap: 2px;
+  border-radius: 3px;
+}
+
+.output-toggles.micro .output-toggles-btn :deep(svg) {
+  width: 10px;
+  height: 10px;
+}
+
+.output-toggles.micro .output-toggles-btn:focus-visible {
+  outline-offset: -1px;
+}
+
 /* A switched-off output shows a muted icon with the shared diagonal strike
    (same language as the typing toggle). The strike sits on the wrapping span:
    ::after does not render on SVG elements. */
@@ -391,8 +479,9 @@ onUnmounted(() => document.removeEventListener('click', onDocumentClick))
 
 /* Panel form (padding/border/background) comes from the shared ui-menu role;
    this block keeps only the popover placement: up for the editor action bar
-   (bottom edge), down for the main-window titlebar (top edge). Both anchor to
-   the trigger's outer edge so the menu stays inside the window. */
+   (bottom edge), down for the main-window titlebar (top edge). The default
+   right-edge alignment is corrected by the script's viewport clamp (inline
+   left) when the trigger sits too close to a window edge. */
 .output-menu {
   position: absolute;
   right: 0;

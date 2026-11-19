@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event'
 import { createAsyncCleanupScope } from '../utils/asyncCleanup'
 import { resolveInterceptKey, formatInterceptKey } from '../utils/interceptKeys'
 import { normalizeCommandError } from '../ipc/commandError'
+import { setMainWindowOutputControlsRecording } from '../composables/useMainWindowOutputControls'
 import { Crosshair, Trash2, Keyboard, Check, X, TriangleAlert } from 'lucide-vue-next'
 import { t } from '../i18n'
 
@@ -99,6 +100,9 @@ async function toggleAllowAnyKey(event: Event) {
 }
 
 async function restoreRecording(unregistered: boolean) {
+  // The frontend recording guard is released before any await: a failed
+  // backend cleanup must never leave the main-window output toggles blocked.
+  setMainWindowOutputControlsRecording('intercept-panel', false)
   let failure: unknown
   try {
     await invoke('set_hotkey_recording', { recording: false })
@@ -122,6 +126,12 @@ function startRecordingKey(): Promise<void> {
   if (!settings.value || !props.active || listenerScope.disposed || isLoading.value || savingAllowAnyKey.value || recordingBusy.value || recordingKey.value || recordingKeyFor.value) return Promise.resolve()
   const generation = ++recordingGeneration
   recordingBusy.value = true
+  // Same frontend guard contract as HotkeysPanel: the guard goes up before
+  // the backend answers, so the window between the record click and the IPC
+  // response is protected too — the root output listener must not consume
+  // the key being recorded. Every exit path releases it (restoreRecording
+  // rollback, cancel, unmount), regardless of IPC success.
+  setMainWindowOutputControlsRecording('intercept-panel', true)
   clearOccupied()
   recordingKeyFor.value = null
   errorMessage.value = null
@@ -270,6 +280,10 @@ onMounted(async () => {
 onUnmounted(() => {
   listenerScope.dispose()
   void cancelRecordingKey()
+  // Unconditional: the panel's own claim is dropped even if the session book
+  // above had nothing left to roll back — a failed backend cleanup must not
+  // leave the main-window output toggles blocked after unmount.
+  setMainWindowOutputControlsRecording('intercept-panel', false)
   clearOccupied()
   if (messageTimeoutId !== null) clearTimeout(messageTimeoutId)
   document.removeEventListener('keydown', handleKeyDown, true)

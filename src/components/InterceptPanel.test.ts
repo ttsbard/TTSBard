@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, ref } from 'vue'
 import InterceptPanel from './InterceptPanel.vue'
 import { invoke } from '@tauri-apps/api/core'
+import {
+  disposeMainWindowOutputControls,
+  getMainWindowOutputControls,
+  isMainWindowOutputControlsRecording,
+  setMainWindowOutputControlsRecording,
+} from '../composables/useMainWindowOutputControls'
+import type { AppSettingsContext } from '../types/settings'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -440,6 +447,141 @@ describe('InterceptPanel mounted lifecycle and recording', () => {
       }
     },
   )
+})
+
+describe('InterceptPanel recording vs the main-window output toggles', () => {
+  /** Settings for the real root controller: F8 is assigned to the mic toggle. */
+  function makeRootSettings(): Record<string, unknown> {
+    return {
+      audio: {
+        output_format: 'default',
+        speaker_device: null,
+        speaker_enabled: true,
+        speaker_volume: 100,
+        virtual_mic_device: 'CABLE Input',
+        virtual_mic_enabled: true,
+        virtual_mic_volume: 100,
+        vban: {
+          enabled: true,
+          address: '192.168.1.50',
+          port: 6980,
+          stream_name: 'TTSBard',
+          volume: 100,
+          ping_interval: 30,
+        },
+      },
+      hotkeys: {
+        editor: {
+          toggle_virtual_mic: { modifiers: [], key: 'F8' },
+          toggle_vban: { modifiers: [], key: '' },
+        },
+        return_previous_window: { modifiers: [], key: '' },
+        toggle_minimal_mode: { modifiers: [], key: '' },
+      },
+    }
+  }
+
+  function makeRootController(settingsValue: unknown) {
+    const settings = ref(settingsValue)
+    const controls = getMainWindowOutputControls({
+      settings: settings as AppSettingsContext['settings'],
+      isLoading: ref(false),
+      error: ref<string | null>(null),
+      reload: async () => {},
+    })
+    controls.attachListener()
+    return controls
+  }
+
+  it('the intercept recording captures a key assigned to an output; the output does not fire', async () => {
+    // The regression order matters: the root capture listener exists BEFORE
+    // the panel mounts (App.vue wiring), exactly the setup where the
+    // unguarded handler used to swallow the recorded key.
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'get_virtual_mic_devices'
+        ? [{ id: 'CABLE Input', name: 'CABLE Input', is_default: false }]
+        : undefined,
+    )
+    makeRootController(makeRootSettings())
+    try {
+      const panel = await mountPanel()
+      await flushAsync() // the controller's init device refresh settles
+
+      panel.getRecordBtn()!.click()
+      await flushAsync()
+      // The panel claimed the shared recording guard.
+      expect(isMainWindowOutputControlsRecording()).toBe(true)
+      // Another surface releasing its own claim must not touch this one.
+      setMainWindowOutputControlsRecording('hotkeys-panel', false)
+      expect(isMainWindowOutputControlsRecording()).toBe(true)
+
+      // F8 is assigned to the virtual mic (no modifiers): the recording, not
+      // the output action, must own this keydown.
+      dispatchKeyEvent({ code: 'F8', key: 'F8', keyCode: 119 })
+      await flushAsync()
+      expect(vi.mocked(invoke)).not.toHaveBeenCalledWith('set_virtual_mic_enabled', expect.anything())
+      expect(panel.getNewBindingRow()).not.toBeNull()
+      expect(panel.getNewBindingRow()!.textContent).toContain('F8')
+
+      // The capture ended the session (its cleanup ran): the guard is down
+      // and the shortcut belongs to the output toggle again.
+      expect(isMainWindowOutputControlsRecording()).toBe(false)
+      vi.mocked(invoke).mockClear()
+      dispatchKeyEvent({ code: 'F8', key: 'F8', keyCode: 119 })
+      await vi.waitFor(() =>
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith('set_virtual_mic_enabled', { enabled: false }),
+      )
+      expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1)
+
+      await panel.unmount()
+    } finally {
+      disposeMainWindowOutputControls()
+    }
+  })
+
+  it('a failed recording start releases the guard: the output toggle stays usable', async () => {
+    const panel = await mountPanel()
+    await flushAsync()
+    // Throw only from now on: mountPanel installs its own default handler,
+    // which must stay in charge of the panel's own load.
+    let failStart = true
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (
+        failStart &&
+        cmd === 'set_hotkey_recording' &&
+        (args as { recording: boolean })?.recording
+      ) {
+        failStart = false
+        throw new Error('setup failed')
+      }
+      if (cmd === 'get_virtual_mic_devices') {
+        return [{ id: 'CABLE Input', name: 'CABLE Input', is_default: false }]
+      }
+      return undefined
+    })
+
+    makeRootController(makeRootSettings())
+    try {
+      panel.getRecordBtn()!.click()
+      await flushAsync()
+
+      // The start failed and rolled back: no stuck guard, error explained.
+      expect(isMainWindowOutputControlsRecording()).toBe(false)
+      expect(panel.getErrorMessage()?.textContent).toContain('setup failed')
+
+      // The assigned output shortcut works again (consumed no output invoke
+      // happened before this point either).
+      vi.mocked(invoke).mockClear()
+      dispatchKeyEvent({ code: 'F8', key: 'F8', keyCode: 119 })
+      await vi.waitFor(() =>
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith('set_virtual_mic_enabled', { enabled: false }),
+      )
+
+      await panel.unmount()
+    } finally {
+      disposeMainWindowOutputControls()
+    }
+  })
 })
 
 describe('InterceptPanel binding save error reporting', () => {

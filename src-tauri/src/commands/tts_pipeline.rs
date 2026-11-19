@@ -623,6 +623,26 @@ pub(crate) fn speech_dsp_gain(effects_settings: &AudioEffectsSettings) -> f32 {
     }
 }
 
+/// Eligible-конфигурация микрофона для разрешённой речи независимо от
+/// текущего переключателя (ROADMAP-142 review fix): речь, поставленная в
+/// очередь при выключенном выходе, сохраняет кандидата с устройством и
+/// DSP-gain, а живой гейт включённости применяется в момент фактического
+/// старта (`mic_start_allowed`). `None` — устройство не настроено:
+/// no device => no mic. Отдельно передавать кандидата для speaker-only
+/// preview/маршрутов нельзя: там `None` означает сознательный запрет mic.
+pub(crate) fn candidate_mic_config(
+    audio_settings: &AudioSettings,
+    dsp_gain: f32,
+) -> Option<OutputConfig> {
+    audio_settings.virtual_mic_device.as_ref().map(|device_id| {
+        let base_volume = audio_settings.virtual_mic_volume as f32 / 100.0;
+        OutputConfig {
+            device_id: Some(device_id.clone()),
+            volume: base_volume * dsp_gain,
+        }
+    })
+}
+
 /// Build the per-phrase output configuration captured by the speech worker.
 pub(crate) fn compute_output_configs(
     audio_settings: &AudioSettings,
@@ -643,18 +663,30 @@ pub(crate) fn compute_output_configs(
     // ROADMAP-142: выключенный переключатель убирает выход, не трогая
     // сохранённое устройство; подача требует и включённости, и устройства.
     let virtual_mic_config = if audio_settings.virtual_mic_enabled {
-        audio_settings.virtual_mic_device.as_ref().map(|device_id| {
-            let base_volume = audio_settings.virtual_mic_volume as f32 / 100.0;
-            OutputConfig {
-                device_id: Some(device_id.clone()),
-                volume: base_volume * dsp_gain,
-            }
-        })
+        candidate_mic_config(audio_settings, dsp_gain)
     } else {
         None
     };
 
     (speaker_config, virtual_mic_config)
+}
+
+/// Конфигурации вывода для replay/history/restore (пути постановки в
+/// playback-очередь, ROADMAP-142 review follow-up): спикер следует текущим
+/// настройкам, микрофон передаётся eligible-кандидатом независимо от
+/// переключателя на момент вызова — при активном воспроизведении фраза
+/// уходит в очередь (`accept_replay`/`enqueue_state` → `queue.push_back`) и
+/// может дождаться старта после включения выхода; живой гейт
+/// `mic_start_allowed` решает на фактическом старте. `None` кандидата (нет
+/// устройства) остаётся запретом; DSP-gain один и тот же для mic и VBAN.
+pub(crate) fn replay_output_configs(
+    audio_settings: &AudioSettings,
+    effects_settings: &AudioEffectsSettings,
+) -> (Option<OutputConfig>, Option<OutputConfig>, Option<f32>) {
+    let dsp_gain = speech_dsp_gain(effects_settings);
+    let (speaker, _) = compute_output_configs(audio_settings, effects_settings);
+    let mic = candidate_mic_config(audio_settings, dsp_gain);
+    (speaker, mic, Some(dsp_gain))
 }
 
 /// Export raw TTS audio bytes to a file — synthesis only, no effects, no playback.
@@ -1166,6 +1198,69 @@ mod tests {
             Some("mic1"),
             "toggling must keep the selected device"
         );
+    }
+
+    /// Regression (review 2026-11-19): кандидат микрофона для очереди речи
+    /// существует и при выключенном на момент постановки переключателе —
+    /// с сохранённым устройством и DSP-gain; живой гейт mic_start_allowed
+    /// решает на фактическом старте. Без устройства кандидата нет, а для
+    /// включённого пути кандидат идентичен гейт-конфигурации
+    /// compute_output_configs (замена в worker ничего не меняет).
+    #[test]
+    fn candidate_mic_config_keeps_device_and_gain_regardless_of_toggle() {
+        let effects = AudioEffectsSettings {
+            enabled: true,
+            volume: 50,
+            ..Default::default()
+        };
+        let gain = speech_dsp_gain(&effects);
+        let expected_volume = 0.6 * (50.0f32 / 100.0);
+
+        let mut audio = make_audio_settings(true, Some("mic1"));
+        audio.virtual_mic_enabled = false;
+        let candidate = candidate_mic_config(&audio, gain);
+        assert_eq!(
+            candidate
+                .as_ref()
+                .and_then(|config| config.device_id.as_deref()),
+            Some("mic1"),
+            "queued-disabled speech must keep an eligible mic candidate"
+        );
+        let candidate_volume = candidate
+            .as_ref()
+            .map(|config| config.volume)
+            .unwrap_or(0.0);
+        assert!(
+            (candidate_volume - expected_volume).abs() < 0.0001,
+            "candidate must carry the captured DSP gain"
+        );
+
+        // Включённый путь: кандидат совпадает с гейт-конфигурацией.
+        audio.virtual_mic_enabled = true;
+        let (_, mic_gated) = compute_output_configs(&audio, &effects);
+        let candidate_enabled = candidate_mic_config(&audio, gain);
+        assert_eq!(
+            mic_gated
+                .as_ref()
+                .and_then(|config| config.device_id.as_deref()),
+            candidate_enabled
+                .as_ref()
+                .and_then(|config| config.device_id.as_deref()),
+            "enabled path must keep the same device as the candidate"
+        );
+        let gated_volume = mic_gated
+            .as_ref()
+            .map(|config| config.volume)
+            .unwrap_or(0.0);
+        let enabled_candidate_volume = candidate_enabled
+            .as_ref()
+            .map(|config| config.volume)
+            .unwrap_or(0.0);
+        assert!((gated_volume - enabled_candidate_volume).abs() < 0.0001);
+        assert!((gated_volume - expected_volume).abs() < 0.0001);
+
+        // No device => no mic даже для кандидата.
+        assert!(candidate_mic_config(&make_audio_settings(true, None), gain).is_none());
     }
 
     #[test]

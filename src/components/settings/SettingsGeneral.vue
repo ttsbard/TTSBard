@@ -23,6 +23,11 @@ import {
   UPDATES_MIN_INTERVAL_DAYS
 } from '../../ipc/appUpdates';
 import { availableLanguages, locale, setLanguage, t } from '../../i18n';
+import {
+  getOutputControlsPlacement,
+  setOutputControlsPlacement,
+  type OutputControlsPlacement,
+} from '../../composables/useMainWindowOutputControls';
 import { saveStartCompactToStorage } from '../../composables/compactModeState';
 import { APP_VERSION } from '../../version';
 import DataTransferModal from './DataTransferModal.vue';
@@ -294,6 +299,28 @@ async function revealUpdates() {
 
 defineExpose({ revealUpdates });
 
+// ROADMAP-143: where the shared audio output controls live (titlebar or
+// under the editor). A local UI preference persisted like the editor tabs
+// visibility; a failed write must not break the UI — the placement is saved
+// persist-first, so on failure the previous choice stays selected and the
+// user is told nothing was stored (it would silently revert on relaunch).
+const outputControlsPlacement = getOutputControlsPlacement();
+const placementChoices = computed<Array<{ value: OutputControlsPlacement; label: string }>>(() => [
+  { value: 'titlebar', label: t('general.outputs.placement.titlebar') },
+  { value: 'editor', label: t('general.outputs.placement.editor') },
+  { value: 'hidden', label: t('general.outputs.placement.hidden') },
+]);
+function onOutputPlacementChange(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const value = select.value;
+  if (value !== 'titlebar' && value !== 'editor' && value !== 'hidden') return;
+  if (!setOutputControlsPlacement(value)) {
+    // Keep the persisted selection visible instead of the rejected one.
+    select.value = outputControlsPlacement.value;
+    showMessage(t('general.outputs.placement.save_failed'), 'error');
+  }
+}
+
 onMounted(refreshDataInfo);
 
 async function toggleExcludeFromCapture() {
@@ -514,6 +541,24 @@ watch(loggingSettings, (newSettings) => {
           <span>{{ t('general.hide_extra_window_buttons.label') }}</span>
         </label>
         <span class="setting-hint ui-hint ui-hint--choice">{{ t('general.hide_extra_window_buttons.hint') }}</span>
+      </div>
+    </section>
+
+    <!-- Audio outputs placement (ROADMAP-143) -->
+    <section class="settings-group ui-section">
+      <h3 class="settings-group-title ui-group-title">{{ t('general.groups.audio_outputs') }}</h3>
+      <div class="general-row output-placement-row">
+        <label class="ui-label" for="output-controls-placement">{{ t('general.outputs.placement') }}</label>
+        <select
+          id="output-controls-placement"
+          class="ui-select level-select output-placement-select"
+          :value="outputControlsPlacement"
+          @change="onOutputPlacementChange"
+        >
+          <option v-for="choice in placementChoices" :key="choice.value" :value="choice.value">
+            {{ choice.label }}
+          </option>
+        </select>
       </div>
     </section>
 
@@ -781,6 +826,13 @@ watch(loggingSettings, (newSettings) => {
 
 .general-row:last-child {
   margin-bottom: 0;
+}
+
+.output-placement-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-row-gap) var(--ui-row-label-gap-side);
 }
 
 .setting-label {

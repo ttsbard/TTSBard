@@ -66,11 +66,29 @@ export function isVbanTargetConfigured(settings: VbanSettingsDto | undefined): b
  *   hardware disappeared) is never toggled: the guard covers the popover
  *   click and the editor hotkey alike, because both call this same action.
  */
+/**
+ * The registered persist-first commands the toggles may call. The set is
+ * finite and dispatched through literal invoke call sites (see
+ * `persistToggleState`) so the IPC contract check resolves both commands
+ * statically — a shared command-name parameter expression is unresolvable
+ * for the checker and fails CI.
+ */
+export type OutputToggleCommand = 'set_virtual_mic_enabled' | 'set_vban_enabled'
+
+/** Persist through the one literal call site per registered command. */
+async function persistToggleState(command: OutputToggleCommand, enabled: boolean): Promise<void> {
+  if (command === 'set_virtual_mic_enabled') {
+    await invoke('set_virtual_mic_enabled', { enabled })
+  } else {
+    await invoke('set_vban_enabled', { enabled })
+  }
+}
+
 export interface OutputToggleOptions {
   /** Current saved value; `undefined` until the first settings snapshot. */
   read: () => boolean | undefined
   /** Persist-first backend command, e.g. `set_virtual_mic_enabled`. */
-  command: string
+  command: OutputToggleCommand
   /** Refresh the settings snapshot after a successful persist. */
   reload: () => Promise<unknown>
   /** Shared loader state (`useAppSettings.isLoading`), for the coalesced wait. */
@@ -122,7 +140,7 @@ export function createOutputToggle(options: OutputToggleOptions): OutputToggleCo
     if (pending.value || current === undefined || !available.value) return
     pending.value = true
     try {
-      await invoke(options.command, { enabled: !current })
+      await persistToggleState(options.command, !current)
       // Persist-first: the resolved command means the value is stored; pull
       // the confirming snapshot even if the settings-changed reload already
       // landed or never fired. A coalesced call returns before the snapshot

@@ -556,10 +556,13 @@ fn live_mic_enabled(settings_cache: &RwLock<crate::config::AppSettings>) -> bool
 
 /// ROADMAP-142: открывать ли микрофонный sink для этой фразы.
 ///
-/// Конфигурация захватывается при постановке в очередь и может остаться
-/// включённой на момент фактического старта; включённость проверяется по
-/// актуальным настройкам (как у VBAN), чтобы не допустить даже короткой
-/// подачи до следующего такта опроса.
+/// Для разрешённой речи captured-конфигурация — кандидат (устройство и
+/// громкость), сохраняемый независимо от переключателя на момент
+/// постановки: включение до фактического старта даёт фразе микрофон.
+/// Включённость проверяется по актуальным настройкам (как у VBAN) в обе
+/// стороны, чтобы не допустить даже короткой подачи после выключения.
+/// `None` — кандидата нет (устройство не настроено или тип воспроизведения
+/// сознательно без mic): конфигурация не появляется из ниоткуда.
 fn mic_start_allowed(
     captured_mic: Option<&OutputConfig>,
     settings_cache: &RwLock<crate::config::AppSettings>,
@@ -3147,8 +3150,8 @@ mod tests {
     #[test]
     fn accept_replay_when_active_queues_phrase_with_vban_gain() {
         let mut s = make_shared_playing();
-        // Вторая фраза в кэше: replay при активном воспроизведении уходит в
-        // очередь вместе со своим сетевым gain.
+        // Вторая фраза в кэше: replay при активном воспроизведении уходит
+        // в очередь вместе со своим сетевым gain.
         s.audio_cache.push_back(CachedPhrase {
             id: "second".into(),
             text: "second".into(),
@@ -3162,6 +3165,89 @@ mod tests {
             _ => panic!("expected Queued"),
         }
         assert_eq!(s.queue[0].vban_gain, Some(0.9));
+    }
+
+    /// Regression (review follow-up 2026-11-19): replay/history/restore при
+    /// активном воспроизведении кладут фразу в playback-очередь, поэтому
+    /// микрофон передаётся eligible-кандидатом (replay_output_configs) даже
+    /// при выключенном на момент вызова переключателе: включение до
+    /// фактического старта очереди даёт mic, выключение — нет. No device и
+    /// сознательный None остаются без mic. Проверяется реальная production-
+    /// цепочка команд: replay_output_configs → accept_replay →
+    /// mic_start_allowed.
+    #[test]
+    fn accept_replay_queues_mic_candidate_that_the_live_gate_decides_at_start() {
+        let cache = start_settings(false); // VBAN выключен: только локальные выходы
+        {
+            let mut live = cache.write();
+            live.audio.speaker_enabled = false;
+            live.audio.virtual_mic_device = Some("mic_x".into());
+            live.audio.virtual_mic_enabled = false; // выключен в момент вызова replay
+        }
+        let settings = cache.read().clone();
+
+        // Актуальная production-цепочка replay-команд: конфигурация из
+        // настроек на момент вызова.
+        let (speaker, mic, vban_gain) = crate::commands::tts_pipeline::replay_output_configs(
+            &settings.audio,
+            &settings.audio_effects,
+        );
+        assert!(speaker.is_none(), "speaker disabled in this scenario");
+        assert_eq!(
+            mic.as_ref().and_then(|config| config.device_id.as_deref()),
+            Some("mic_x"),
+            "call-time disable must keep an eligible mic candidate"
+        );
+        assert_eq!(
+            mic.as_ref().map(|config| config.volume),
+            Some(1.0),
+            "candidate keeps the captured device volume (default 100%)"
+        );
+        assert_eq!(vban_gain, Some(1.0), "no effects: gain is one");
+
+        // Playing: accept_replay кладёт фразу в очередь вместе с кандидатом.
+        let mut s = make_shared_playing();
+        s.audio_cache.push_back(CachedPhrase {
+            id: "replay_mic".into(),
+            text: "replay mic".into(),
+            audio: Arc::new(dummy_audio()),
+            timestamp: 2000,
+        });
+        let (text, audio) = phrase_for_replay("replay_mic");
+        let result = s.accept_replay("replay_mic", text, audio, speaker, mic, vban_gain);
+        match result {
+            Ok(EnqueueState::Queued) => {}
+            other => panic!("expected Queued, got: {other:?}"),
+        }
+        let queued_mic = s.queue[0].mic.clone();
+        assert_eq!(
+            queued_mic
+                .as_ref()
+                .and_then(|config| config.device_id.as_deref()),
+            Some("mic_x"),
+            "queued replay must retain the mic candidate"
+        );
+
+        // Включение до фактического старта: живой гейт пускает микрофон.
+        cache.write().audio.virtual_mic_enabled = true;
+        assert!(mic_start_allowed(queued_mic.as_ref(), &cache));
+        // Выключение до старта — снова нет.
+        cache.write().audio.virtual_mic_enabled = false;
+        assert!(!mic_start_allowed(queued_mic.as_ref(), &cache));
+
+        // No device => кандидат None, включённый тумблер mic не создаёт.
+        let mut no_device = settings.clone();
+        no_device.audio.virtual_mic_device = None;
+        let (_, no_device_mic, _) = crate::commands::tts_pipeline::replay_output_configs(
+            &no_device.audio,
+            &no_device.audio_effects,
+        );
+        cache.write().audio.virtual_mic_enabled = true;
+        assert!(no_device_mic.is_none(), "no device => no candidate");
+        assert!(!mic_start_allowed(no_device_mic.as_ref(), &cache));
+
+        // Сознательный запрет (None) не превращается в Some.
+        assert!(!mic_start_allowed(None, &cache));
     }
 
     // ── старт сетевой дорожки по актуальным настройкам (ROADMAP-138 ревью) ──
@@ -3201,7 +3287,10 @@ mod tests {
         let enabled_cache = start_settings(true);
         enabled_cache.write().audio.virtual_mic_enabled = true;
         assert!(mic_start_allowed(captured.as_ref(), &enabled_cache));
-        assert!(!mic_start_allowed(None, &enabled_cache), "нет конфигурации — нет выхода");
+        assert!(
+            !mic_start_allowed(None, &enabled_cache),
+            "нет конфигурации — нет выхода"
+        );
 
         // Фраза захвачена при включённом выходе, но переключатель уже выключен:
         // старт запрещён, даже если captured-конфиг ещё содержит устройство.

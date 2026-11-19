@@ -192,7 +192,7 @@ async function startRecording(name: HotkeyName) {
   // Frontend guard goes up before the backend answers: the window between
   // the record click and the IPC response is protected too, and the guard is
   // released on every exit path regardless of IPC success.
-  setMainWindowOutputControlsRecording(true)
+  setMainWindowOutputControlsRecording('hotkeys-panel', true)
   try {
     // Устанавливаем флаг записи (блокирует выполнение хоткеев)
     await invoke('set_hotkey_recording', { recording: true })
@@ -202,7 +202,7 @@ async function startRecording(name: HotkeyName) {
 
     if (!props.active || generation !== recordingGeneration) {
       await invoke('set_hotkey_recording', { recording: false })
-      setMainWindowOutputControlsRecording(false)
+      setMainWindowOutputControlsRecording('hotkeys-panel', false)
       await invoke('reregister_hotkeys_cmd')
       return
     }
@@ -217,7 +217,7 @@ async function startRecording(name: HotkeyName) {
   } catch (e) {
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
     // Сбрасываем флаг при ошибке — независимо от успеха backend cleanup.
-    setMainWindowOutputControlsRecording(false)
+    setMainWindowOutputControlsRecording('hotkeys-panel', false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
     } catch {}
@@ -232,14 +232,14 @@ async function startEditorRecording(name: EditorHotkeyName) {
   const generation = recordingGeneration
   recordingStartPending = true
   // Same frontend guard contract as startRecording: up before awaits.
-  setMainWindowOutputControlsRecording(true)
+  setMainWindowOutputControlsRecording('hotkeys-panel', true)
   try {
     // Устанавливаем флаг записи (блокирует выполнение хоткеев)
     await invoke('set_hotkey_recording', { recording: true })
 
     if (!props.active || generation !== recordingGeneration) {
       await invoke('set_hotkey_recording', { recording: false })
-      setMainWindowOutputControlsRecording(false)
+      setMainWindowOutputControlsRecording('hotkeys-panel', false)
       return
     }
 
@@ -255,7 +255,7 @@ async function startEditorRecording(name: EditorHotkeyName) {
   } catch (e) {
     showMessage(t('hotkeys.error_prefix', { detail: normalizeCommandError(e).message }), 'error')
     // Сбрасываем флаг при ошибке — независимо от успеха backend cleanup.
-    setMainWindowOutputControlsRecording(false)
+    setMainWindowOutputControlsRecording('hotkeys-panel', false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
     } catch {}
@@ -283,7 +283,7 @@ async function cancelRecording() {
 
   // Frontend guard is released unconditionally: a failed backend cleanup
   // must not leave the main-window output toggles blocked forever.
-  setMainWindowOutputControlsRecording(false)
+  setMainWindowOutputControlsRecording('hotkeys-panel', false)
 
   // Сбрасываем флаг записи и восстанавливаем хоткеи
   try {
@@ -370,7 +370,7 @@ function beginSave(name: HotkeyName | EditorHotkeyName, binding: { modifiers: Ho
   document.removeEventListener('keyup', handleKeyUp)
   // Key capture ends here: release the frontend guard now, before the save
   // sequence, so a later IPC failure cannot keep it stuck.
-  setMainWindowOutputControlsRecording(false)
+  setMainWindowOutputControlsRecording('hotkeys-panel', false)
   recordingFor.value = null
   currentRecording.value = null
   saving.value = { name, binding }
@@ -562,7 +562,7 @@ onUnmounted(async () => {
       ? isEditorHotkeyName(recordingFor.value)
       : saving.value !== null && isEditorHotkeyName(saving.value.name)
     // Unconditional: a failed backend cleanup must not leave the guard up.
-    setMainWindowOutputControlsRecording(false)
+    setMainWindowOutputControlsRecording('hotkeys-panel', false)
     try {
       await invoke('set_hotkey_recording', { recording: false })
       if (!wasEditor) {

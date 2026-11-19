@@ -7,6 +7,7 @@ import { APP_SETTINGS_KEY, type AppSettingsDto } from '../../types/settings'
 import { APP_UPDATES_KEY, upToDateFromStatus, type AppUpdatesContext } from '../../composables/useAppUpdates'
 import { UPDATE_INSTALL_KEY, type UpdateInstallContext } from '../../composables/useUpdateInstall'
 import { i18n } from '../../i18n'
+import { resetOutputControlsPlacement } from '../../composables/useMainWindowOutputControls'
 import russianCatalog from '../../../locales/ru.json'
 import type { UpdateStatusDto } from '../../ipc/appUpdates'
 
@@ -688,5 +689,86 @@ describe('SettingsGeneral update install button', () => {
     await flushAsync()
     expect(button!.disabled).toBe(true)
     await mount.unmount()
+  })
+})
+
+
+describe('SettingsGeneral audio output placement (ROADMAP-143)', () => {
+  const placementSelect = (root: HTMLElement | null) => {
+    const select = root?.querySelector<HTMLSelectElement>('#output-controls-placement')
+    if (!select) throw new Error('output-controls-placement select not found')
+    return select
+  }
+
+  afterEach(() => {
+    resetOutputControlsPlacement()
+    localStorage.removeItem('app-output-controls-placement')
+  })
+
+  it('defaults to hidden when nothing (or an invalid value) is stored', async () => {
+    const mount = await mountGeneralSettings()
+    expect(localStorage.getItem('app-output-controls-placement')).toBeNull()
+    expect(placementSelect(mount.container).value).toBe('hidden')
+    await mount.unmount()
+    // An invalid stored value is ignored, the default stays.
+    localStorage.setItem('app-output-controls-placement', 'sidebar')
+    const invalid = await mountGeneralSettings()
+    expect(placementSelect(invalid.container).value).toBe('hidden')
+    await invalid.unmount()
+  })
+
+  it('keeps the default when reading the stored value fails', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    getItem.mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    const { container } = await mountGeneralSettings()
+    expect(placementSelect(container).value).toBe('hidden')
+    getItem.mockRestore()
+  })
+
+  it.each(['titlebar', 'editor', 'hidden'])('persists and restores display choice %s', async (value) => {
+    const mount = await mountGeneralSettings()
+    const select = placementSelect(mount.container)
+    select.value = value
+    select.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    expect(localStorage.getItem('app-output-controls-placement')).toBe(value)
+    expect(select.value).toBe(value)
+    expect(mount.onShowMessage).not.toHaveBeenCalled()
+    await mount.unmount()
+    resetOutputControlsPlacement()
+    const restored = await mountGeneralSettings()
+    expect(placementSelect(restored.container).value).toBe(value)
+    await restored.unmount()
+  })
+
+  it('rolls a failed write back to the previous placement and reports the error', async () => {
+    const { container, onShowMessage } = await mountGeneralSettings()
+    const select = placementSelect(container)
+    expect(select.value).toBe('hidden')
+
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    setItem.mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    select.value = 'titlebar'
+    select.dispatchEvent(new Event('change'))
+    await flushAsync()
+
+    // Nothing was stored and the previous choice stays selected; the user
+    // is told the placement was not saved (no fake success).
+    expect(localStorage.getItem('app-output-controls-placement')).toBeNull()
+    expect(select.value).toBe('hidden')
+    expect(onShowMessage).toHaveBeenCalledWith('Could not save the audio output placement', 'error')
+
+    // A retry that succeeds applies the choice.
+    setItem.mockRestore()
+    select.value = 'titlebar'
+    select.dispatchEvent(new Event('change'))
+    await flushAsync()
+    expect(localStorage.getItem('app-output-controls-placement')).toBe('titlebar')
+    expect(select.value).toBe('titlebar')
   })
 })

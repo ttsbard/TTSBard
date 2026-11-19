@@ -348,13 +348,16 @@ pub fn restore_cancelled_speech_job(
         let settings = settings_manager
             .load()
             .map_err(|e| format!("Failed to load settings: {}", e))?;
-        let (speaker, mic) = crate::commands::tts_pipeline::compute_output_configs(
+        // ROADMAP-142 review follow-up: при активном воспроизведении restore
+        // уходит в playback-очередь (accept_replay → queue.push_back),
+        // поэтому микрофон — eligible-кандидат независимо от переключателя
+        // на момент вызова: включение до фактического старта очереди даёт
+        // mic с захваченным устройством и DSP-gain; живой гейт решает на
+        // старте. None (нет устройства) остаётся запретом.
+        let (speaker, mic, vban_gain) = crate::commands::tts_pipeline::replay_output_configs(
             &settings.audio,
             &settings.audio_effects,
         );
-        let vban_gain = Some(crate::commands::tts_pipeline::speech_dsp_gain(
-            &settings.audio_effects,
-        ));
 
         let pb = &playback.inner().0;
         match pb.replay_from_cache(&job_id.to_string(), speaker, mic, vban_gain) {

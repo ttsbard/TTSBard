@@ -793,13 +793,27 @@ pub(crate) async fn speech_worker(
 
         match prepared {
             Ok(prepared) => {
-                let (speaker, mic) =
+                let (speaker, mic_gated) =
                     tts_pipeline::compute_output_configs(&snapshot.audio, &snapshot.audio_effects);
                 // Capture speech gain even while VBAN is disabled so a queued
                 // phrase can use the output if it is enabled before playback.
                 let vban_gain = Some(tts_pipeline::speech_dsp_gain(&snapshot.audio_effects));
+                // ROADMAP-142 review fix: микрофонный кандидат сохраняется и
+                // при выключенном на момент постановки переключателе —
+                // включение до фактического старта даёт фразу микрофон с
+                // захваченным устройством и DSP-gain. Живой гейт
+                // mic_start_allowed решает на старте в обе стороны; None
+                // (нет устройства) остаётся запретом. Кандидат совпадает с
+                // гейт-конфигурацией включённого пути, поэтому замена ничего
+                // не меняет для фраз, поставленных при включённом выходе.
+                let mic = tts_pipeline::candidate_mic_config(
+                    &snapshot.audio,
+                    tts_pipeline::speech_dsp_gain(&snapshot.audio_effects),
+                );
 
-                if speaker.is_none() && mic.is_none() && !snapshot.audio.vban.enabled {
+                // Ранний отказ остаётся по снимку постановки: он не зависит
+                // от позднего переключения и не резервирует playback-очередь.
+                if speaker.is_none() && mic_gated.is_none() && !snapshot.audio.vban.enabled {
                     let mut q = queue.lock();
                     let _ = q.fail_generation(
                         job_id,

@@ -326,3 +326,134 @@ describe('OutputToggles popover (ROADMAP-142)', () => {
     expect(document.activeElement).toBe(trigger)
   })
 })
+
+describe('OutputToggles viewport clamp (ROADMAP-143 review)', () => {
+  const MENU_WIDTH = 240
+  const originalInnerWidth = window.innerWidth
+
+  /** Stub layout: trigger rect + menu width; jsdom has no layout engine. */
+  function stubLayout(host: HTMLElement, rect: { left: number; width: number }) {
+    const trigger = host.querySelector<HTMLElement>('.output-toggles-btn')!
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      left: rect.left,
+      right: rect.left + rect.width,
+      top: 0,
+      bottom: 20,
+      width: rect.width,
+      height: 20,
+      x: rect.left,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+    return () => {
+      const menu = host.querySelector<HTMLElement>('.output-menu')
+      if (menu) Object.defineProperty(menu, 'offsetWidth', { value: MENU_WIDTH, configurable: true })
+    }
+  }
+
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true })
+  })
+
+  function setInnerWidth(width: number) {
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+  }
+
+  /** Two ticks: one for placeMenu's own nextTick, one for the style patch. */
+  async function resizeAndSettle() {
+    window.dispatchEvent(new Event('resize'))
+    await nextTick()
+    await nextTick()
+  }
+
+  it('keeps the plain right-aligned CSS when the default fits the viewport', async () => {
+    const host = mount(baseProps)
+    const armMenuWidth = stubLayout(host, { left: 500, width: 90 })
+    await openMenu(host)
+    armMenuWidth()
+    await resizeAndSettle()
+    const menu = host.querySelector('.output-menu')!
+    expect(menu.getAttribute('style')).toBeNull()
+  })
+
+  it('clamps the under-editor menu inside the viewport on a narrow window', async () => {
+    // Trigger near the left edge (the editor action bar layout): the plain
+    // right: 0 alignment would push the 240px menu off the left edge.
+    setInnerWidth(400)
+    const host = mount(baseProps)
+    const armMenuWidth = stubLayout(host, { left: 10, width: 90 })
+    await openMenu(host)
+    armMenuWidth()
+    await resizeAndSettle()
+    const menu = host.querySelector('.output-menu')!
+    // ideal = 90 - 240 = -150; min = 8 - 10 = -2; max = 400 - 8 - 10 - 240 = 142
+    // → clamped to -2: menu viewport-left = 10 - 2 = 8 (one gap from the edge).
+    expect(menu.getAttribute('style')).toBe('left: -2px; right: auto;')
+  })
+
+  it('clamps on the right side for the titlebar (down) placement in a narrow window', async () => {
+    // Trigger near the right edge of a very narrow window: even the clamped
+    // menu touches only the gap — the clamp holds both edges inside.
+    setInnerWidth(300)
+    const host = mount({ ...baseProps, direction: 'down' })
+    const armMenuWidth = stubLayout(host, { left: 280, width: 20 })
+    await openMenu(host)
+    armMenuWidth()
+    await resizeAndSettle()
+    const menu = host.querySelector('.output-menu')!
+    // ideal = 20 - 240 = -220; min = 8 - 280 = -272; max = 300 - 8 - 280 - 240 = -228
+    // → clamped to max (-228): right edge at 280 - 228 + 240 = 292 (one gap).
+    expect(menu.getAttribute('style')).toBe('left: -228px; right: auto;')
+  })
+
+  it('re-clamps when a row label changes under the open menu (language switch)', async () => {
+    setInnerWidth(400)
+    const host = mount(baseProps)
+    const armMenuWidth = stubLayout(host, { left: 10, width: 90 })
+    await openMenu(host)
+    armMenuWidth()
+    await resizeAndSettle()
+    expect(host.querySelector('.output-menu')!.getAttribute('style')).toBe('left: -2px; right: auto;')
+
+    // A width change without a resize event (translated labels): the bounds
+    // follow the new geometry through the rows watch.
+    const menu = host.querySelector<HTMLElement>('.output-menu')!
+    Object.defineProperty(menu, 'offsetWidth', { value: 380, configurable: true })
+    updateProps({ virtualMicEnabled: !currentProps.virtualMicEnabled })
+    await nextTick()
+    await nextTick()
+    await nextTick()
+    // ideal = 90 - 380 = -290; min = -2; max = 400 - 8 - 10 - 380 = 2 → -2.
+    expect(menu.getAttribute('style')).toBe('left: -2px; right: auto;')
+  })
+
+  it('a resize listener is not leaked after close, and a stale placement pass is dropped', async () => {
+    setInnerWidth(400)
+    const host = mount(baseProps)
+    const armMenuWidth = stubLayout(host, { left: 10, width: 90 })
+    const trigger = await openMenu(host)
+    armMenuWidth()
+    // Close before the placement pass resolves its nextTick: the pass must
+    // not write an offset for the gone menu.
+    trigger.click() // toggle closes
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector('.output-menu')).toBeNull()
+
+    // Reopen on a wide viewport: no stale -2px from the aborted pass.
+    Object.defineProperty(window, 'innerWidth', { value: 2000, configurable: true })
+    await openMenu(host)
+    armMenuWidth()
+    await nextTick()
+    await nextTick()
+    // No clamp needed on a wide viewport: no inline override at all.
+    expect(host.querySelector('.output-menu')!.getAttribute('style')).toBeNull()
+
+    // After close, window resizes no longer touch anything (listener gone);
+    // the unmount path removes it too, so no leak across apps.
+    trigger.click()
+    await nextTick()
+    expect(() => window.dispatchEvent(new Event('resize'))).not.toThrow()
+    await nextTick()
+  })
+})

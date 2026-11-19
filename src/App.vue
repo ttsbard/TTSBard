@@ -23,6 +23,11 @@ import MinimalModeButton from './components/MinimalModeButton.vue'
 import MonoModeBar from './components/MonoModeBar.vue'
 import IntegrationStatusCluster from './components/titlebar/IntegrationStatusCluster.vue'
 import OutputControlsGroup from './components/titlebar/OutputControlsGroup.vue'
+import {
+  disposeMainWindowOutputControls,
+  getMainWindowOutputControls,
+  getOutputControlsPlacement,
+} from './composables/useMainWindowOutputControls'
 import UpdateInstallModal from './components/settings/UpdateInstallModal.vue'
 import { t } from './i18n'
 import { interfaceFontCssStack, parseInterfaceFontSize, toInterfaceFontFamily, INTERFACE_FONT_SIZE_DEFAULT } from './utils/interfaceFont'
@@ -143,6 +148,16 @@ const appSettings = provideAppSettings({
     if (!modeController.applySettingsSnapshot(snapshot, token)) needsModeReload.value = true
   },
 })
+
+// Root-lifetime owner of the audio output controls (ROADMAP-143): the
+// keydown listener and shared state live here, not in the titlebar view, so
+// assigned shortcuts keep working in mono/compact/normal on any section and
+// the Ctrl+P default print stays suppressed while the titlebar is hidden.
+// The controller binds to this shell's settings context; a final unmount
+// disposes it (listener + reactive scope + singleton) and a later mount
+// builds a fresh one — mode/view changes never do.
+const mainWindowOutputControls = getMainWindowOutputControls(appSettings)
+const outputControlsPlacement = getOutputControlsPlacement()
 // Retry rejected hydration/import snapshots once the owner is idle. The settings
 // transport coalesces a reload requested while its current load is completing.
 watch([needsModeReload, modeController.busy, modeController.suppressed], ([needed, busy, suppressed]) => {
@@ -467,6 +482,7 @@ onMounted(async () => {
 
   document.addEventListener('keydown', handleReturnFocusKeydown)
   document.addEventListener('keydown', handleToggleMinimalKeydown)
+  mainWindowOutputControls.attachListener()
 
   void listenerScope.track(
     getCurrentWindow().onFocusChanged(async ({ payload: focused }) => {
@@ -596,6 +612,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleReturnFocusKeydown)
   document.removeEventListener('keydown', handleToggleMinimalKeydown)
+  disposeMainWindowOutputControls()
   listenerScope.dispose()
   disposeRuAccentRuntime()
   modeController.dispose()
@@ -611,9 +628,9 @@ onUnmounted(() => {
       </div>
       <div class="titlebar-controls">
         <IntegrationStatusCluster class="integration-gap" />
-        <!-- Shared audio output switches: any section, normal/compact (hidden
-             with the titlebar in Mono); not a drag region. -->
-        <OutputControlsGroup />
+        <!-- Shared audio output switches: any section, normal/compact (micro view
+             in MonoModeBar); shortcuts stay alive via the root controller. -->
+        <OutputControlsGroup v-if="outputControlsPlacement === 'titlebar'" direction="down" :compact="true" />
         <button
           v-if="!hideExtraWindowButtons"
           class="titlebar-btn floating-window"
@@ -643,7 +660,11 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
-    <MonoModeBar v-else @return-compact="handleReturnCompact" @focus-editor="handleFocusEditor" @minimize="minimizeWindow" />
+    <MonoModeBar v-else @return-compact="handleReturnCompact" @focus-editor="handleFocusEditor" @minimize="minimizeWindow">
+      <template #outputs>
+        <OutputControlsGroup v-if="outputControlsPlacement === 'titlebar'" direction="down" micro />
+      </template>
+    </MonoModeBar>
 
     <!-- Show error if settings failed to load -->
     <div v-if="appSettings.error.value && appSettings.error.value.length > 0" class="error-container">

@@ -11,7 +11,10 @@
 //!
 //! Переключатель микрофона (ROADMAP-142) проверяется по живому кэшу настроек
 //! на старте клипа и в такте опроса: выключение снимает только локальный
-//! mic-sink звучащего клипа, спикер и VBAN не останавливаются.
+//! mic-sink звучащего клипа, спикер и VBAN не останавливаются. Включение до
+//! старта накопленного клипа, наоборот, добавляет микрофонный выход с
+//! устройством и громкостью из снимка очереди; уже идущий клип, у которого
+//! mic-sink снят выключением, не возобновляется.
 //!
 //! Дополнительно клип уходит в общий сетевой выход VBAN (когда включён в
 //! актуальном runtime): сеть работает и при выключенных, и при отказавших
@@ -45,8 +48,15 @@ use tracing::{debug, error, info, warn};
 ///
 /// Возвращает `(speaker, virtual_mic)`. `None` означает, что соответствующий
 /// выход выключен/не настроен. Проценты громкости переводятся в 0.0–1.0.
+///
+/// Включённость микрофона передаётся отдельно: `mic_enabled` — актуальное
+/// (live) состояние переключателя, которое главнее снимка, захваченного при
+/// постановке клипа в очередь, в обе стороны. Устройство и громкость при
+/// этом всегда берутся из снимка, поэтому накопленный клип уходит в
+/// микрофон с сохранённым устройством, если выход включили до его старта.
 pub(crate) fn build_output_configs(
     audio_settings: &AudioSettings,
+    mic_enabled: bool,
 ) -> (Option<OutputConfig>, Option<OutputConfig>) {
     let speaker_config = if audio_settings.speaker_enabled {
         Some(OutputConfig {
@@ -57,9 +67,9 @@ pub(crate) fn build_output_configs(
         None
     };
 
-    // ROADMAP-142: выключенный переключатель убирает выход из новых клипов,
-    // сохранённое устройство остаётся нетронутым.
-    let virtual_mic_config = if audio_settings.virtual_mic_enabled {
+    // ROADMAP-142: переключатель решает, есть ли у клипа микрофонный выход;
+    // сохранённое устройство остаётся нетронутым. No device => no mic.
+    let virtual_mic_config = if mic_enabled {
         audio_settings
             .virtual_mic_device
             .as_ref()
@@ -242,16 +252,13 @@ pub fn play_audio_file(
         return;
     }
 
-    // Микрофонный выход учитывает живой переключатель: снимок из очереди
-    // может быть устаревшим. Спикер следует своим сохранённым полям снимка.
+    // Микрофонный выход учитывает живой переключатель в обе стороны: снимок
+    // из очереди может быть устаревшим и после включения, и после выключения.
+    // Устройство и громкость остаются из снимка; спикер следует своим
+    // сохранённым полям снимка.
     let mic_live_enabled = live_clip_mic_enabled(audio_settings, settings_cache);
-    let (speaker_config, virtual_mic_config) = if mic_live_enabled {
-        let (speaker, mic) = build_output_configs(audio_settings);
-        (speaker, mic)
-    } else {
-        let (speaker, _) = build_output_configs(audio_settings);
-        (speaker, None)
-    };
+    let (speaker_config, virtual_mic_config) =
+        build_output_configs(audio_settings, mic_live_enabled);
 
     // Consult live output state, not the settings captured when this clip was
     // queued. Reading/decoding the network copy cannot delay local sink setup.
@@ -458,7 +465,7 @@ mod tests {
     #[test]
     fn outputs_both_enabled() {
         let audio = make_audio(true, Some("mic1"));
-        let (speaker, mic) = build_output_configs(&audio);
+        let (speaker, mic) = build_output_configs(&audio, audio.virtual_mic_enabled);
 
         assert!(speaker.is_some());
         assert_eq!(speaker.as_ref().map(|c| c.volume), Some(0.8));
@@ -473,7 +480,7 @@ mod tests {
     #[test]
     fn outputs_speaker_disabled_leaves_mic_only() {
         let audio = make_audio(false, Some("mic1"));
-        let (speaker, mic) = build_output_configs(&audio);
+        let (speaker, mic) = build_output_configs(&audio, audio.virtual_mic_enabled);
 
         assert!(speaker.is_none());
         assert!(mic.is_some());
@@ -482,23 +489,79 @@ mod tests {
     #[test]
     fn outputs_mic_missing_leaves_speaker_only() {
         let audio = make_audio(true, None);
-        let (speaker, mic) = build_output_configs(&audio);
+        let (speaker, mic) = build_output_configs(&audio, audio.virtual_mic_enabled);
 
         assert!(speaker.is_some());
         assert!(mic.is_none());
     }
 
-    /// ROADMAP-142: новый клип не получает микрофонный выход при выключенном
-    /// переключателе; сохранённое устройство остаётся в настройках.
+    /// ROADMAP-142: без живого кэша (тесты, независимые запуски) снимок
+    /// остаётся источником включённости; сохранённое устройство не трогается.
     #[test]
     fn outputs_mic_toggle_gates_clip_mic_output() {
         let mut audio = make_audio(true, Some("mic1"));
         audio.virtual_mic_enabled = false;
-        let (speaker, mic) = build_output_configs(&audio);
+        let (speaker, mic) = build_output_configs(&audio, audio.virtual_mic_enabled);
 
         assert!(speaker.is_some());
         assert!(mic.is_none());
         assert_eq!(audio.virtual_mic_device.as_deref(), Some("mic1"));
+    }
+
+    /// Regression (review 2026-11-19): клип, накопленный при выключенном
+    /// переключателе, уходит в микрофон, если до его старта выход включили.
+    /// Точная производственная последовательность `play_audio_file`: живой
+    /// флаг из кэша, затем построение конфигураций по нему. Устройство и
+    /// громкость берутся из снимка очереди, спикер не затронут.
+    #[test]
+    fn queued_disabled_clip_builds_mic_config_when_live_enabled_before_start() {
+        let mut queued = make_audio(true, Some("mic1"));
+        queued.virtual_mic_enabled = false; // переключатель был выключен при постановке
+
+        let cache = parking_lot::RwLock::new(crate::config::AppSettings::default());
+        cache.write().audio.virtual_mic_enabled = true;
+        let mic_live_enabled = live_clip_mic_enabled(&queued, Some(&cache));
+        assert!(
+            mic_live_enabled,
+            "live toggle must win over the queued flag"
+        );
+
+        let (speaker, mic) = build_output_configs(&queued, mic_live_enabled);
+        assert!(speaker.is_some(), "captured speaker settings are untouched");
+        assert_eq!(
+            mic.as_ref().and_then(|config| config.device_id.as_deref()),
+            Some("mic1"),
+            "queued-disabled clip must gain the mic after a live enable"
+        );
+        assert_eq!(mic.as_ref().map(|config| config.volume), Some(0.6));
+    }
+
+    /// Обратное направление: накопленный с включённым микрофоном клип не
+    /// получает микрофонный выход, если до старта переключатель выключили.
+    #[test]
+    fn queued_enabled_clip_loses_mic_config_when_live_disabled_before_start() {
+        let queued = make_audio(true, Some("mic1"));
+
+        let cache = parking_lot::RwLock::new(crate::config::AppSettings::default());
+        cache.write().audio.virtual_mic_enabled = false;
+        let mic_live_enabled = live_clip_mic_enabled(&queued, Some(&cache));
+        assert!(!mic_live_enabled);
+
+        let (speaker, mic) = build_output_configs(&queued, mic_live_enabled);
+        assert!(speaker.is_some(), "speaker must ignore the mic toggle");
+        assert!(
+            mic.is_none(),
+            "live disable must drop the queued mic output"
+        );
+    }
+
+    /// No device => no mic: live-включение не создаёт выход без устройства.
+    #[test]
+    fn live_enabled_without_device_still_has_no_mic_config() {
+        let queued = make_audio(true, None);
+        let (speaker, mic) = build_output_configs(&queued, true);
+        assert!(speaker.is_some());
+        assert!(mic.is_none());
     }
 
     /// ROADMAP-142: живой кэш настроек главнее снимка, накопленного в
@@ -538,7 +601,11 @@ mod tests {
             || ticks.set(ticks.get() + 1),
             None,
         );
-        assert_eq!(ticks.get(), 1, "gate tick runs before the completion branch");
+        assert_eq!(
+            ticks.get(),
+            1,
+            "gate tick runs before the completion branch"
+        );
     }
 
     // ── VBAN клипы (ROADMAP-138) ──
@@ -603,7 +670,7 @@ mod tests {
         // как раньше.
         let mut audio = make_audio(true, Some("mic1"));
         audio.vban.enabled = true;
-        let (speaker, mic) = build_output_configs(&audio);
+        let (speaker, mic) = build_output_configs(&audio, audio.virtual_mic_enabled);
         assert!(speaker.is_some());
         assert!(mic.is_some());
     }
@@ -620,7 +687,13 @@ mod tests {
         let mut queued_audio = make_audio(false, None);
         assert!(!queued_audio.vban.enabled);
         let (listener, output) = loopback_output("SPLIVE");
-        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None, None);
+        play_audio_file(
+            clip.to_str().unwrap(),
+            &queued_audio,
+            Some(&output),
+            None,
+            None,
+        );
         let mut buf = [0u8; 2048];
         let (len, _) = listener
             .recv_from(&mut buf)
@@ -635,7 +708,13 @@ mod tests {
         // Disabling also wins over an older enabled snapshot.
         queued_audio.vban.enabled = true;
         output.configure(None);
-        play_audio_file(clip.to_str().unwrap(), &queued_audio, Some(&output), None, None);
+        play_audio_file(
+            clip.to_str().unwrap(),
+            &queued_audio,
+            Some(&output),
+            None,
+            None,
+        );
         listener
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();

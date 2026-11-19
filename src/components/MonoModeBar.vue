@@ -118,6 +118,9 @@ onUnmounted(() => {
 
     <!-- Right buttons: return to compact mode and minimize -->
     <div class="mono-right-slot" data-tauri-drag-region>
+      <div class="mono-output-slot" data-tauri-drag-region="false">
+        <slot name="outputs" />
+      </div>
       <button
         type="button"
         class="mono-return-btn"
@@ -248,6 +251,14 @@ onUnmounted(() => {
 
 .mono-mode-bar:hover .mono-handle-bar {
   opacity: 0.9;
+}
+
+.mono-output-slot {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  box-sizing: border-box;
+  padding-block: 2px;
 }
 
 .mono-right-slot {

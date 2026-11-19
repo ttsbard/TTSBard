@@ -27,6 +27,11 @@ import { presentCommandError } from '../ipc/commandError'
 import { submitSpeech } from '../ipc/speech'
 import { deliverTwitchMessage } from '../ipc/twitchDelivery'
 import { matchesEditorHotkey } from './editor/keymapArbitration'
+import OutputControlsGroup from './titlebar/OutputControlsGroup.vue'
+import {
+  getOutputControlsPlacement,
+  type OutputControlsPlacement,
+} from '../composables/useMainWindowOutputControls'
 import { resolveEditorScopeAction } from './editor/editorScopeActions'
 import { incomingSurfaceHotkey, resolveIncomingTabTransition, type EditorHotkeyAction, type TabCycleDirection } from './editor/incomingHotkeys'
 import { Volume2, Clock, Keyboard, Twitch, ArrowDownToLine, Undo2 } from 'lucide-vue-next'
@@ -254,6 +259,15 @@ const { state: webviewRuntimeState } = useWebViewRuntimeStatus()
 const webviewConnected = computed(() => webviewRuntimeState.value === 'running')
 
 const defaultRouteFromSettings = computed<EditorRoute>(() => editorSettings.value?.default_route ?? 'everywhere')
+
+// ROADMAP-143: the output controls may live under the editor instead of the
+// titlebar (Settings → General). The view is a pure renderer — the shared
+// state and the root keydown listener live at the app root, so the shortcuts
+// do not depend on editor focus or on this placement.
+const outputControlsPlacement = getOutputControlsPlacement()
+const showEditorOutputControls = computed(
+  () => outputControlsPlacement.value === ('editor' satisfies OutputControlsPlacement),
+)
 
 const activeDecoded = computed(() => decodeRoutePrefix(text.value))
 
@@ -1071,6 +1085,11 @@ defineExpose({ focusEditor })
           :compact="isMinimalMode"
           @select="handleRouteSelect"
           @set-default="handleSaveDefault"
+        />
+        <OutputControlsGroup
+          v-if="showEditorOutputControls"
+          direction="up"
+          :compact="isMinimalMode"
         />
         <button
           type="button"

@@ -154,7 +154,7 @@ async function mountHotkeysPanel(options: {
 }
 
 afterEach(async () => {
-  setMainWindowOutputControlsRecording(false)
+  setMainWindowOutputControlsRecording('hotkeys-panel', false)
   if (appInstance) {
     appInstance.unmount()
     appInstance = null
