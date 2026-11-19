@@ -83,6 +83,11 @@ can replay older phrases.
 See [effects](user/audio-effects.md), [DSP settings](user/dsp-settings.md),
 [devices](user/audio-devices.md) and [virtual microphone](user/virtual-audio-cable.md).
 
+Main-window controls quickly disable the virtual microphone or VBAN for both
+speech and Sound panel. Place them below the editor, in the title bar (including
+Mono), or hide them; local shortcuts work in every mode.
+See [audio output controls](user/audio-outputs.md).
+
 ## 4. Text preparation
 
 **Quick insert** expands short codes to phrases/names from your lists.
