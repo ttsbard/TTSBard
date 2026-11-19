@@ -66,21 +66,20 @@ use commands::telegram::{
 };
 use commands::{
     apply_openai_proxy_settings, close_playback_control_window, close_soundpanel_window,
-    get_audio_effects, get_audio_output_format_pending,
-    get_audio_settings, get_dsp_settings, get_editor_font_family, get_editor_font_size_px,
-    get_editor_height, get_editor_hotkeys, get_editor_quick, get_editor_spellcheck_enabled,
-    get_editor_spellcheck_source, get_editor_typing_idle_timeout_ms,
-    get_global_exclude_from_capture, get_hotkey_enabled, get_hotkey_settings, get_local_tts_url,
-    get_main_appearance, get_main_compact_dims, get_main_compact_view, get_openai_api_key,
-    get_openai_voice, get_output_devices, get_playback_appearance_source,
-    get_show_playback_on_start, get_soundpanel_appearance_source, get_system_font_families,
-    get_tts_provider, get_ui_font_family, get_ui_font_size_px, get_virtual_mic_devices,
-    get_visibility_snapshot, has_api_key, hide_main_window, list_homograph_accentor_packs,
-    list_pocket_models, load_homograph_accentor_model, normalize_pocket_reference,
-    open_file_dialog, prepare_tts_provider_by_id, preview_audio_file, preview_contextual_ruaccent,
-    quit_app, refresh_homograph_accentor_packs, refresh_piper_models, refresh_pocket_models,
-    reregister_hotkeys_cmd, reset_editor_hotkey, reset_hotkey_to_default, save_audio_effects,
-    save_dsp_settings, select_tts_provider_by_id, set_audio_effects_enabled,
+    get_audio_effects, get_audio_output_format_pending, get_audio_settings, get_dsp_settings,
+    get_editor_font_family, get_editor_font_size_px, get_editor_height, get_editor_hotkeys,
+    get_editor_quick, get_editor_spellcheck_enabled, get_editor_spellcheck_source,
+    get_editor_typing_idle_timeout_ms, get_global_exclude_from_capture, get_hotkey_enabled,
+    get_hotkey_settings, get_local_tts_url, get_main_appearance, get_main_compact_dims,
+    get_main_compact_view, get_openai_api_key, get_openai_voice, get_output_devices,
+    get_playback_appearance_source, get_show_playback_on_start, get_soundpanel_appearance_source,
+    get_system_font_families, get_tts_provider, get_ui_font_family, get_ui_font_size_px,
+    get_virtual_mic_devices, get_visibility_snapshot, has_api_key, hide_main_window,
+    list_homograph_accentor_packs, list_pocket_models, load_homograph_accentor_model,
+    normalize_pocket_reference, open_file_dialog, prepare_tts_provider_by_id, preview_audio_file,
+    preview_contextual_ruaccent, quit_app, refresh_homograph_accentor_packs, refresh_piper_models,
+    refresh_pocket_models, reregister_hotkeys_cmd, reset_editor_hotkey, reset_hotkey_to_default,
+    save_audio_effects, save_dsp_settings, select_tts_provider_by_id, set_audio_effects_enabled,
     set_audio_effects_enhance_atten_db, set_audio_effects_enhance_enabled,
     set_audio_effects_formant_preserved, set_audio_effects_pitch, set_audio_effects_speed,
     set_audio_effects_volume, set_audio_output_format, set_editor_autocomplete_enabled,
@@ -96,8 +95,7 @@ use commands::{
     set_openai_voice, set_playback_appearance_source, set_pocket_voice, set_show_playback_on_start,
     set_soundpanel_appearance_source, set_speaker_device, set_speaker_enabled, set_speaker_volume,
     set_start_compact, set_tts_provider, set_ui_font_family, set_ui_font_size,
-    set_virtual_mic_device, set_virtual_mic_enabled, set_virtual_mic_volume,
-    speak_text_raw_export,
+    set_virtual_mic_device, set_virtual_mic_enabled, set_virtual_mic_volume, speak_text_raw_export,
     start_homograph_accentor_startup_load, stop_preview, test_audio_device,
     toggle_playback_control_window, toggle_soundpanel_window, unregister_hotkeys, update_theme,
     validate_pocket_reference, window::remove_main_bounds, window::resize_main_window,
@@ -245,9 +243,10 @@ pub fn run() {
         Level::ERROR
     };
 
-    let mut env_filter = EnvFilter::builder()
-        .with_default_directive(default_level.into())
-        .from_env_lossy();
+    let mut env_filter = commands::logging::build_env_filter(
+        default_level,
+        std::env::var("RUST_LOG").ok().as_deref(),
+    );
 
     // Apply per-module filters from settings.json
     for (module, level_str) in &settings.logging.module_levels {

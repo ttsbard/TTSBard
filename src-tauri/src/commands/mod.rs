@@ -13,7 +13,7 @@ use crate::tts::pocket::{
 };
 use crate::tts::TtsProvider;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub mod ai;
 pub mod history;
@@ -200,8 +200,6 @@ pub async fn get_all_app_settings(
     soundpanel_state: State<'_, crate::soundpanel::SoundPanelState>,
     consume_startup_notifications: Option<bool>,
 ) -> Result<AppSettingsDto, String> {
-    info!("get_all_app_settings: Loading all settings");
-
     let config = settings_manager
         .load()
         .map_err(|e| format!("Failed to load settings: {}", e))?;
@@ -223,10 +221,6 @@ pub async fn get_all_app_settings(
     let preprocessor = app_state.editor.get_preprocessor();
 
     let soundpanel_bindings = soundpanel_state.get_all_bindings();
-    info!(
-        count = soundpanel_bindings.len(),
-        "get_all_app_settings: Loaded soundpanel bindings"
-    );
 
     let mut settings = AppSettingsDto::from_all_sources(crate::config::AllSourcesParams {
         config: &config,
@@ -258,7 +252,8 @@ pub async fn get_all_app_settings(
     // Populate runtime TTS provider info from the registry
     settings.tts.providers = tts_provider_infos(app_state.inner());
 
-    info!(
+    // Одно debug-событие по завершении вместо трёх info на каждый вызов.
+    debug!(
         tts_provider = ?settings.tts.provider,
         webview_enabled = settings.webview.enabled,
         hotkey_enabled = settings.general.hotkey_enabled,
