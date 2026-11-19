@@ -13,7 +13,7 @@ Workflow ищет `libclang.dll` в каталогах LLVM и Visual Studio, з
 
 ## Релизный запуск
 
-Workflow запускается при push числового тега в формате `1.9.0` и вручную через
+Workflow запускается при push числового тега в формате `1.9.1` и вручную через
 `workflow_dispatch`. Имя тега, заголовок GitHub Release, версия приложения
 и имена артефактов используют один номер без префикса `v`.
 Только запуск по тегу создаёт GitHub Release; ручной запуск собирает
@@ -36,7 +36,7 @@ dev-артефакты.
 ### Описание релиза и заметки обновления
 
 Релизные заметки берутся из одного источника: секции `CHANGELOG.md` для
-тега (`## [1.9.0] - дата`). Workflow извлекает её через
+тега (`## [1.9.1] - дата`). Workflow извлекает её через
 `node scripts/make-update-manifest.cjs --print-notes` и записывает как описание
 GitHub Release. Бард читает версию, время публикации, описание и список
 файлов через GitHub Releases API. Для установки нужны пара
@@ -89,7 +89,7 @@ Actions ждут проверки. Подробности зафиксирова
 Перед тегом синхронизируйте версию штатным скриптом, проверьте diff и сборку:
 
 ```powershell
-node scripts/set-version.cjs 1.9.0
+node scripts/set-version.cjs 1.9.1
 npm run build
 ./scripts/cargo.ps1 check --manifest-path src-tauri/Cargo.toml --locked
 ```
@@ -98,9 +98,9 @@ npm run build
 `src-tauri/tauri.conf.json` и `src/version.ts`. Также синхронизируйте версию
 корневого пакета в `package-lock.json` (верхний уровень и `packages[""]`)
 и запись пакета `ttsbard` в `src-tauri/Cargo.lock`, не меняя версии зависимостей.
-Заполните секцию `## [1.9.0]` в `CHANGELOG.md` и выполните
+Заполните секцию `## [1.9.1]` в `CHANGELOG.md` и выполните
 `./scripts/check-docs.ps1`. До отправки тега проверьте, что команда
-`node scripts/make-update-manifest.cjs --print-notes --version 1.9.0 --changelog CHANGELOG.md`
+`node scripts/make-update-manifest.cjs --print-notes --version 1.9.1 --changelog CHANGELOG.md`
 выводит текст этой секции. Полную локальную релизную сборку
 запускайте через `./scripts/build.ps1 -Mode release`.
 
@@ -112,8 +112,8 @@ SHA. Если `CI` завершится ошибкой, выпуск не буд
 текущего релиза):
 
 ```powershell
-git tag 1.9.0
-git push origin 1.9.0
+git tag 1.9.1
+git push origin 1.9.1
 ```
 
 В CI версия извлекается из имени тега и повторно применяется через

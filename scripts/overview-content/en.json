@@ -35,7 +35,7 @@
     {"kind":"section","title":"Audio outputs","lead":"You and your conversation partners hear the speech","bullets":[
       "Send speech to speakers or headphones and simultaneously to a virtual audio cable, such as VB-CABLE or VoiceMeeter.",
       "In games and Discord the virtual cable acts as a microphone, letting others hear TTSBard.",
-      "Speaker and virtual microphone volumes are independent. Default-device selection follows Windows output changes."
+      "Output volumes are independent. Main-window controls quickly disable the virtual microphone or VBAN for both speech and Sound panel."
     ]},
     {"kind":"section","title":"Communication and streaming","lead":"Share phrases and typing state with other applications","bullets":[
       "Display spoken phrases in OBS and style the overlay to match your stream.",
