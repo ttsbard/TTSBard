@@ -15,11 +15,11 @@ use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, Sink};
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Keeps the selected output backend alive for the lifetime of its sink.
 pub struct OutputDeviceStream {
@@ -27,9 +27,19 @@ pub struct OutputDeviceStream {
     _cpal: Option<cpal::Stream>,
     mode: OutputFormat,
     broken: Arc<AtomicBool>,
+    stream_id: u64,
+    created: Instant,
+    device_name: String,
 }
 
 use crate::config::AudioOutputFormat as OutputFormat;
+
+/// Monotonic id for audio_diag lifecycle logging of output streams.
+static STREAM_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_stream_id() -> u64 {
+    STREAM_ID.fetch_add(1, Ordering::SeqCst)
+}
 
 impl OutputDeviceStream {
     /// The output format mode this stream was opened in.
@@ -37,10 +47,23 @@ impl OutputDeviceStream {
         self.mode
     }
 
+    /// Lifecycle id of this output stream (for audio_diag logging).
+    pub(crate) fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
+
     /// Whether the strict-i32 stream has hit its error callback. The default
     /// (rodio) mode cannot detect device loss and always reports `false`.
     pub(crate) fn is_broken(&self) -> bool {
         self.mode == OutputFormat::I32 && self.broken.load(Ordering::SeqCst)
+    }
+
+    /// audio_diag binding event: maps an opened stream id to its playback role
+    /// and the configured device id (`None` = system default). Emitted by each
+    /// caller right after a successful open, without changing open signatures.
+    pub(crate) fn log_binding(&self, role: &str, device_id: Option<&str>) {
+        debug!(target: "audio_diag", stream_id = self.stream_id(), role,
+            device_id = ?device_id, "Output stream bound to role");
     }
 }
 
@@ -71,9 +94,24 @@ fn stream_counter(mode: OutputFormat) -> &'static AtomicUsize {
     }
 }
 
+/// Role tag derived from the legacy dual-player device label.
+fn legacy_role(device_label: &str) -> &'static str {
+    match device_label {
+        "Virtual Mic" => "mic",
+        "Test Device" => "test",
+        _ => "speaker",
+    }
+}
+
 impl Drop for OutputDeviceStream {
     fn drop(&mut self) {
         stream_counter(self.mode).fetch_sub(1, Ordering::SeqCst);
+        let uptime = self.created.elapsed();
+        debug!(target: "audio_diag", stream_id = self.stream_id, device_name = %self.device_name,
+            mode = ?self.mode, uptime_ms = uptime.as_millis() as u64, broken = self.is_broken(),
+            default_holders = DEFAULT_STREAMS.load(Ordering::SeqCst),
+            i32_holders = I32_STREAMS.load(Ordering::SeqCst),
+            "Output holder dropped");
     }
 }
 
@@ -180,20 +218,26 @@ pub(crate) fn open_output_sink(
     device: &cpal::Device,
 ) -> Result<(OutputDeviceStream, Sink), String> {
     let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+    let stream_id = next_stream_id();
+    let created = Instant::now();
     let result = (|| {
+        // Local copy: branches move the name into struct fields / callbacks
+        // while the outer error log still needs the original.
+        let device_name = device_name.clone();
         let mode = effective_output_format()?;
         let default = device
             .default_output_config()
             .map_err(|e| format!("Failed to get default output configuration: {e}"))?;
-        info!(device_name = %device_name, ?mode,
+        info!(target: "audio_diag", stream_id, device_name = %device_name, mode = ?mode,
             sample_format = ?default.sample_format(), sample_rate = default.sample_rate().0,
             channels = default.channels(), buffer_size = ?default.buffer_size(),
-            "Audio output default configuration");
+            "Audio output default configuration (requested)");
 
         let ranges = match device.supported_output_configs() {
             Ok(ranges) => ranges.collect::<Vec<_>>(),
             Err(e) => {
-                warn!(device_name = %device_name, error = %e, "Cannot enumerate supported output formats");
+                warn!(target: "audio_diag", stream_id, device_name = %device_name, error = %e,
+                    "Cannot enumerate supported output formats");
                 if mode == OutputFormat::I32 {
                     return Err(format!(
                         "Cannot enumerate formats for strict i32 output: {e}"
@@ -203,25 +247,36 @@ pub(crate) fn open_output_sink(
             }
         };
         for range in &ranges {
-            info!(device_name = %device_name, sample_format = ?range.sample_format(),
+            trace!(target: "audio_diag", device_name = %device_name, sample_format = ?range.sample_format(),
                 min_sample_rate = range.min_sample_rate().0, max_sample_rate = range.max_sample_rate().0,
                 channels = range.channels(), buffer_size = ?range.buffer_size(),
                 "Audio output supported configuration");
         }
 
         if mode == OutputFormat::Default {
-            let (stream, handle) = OutputStream::try_from_device_config(device, default)
+            let (stream, handle) = OutputStream::try_from_device_config(device, default.clone())
                 .map_err(|e| format!("Failed to create output stream: {e}"))?;
             let sink = Sink::try_new(&handle).map_err(|e| format!("Failed to create sink: {e}"))?;
-            info!(device_name = %device_name,
-                "Audio output opened in default mode; rodio 0.19 may silently fall back, actual format is unavailable");
             stream_counter(mode).fetch_add(1, Ordering::SeqCst);
+            info!(target: "audio_diag", stream_id, device_name = %device_name,
+                mode = ?mode,
+                requested_sample_format = ?default.sample_format(),
+                requested_sample_rate = default.sample_rate().0,
+                requested_channels = default.channels(),
+                requested_buffer_size = ?default.buffer_size(),
+                actual_format_available = false,
+                default_holders = DEFAULT_STREAMS.load(Ordering::SeqCst),
+                i32_holders = I32_STREAMS.load(Ordering::SeqCst),
+                "Output stream open: default mode (rodio 0.19 may silently fall back, actual format is unavailable; fields are requested)");
             return Ok((
                 OutputDeviceStream {
                     _rodio: Some(stream),
                     _cpal: None,
                     mode,
                     broken: Arc::new(AtomicBool::new(false)),
+                    stream_id,
+                    created,
+                    device_name: device_name.clone(),
                 },
                 sink,
             ));
@@ -234,6 +289,8 @@ pub(crate) fn open_output_sink(
         controller.add(PrimedSinkQueue::new(queue));
         let broken = Arc::new(AtomicBool::new(false));
         let broken_cb = Arc::clone(&broken);
+        let cb_stream_id = stream_id;
+        let cb_device_name = device_name.clone();
         let stream = device
             .build_output_stream::<i32, _, _>(
                 &selected.config(),
@@ -242,10 +299,13 @@ pub(crate) fn open_output_sink(
                         *sample = <i32 as cpal::Sample>::from_sample(mixer.next().unwrap_or(0.0));
                     }
                 },
-                // Match rodio's callback behavior; avoid logging on the audio thread.
+                // The error callback may run on the audio stream thread (WASAPI),
+                // so keep it minimal.
                 move |err| {
                     broken_cb.store(true, Ordering::SeqCst);
-                    eprintln!("an error occurred on strict i32 output stream: {err}");
+                    warn!(target: "audio_diag", stream_id = cb_stream_id,
+                        device_name = %cb_device_name, error = %err,
+                        "Strict i32 output stream error callback");
                 },
                 None,
             )
@@ -253,23 +313,37 @@ pub(crate) fn open_output_sink(
         stream
             .play()
             .map_err(|e| format!("Failed to start strict i32 output stream: {e}"))?;
-        info!(device_name = %device_name, sample_format = ?selected.sample_format(),
-            sample_rate = selected.sample_rate().0, channels = selected.channels(),
-            buffer_size = ?selected.config().buffer_size,
-            "Audio output opened with verified i32 configuration (no fallback)");
         stream_counter(mode).fetch_add(1, Ordering::SeqCst);
+        info!(target: "audio_diag", stream_id, device_name = %device_name,
+            mode = ?mode,
+            requested_default_sample_format = ?default.sample_format(),
+            requested_default_sample_rate = default.sample_rate().0,
+            requested_default_channels = default.channels(),
+            requested_default_buffer_size = ?default.buffer_size(),
+            selected_sample_format = ?selected.sample_format(),
+            selected_sample_rate = selected.sample_rate().0,
+            selected_channels = selected.channels(),
+            selected_buffer_size = ?selected.config().buffer_size,
+            actual_format_available = true,
+            default_holders = DEFAULT_STREAMS.load(Ordering::SeqCst),
+            i32_holders = I32_STREAMS.load(Ordering::SeqCst),
+            "Output stream open: verified i32 explicit configuration (no fallback)");
         Ok((
             OutputDeviceStream {
                 _rodio: None,
                 _cpal: Some(stream),
                 mode,
                 broken,
+                stream_id,
+                created,
+                device_name,
             },
             sink,
         ))
     })();
     if let Err(ref err) = result {
-        error!(device_name = %device_name, error = %err, "Audio output initialization failed");
+        error!(target: "audio_diag", stream_id, device_name = %device_name, error = %err,
+            "Audio output initialization failed");
     }
     result.map_err(|err| format!("Output device '{device_name}': {err}"))
 }
@@ -287,12 +361,15 @@ pub fn resolve_output_device(
     device_id: &Option<String>,
     cached: &Option<Arc<RwLock<HashMap<String, cpal::Device>>>>,
 ) -> Result<cpal::Device, String> {
+    trace!(target: "audio_diag", requested_device_id = ?device_id, "Resolving output device");
     match device_id {
         Some(dev_id) => {
             if let Some(cache) = cached {
                 let c = cache.read();
                 if let Some(device) = c.get(dev_id) {
                     let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+                    trace!(target: "audio_diag", requested_device_id = %dev_id, device_name = %device_name,
+                        "Output device cache hit");
                     debug!(device_name = %device_name, "Using cached device");
                     let device_clone = device.clone();
                     drop(c);
@@ -300,22 +377,52 @@ pub fn resolve_output_device(
                 }
                 drop(c);
             }
-            let host = cpal::default_host();
-            let devices = host
-                .output_devices()
-                .map_err(|e| format!("Failed to get output devices: {}", e))?;
+            trace!(target: "audio_diag", requested_device_id = %dev_id, "Output device cache miss");
             let index: usize = dev_id
                 .parse()
-                .map_err(|_| format!("Invalid device ID: {}", dev_id))?;
-            devices
-                .into_iter()
-                .nth(index)
-                .ok_or_else(|| format!("Device not found: {}", dev_id))
+                .map_err(|_| {
+                    warn!(target: "audio_diag", requested_device_id = %dev_id, "Invalid output device ID");
+                    format!("Invalid device ID: {}", dev_id)
+                })?;
+            let host = cpal::default_host();
+            let mut output_devices = host.output_devices().map_err(|e| {
+                warn!(target: "audio_diag", requested_device_id = %dev_id, error = %e,
+                    "Failed to enumerate output devices");
+                format!("Failed to get output devices: {}", e)
+            })?;
+            let device = if tracing::enabled!(target: "audio_diag", tracing::Level::DEBUG) {
+                // Same enumeration order as the plain path; collected only for debug logging.
+                let devices: Vec<_> = output_devices.collect();
+                for (i, d) in devices.iter().enumerate() {
+                    let name = d.name().unwrap_or_else(|_| "Unknown".to_string());
+                    debug!(target: "audio_diag", index = i, device_name = %name,
+                        "Enumerated CPAL output device");
+                }
+                devices.into_iter().nth(index)
+            } else {
+                output_devices.nth(index)
+            };
+            let device = device.ok_or_else(|| {
+                warn!(target: "audio_diag", requested_device_id = %dev_id, index, "Output device not found");
+                format!("Device not found: {}", dev_id)
+            })?;
+            let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            debug!(target: "audio_diag", requested_device_id = %dev_id,
+                resolved_device_name = %device_name, "Output device resolved by index");
+            Ok(device)
         }
         None => {
             let host = cpal::default_host();
-            host.default_output_device()
-                .ok_or_else(|| "No default output device".to_string())
+            let device = host
+                .default_output_device()
+                .ok_or_else(|| {
+                    warn!(target: "audio_diag", requested_device_id = "default", "No default output device");
+                    "No default output device".to_string()
+                })?;
+            let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            debug!(target: "audio_diag", default_device_name = %device_name,
+                "Using default output device");
+            Ok(device)
         }
     }
 }
@@ -529,7 +636,8 @@ impl AudioPlayer {
         info!(device_label = %device_label, device_name = %device_name,
             "Playing on device");
 
-        let (_stream, sink) = open_sink_on_device(&device, &mp3_data, config.volume)?;
+        let (stream, sink) = open_sink_on_device(&device, &mp3_data, config.volume)?;
+        stream.log_binding(legacy_role(device_label), config.device_id.as_deref());
 
         while !sink.empty() {
             if stop_flag.load(Ordering::SeqCst) {
@@ -579,7 +687,8 @@ impl AudioPlayer {
         let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
         debug!(device_name = %device_name, "Playing preview audio");
 
-        let (_stream, sink) = open_sink_on_device(&device, &audio_data, config.volume)?;
+        let (stream, sink) = open_sink_on_device(&device, &audio_data, config.volume)?;
+        stream.log_binding("preview", config.device_id.as_deref());
 
         while !sink.empty() {
             if stop_flag.load(Ordering::SeqCst) {
@@ -605,7 +714,8 @@ impl AudioPlayer {
         let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
         debug!(device_name = %device_name, channels=pcm.channels, sr=pcm.sample_rate, "Playing PCM preview");
 
-        let (_stream, sink) = open_sink_on_device_pcm(&device, pcm, config.volume)?;
+        let (stream, sink) = open_sink_on_device_pcm(&device, pcm, config.volume)?;
+        stream.log_binding("preview", config.device_id.as_deref());
 
         while !sink.empty() {
             if stop_flag.load(Ordering::SeqCst) {

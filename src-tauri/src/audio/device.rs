@@ -17,18 +17,21 @@ pub struct OutputDeviceInfo {
 
 /// Получить все устройства вывода звука
 pub fn get_output_devices() -> Vec<OutputDeviceInfo> {
-    debug!("Scanning for output devices");
+    debug!(target: "audio_diag", "Device discovery begin: output devices");
 
     let host = cpal::default_host();
     let mut devices = Vec::new();
 
     if let Ok(output_devices) = host.output_devices() {
         let default_device = host.default_output_device();
+        // Default flag is a name-based estimate: cpal has no stable default
+        // endpoint identity, so we compare rendered device names. Resolved
+        // once here instead of per iteration.
+        let default_name = default_device.as_ref().and_then(|d| d.name().ok());
 
         for (index, device) in output_devices.enumerate() {
             if let Ok(name) = device.name() {
-                let is_default =
-                    default_device.as_ref().and_then(|d| d.name().ok()).as_ref() == Some(&name);
+                let is_default = default_name.as_deref() == Some(name.as_str());
 
                 // Используем индекс как ID, так как имя может содержать специальные символы
                 let device_info = OutputDeviceInfo {
@@ -38,8 +41,11 @@ pub fn get_output_devices() -> Vec<OutputDeviceInfo> {
                 };
 
                 debug!(
+                    target: "audio_diag",
+                    index,
                     device_name = device_info.name,
                     is_default = device_info.is_default,
+                    is_default_name_estimate = true,
                     "Found device"
                 );
                 devices.push(device_info);
@@ -47,6 +53,7 @@ pub fn get_output_devices() -> Vec<OutputDeviceInfo> {
         }
     }
 
+    debug!(target: "audio_diag", count = devices.len(), "Device discovery end: output devices");
     devices
 }
 
@@ -61,7 +68,7 @@ const VIRTUAL_KEYWORDS: &[&str] = &[
 
 /// Получить только виртуальные аудио устройства
 pub fn get_virtual_mic_devices() -> Vec<OutputDeviceInfo> {
-    debug!("Scanning for virtual devices");
+    debug!(target: "audio_diag", "Device discovery begin: virtual mic devices");
 
     let all_devices = get_output_devices();
     let virtual_devices: Vec<OutputDeviceInfo> = all_devices
@@ -74,10 +81,17 @@ pub fn get_virtual_mic_devices() -> Vec<OutputDeviceInfo> {
         })
         .collect();
 
-    info!(count = virtual_devices.len(), "Found virtual devices");
-    for device in &virtual_devices {
-        debug!(device_name = device.name, "Virtual device");
+    info!(target: "audio_diag", count = virtual_devices.len(), "Found virtual devices");
+    for (index, device) in virtual_devices.iter().enumerate() {
+        debug!(
+            target: "audio_diag",
+            device_id = %device.id,
+            list_position = index,
+            device_name = device.name,
+            "Virtual device"
+        );
     }
 
+    debug!(target: "audio_diag", count = virtual_devices.len(), "Device discovery end: virtual mic devices");
     virtual_devices
 }

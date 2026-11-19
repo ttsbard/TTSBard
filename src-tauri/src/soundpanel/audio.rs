@@ -348,6 +348,14 @@ fn setup_output(
         .map_err(|e| format!("Failed to decode audio: {}", e))?;
 
     let (stream, sink) = open_output_sink(&device)?;
+    stream.log_binding(
+        if label == "Virtual Mic" {
+            "soundpanel_mic"
+        } else {
+            "soundpanel_speaker"
+        },
+        config.device_id.as_deref(),
+    );
 
     sink.set_volume(config.volume);
     debug!(label, volume = config.volume, "Volume set");

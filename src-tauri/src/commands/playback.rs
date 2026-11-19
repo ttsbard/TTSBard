@@ -15,6 +15,14 @@ use tracing::{debug, info};
 
 pub struct PlaybackState(pub Arc<PlaybackManager>);
 
+/// Diagnostic old-value snapshot from the settings cache (no disk I/O, no
+/// failure path — never blocks a setter on a log read).
+fn cached_audio_snapshot(manager: &SettingsManager) -> crate::config::AudioSettings {
+    let cache = manager.cache_arc();
+    let audio = cache.read().audio.clone();
+    audio
+}
+
 #[tauri::command]
 pub fn get_audio_output_format_pending() -> Result<bool, String> {
     crate::audio::output_format_pending()
@@ -27,7 +35,10 @@ pub async fn set_audio_output_format(
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(&*settings_manager, move |manager| {
-        manager.set_audio_output_format(format)
+        let old_format = cached_audio_snapshot(manager).output_format;
+        manager.set_audio_output_format(format)?;
+        info!(target: "audio_diag", old = ?old_format, new = ?format, "Audio output format updated");
+        Ok(())
     })
     .await?;
     super::emit_settings_changed(&app_handle);
@@ -176,7 +187,10 @@ pub async fn set_speaker_device(
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_speaker_device(device_id)
+        let old_device_id = cached_audio_snapshot(manager).speaker_device;
+        manager.set_speaker_device(device_id.clone())?;
+        info!(target: "audio_diag", old = ?old_device_id, new = ?device_id, "Speaker output device updated");
+        Ok(())
     })
     .await?;
     super::emit_settings_changed(&app_handle);
@@ -191,7 +205,10 @@ pub async fn set_speaker_enabled(
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_speaker_enabled(enabled)
+        let old_enabled = cached_audio_snapshot(manager).speaker_enabled;
+        manager.set_speaker_enabled(enabled)?;
+        info!(target: "audio_diag", old = old_enabled, new = enabled, "Speaker output enabled updated");
+        Ok(())
     })
     .await?;
     super::emit_settings_changed(&app_handle);
@@ -221,7 +238,10 @@ pub async fn set_virtual_mic_device(
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_virtual_mic_device(device_id)
+        let old_device_id = cached_audio_snapshot(manager).virtual_mic_device;
+        manager.set_virtual_mic_device(device_id.clone())?;
+        info!(target: "audio_diag", old = ?old_device_id, new = ?device_id, "Virtual mic output device updated");
+        Ok(())
     })
     .await?;
     super::emit_settings_changed(&app_handle);
@@ -239,7 +259,10 @@ pub async fn set_virtual_mic_enabled(
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
     super::persist_blocking(settings_manager.inner(), move |manager| {
-        manager.set_virtual_mic_enabled(enabled)
+        let old_enabled = cached_audio_snapshot(manager).virtual_mic_enabled;
+        manager.set_virtual_mic_enabled(enabled)?;
+        info!(target: "audio_diag", old = old_enabled, new = enabled, "Virtual mic output enabled updated");
+        Ok(())
     })
     .await?;
     super::emit_settings_changed(&app_handle);

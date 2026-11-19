@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 const AUDIO_CACHE_SIZE: usize = 20;
 const MAX_QUEUE: usize = 50;
@@ -658,9 +658,26 @@ fn ensure_output(
         .as_ref()
         .map(|h| h.stream.is_broken())
         .unwrap_or(false);
+    // Why this call reopens: no holder yet, a broken stream, a system-default
+    // endpoint (no stable identity in cpal), an explicit device switch, or a
+    // format-mode change.
+    let reopen_reason = if holder.is_none() {
+        "initial"
+    } else if is_broken {
+        "broken"
+    } else if desired.device_id.is_none() {
+        "system_default"
+    } else if holder.as_ref().map(|h| &h.key.device_id) != Some(&desired.device_id) {
+        "device_changed"
+    } else {
+        "format_changed"
+    };
     match decide_sink(holder.as_ref().map(|h| &h.key), &desired, is_broken) {
         SinkDecision::Reuse => {
             if let Some(h) = holder.as_ref() {
+                trace!(target: "audio_diag", role = label, stream_id = h.stream.stream_id(),
+                    current_key = ?h.key, new_key = ?desired,
+                    "{label} output reused");
                 // rodio's stop() does not clear the pause flag; a sink paused
                 // before Stop must start audible on the next phrase.
                 h.sink.play();
@@ -670,10 +687,26 @@ fn ensure_output(
             false
         }
         SinkDecision::Reopen => {
+            let old_key = holder.as_ref().map(|h| h.key.clone());
+            trace!(target: "audio_diag", role = label, reason = reopen_reason,
+                current_key = ?old_key, new_key = ?desired,
+                "{label} output reopen");
             *holder = None;
             match resolve_output_device(&cfg.device_id, cached_devices) {
                 Ok(dev) => match open_sink_on_device_pcm(&dev, audio, cfg.volume) {
                     Ok((stream, sink)) => {
+                        let stream_id = stream.stream_id();
+                        trace!(target: "audio_diag", role = label, stream_id,
+                            current_key = ?old_key, new_key = ?desired,
+                            "{label} output reopened");
+                        stream.log_binding(
+                            if label == "mic" {
+                                "tts_mic"
+                            } else {
+                                "tts_speaker"
+                            },
+                            cfg.device_id.as_deref(),
+                        );
                         *holder = Some(OutputHolder {
                             stream,
                             sink,
@@ -1100,6 +1133,10 @@ impl PlaybackManager {
                     // network tail keeps sending until it finishes or the
                     // next start replaces it.
                     release_stale_mode_holders(&mut spk_holder, &mut mic_holder);
+                    trace!(target: "audio_diag",
+                        speaker_stream_id = ?spk_holder.as_ref().map(|h| h.stream.stream_id()),
+                        mic_stream_id = ?mic_holder.as_ref().map(|h| h.stream.stream_id()),
+                        "TTS outputs drained; holders retained for reuse");
                     let finished_id = {
                         let mut s = state.write();
                         let id = s.current.as_ref().map(|p| p.id.clone());

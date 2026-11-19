@@ -375,6 +375,19 @@ pub fn run() {
     #[cfg(windows)]
     crate::paths::remove_legacy_roaming_temp();
 
+    // audio_diag: стартовый снимок аудио-выборов — только после того, как
+    // глобальный subscriber установлен выше.
+    {
+        let audio = &settings.audio;
+        info!(target: "audio_diag",
+            speaker_device = ?audio.speaker_device,
+            speaker_enabled = audio.speaker_enabled,
+            virtual_mic_device = ?audio.virtual_mic_device,
+            virtual_mic_enabled = audio.virtual_mic_enabled,
+            output_format = ?audio.output_format,
+            "Startup audio configuration loaded");
+    }
+
     // Корень данных: пользовательский override из настроек должен быть
     // применён до model discovery (Piper/OCR/RUAccent) и переноса legacy-кеша.
     crate::paths::init_data_root(settings.storage.data_dir.as_deref());
